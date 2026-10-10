@@ -1,0 +1,66 @@
+---
+description: 后端规则（fastapi/）：唯一实现、代码风格、配置与静态资源版本号、数据库自愈链、测试与前后端联动
+alwaysApply: true
+enabled: true
+updatedAt: 2026-09-22
+---
+
+# 后端规则（`fastapi/`）
+
+## 1. 技术栈与结构
+
+- Python + **FastAPI**，另含 **Jinja2 服务端渲染的管理后台**；数据库**双驱动**：SQLite（默认）/ MySQL·MariaDB。
+- 目录职责：`app/core`（基础设施，每文件一职责）、`app/api`（小程序 JSON 接口 + 对外状态页 `/`、`/apitest`）、
+  `app/admin`（后台路由 + `templates/` + `static/`）、`app/sql`（建表脚本）、`tools/`（CLI）、`tests/`（测试脚本）。
+- 后台页面**唯一布局**是 `app/admin/templates/base.html`；样式**唯一定义**在 `app/admin/static/css/admin.css`；
+  列表页公共 JS 在 `app/admin/static/js/`（状态切换 / 触底加载 / 图片上传）。
+
+## 2. 唯一实现（新增第二套 = 错误改动）
+
+- 实体与权限口径 → `app/admin/entities.py`（**新增后台实体必须在此登记**，否则启动自检会报"写入口未登记"）；
+- 目录/分类/文案/菜单等常量 → `app/core/catalog.py`；分类取值入口 → `app/core/category_source.py`；
+- 统计口径与时间窗口 → `app/core/stats.py`；受控表 CRUD → `app/admin/controlled.py`；
+- 后台通用小工具 → `app/admin/utils.py`；账号恢复/彻底删除 → `app/core/account_ops.py`；
+- 时间处理 → `app/core/timeutil.py`；统一响应拼装 → `app/core/response.py`。
+
+## 3. 代码风格（跟随现有源码）
+
+- `snake_case` 命名；常量 `UPPER_SNAKE`；类 `PascalCase`；私有实现统一 `_` 前缀。
+- **全中文注释、写"为什么"**，并带日期 / 问题编号（如 `（BUG-14）`、`（3.7, 2026-09-20）`、`后端加速.md 10.15`）；
+  只要不是一目了然，就把"代价与取舍"一起写清楚。
+- 路由一律 `async def`；同步数据库访问走 `db.aquery_* / aexecute`；
+  网络/CPU/磁盘重活（微信换 openid、bcrypt、图片压缩、缩略图、统计采集）显式丢线程池。
+- 错误兜底：**非致命步骤失败只记日志、绝不中断主流程**；反之，涉及安全/数据一致性的地方**绝不静默放行**。
+- 统一响应 `{code, msg, data}`；对外字段一律 `snake_case`；列表接口保留的历史字段兼容期要写清。
+
+## 4. 配置、启动与静态资源
+
+- `.env` **只在进程启动时读一次**，改完必须重启；生产是严格模式（缺关键项直接拒绝启动）。
+- **改了 `app/admin/static/**`（css/js/图片）或模板 → 必须升 `main.py` 的 `APP_VERSION` 并重启**：
+  静态资源地址带 `?v=<APP_VERSION>` 且缓存期长，不升版本号浏览器会继续用旧文件；
+  非宽松模式下 Jinja 关闭模板自动重载，改模板不重启看不到效果。
+- 不要手工创建 migrations 目录：结构演进由启动自愈链 `init_schema()` 负责（schema + 一串互相隔离的
+  补列/索引/回填/迁移/种子步骤，单步失败只记日志）。
+
+## 5. 数据库
+
+- 表结构改动要**同时改** `app/sql/schema_sqlite.sql` 与 `app/sql/schema_mysql.sql`（两者同构），
+  并在 `init_schema()` 里补一条**幂等**步骤，保证老库也能升上来。
+- **新增任何"属于某个用户"的表，必须同步 `app/core/account_ops.py` 的 `USER_OWNED_TABLES`**，
+  否则注销/彻底删除会留下孤儿数据。
+- 业务 SQL 统一写 `?` 占位符（MySQL 分支自动转 `%s`）；热点写用 `app/core/debounce.py` 降频。
+- 缓存：接口层用 `app/core/cache.py` 的门面；多 worker / 多实例**必须** `CACHE_BACKEND=redis`，
+  否则缓存失效与幂等防重跨进程不生效（启动日志有"接口缓存后端: …"一行可核对）。
+
+## 6. 测试与前后端联动（改完必跑）
+
+```bash
+cd fastapi
+python tests/smoke_test.py          # 全量冒烟（临时 SQLite，不连外网）
+python tests/optimized_check.py     # 可观测性与防护（必须与 smoke 分开进程运行）
+python tests/review_guard_test.py   # 审查加固项；指定 LYXJ_DIR=<lyxj 路径> 可连带扫前端域名单点
+```
+
+- 用例数是"快照"不是契约；**没跑就说没跑**，不要把"应该没问题"写成"已验证"。
+- 与小程序有关的约定（昵称后缀、注销行为、公告已读、图标路径、接口字段）改动时，
+  **必须同一批改 `lyxj/` 侧与两端 README**；接口清单要与实际注册的路由一致。

@@ -1,0 +1,49 @@
+---
+description: 小程序前端规则（lyxj/）：技术栈硬约束、单点维护、硬约定、改完必须验证什么
+alwaysApply: true
+enabled: true
+updatedAt: 2026-09-22
+---
+
+# 小程序前端规则（`lyxj/`）
+
+## 1. 技术栈硬约束（不许违反）
+
+- **微信小程序原生**：WXML / WXSS / JavaScript。
+  **不使用 TypeScript**、**不使用 npm**、**没有 `package.json`、没有构建步骤、没有 lint 工具链**。
+- **不使用云开发**（无 `cloudfunctionRoot`、无云函数目录）；所有数据来自 `../fastapi/`。
+- 自定义组件放 `components/`，一律 `styleIsolation: 'isolated'`；需要共享样式时放 `styles/`
+  并用**相对路径** `@import`（wxss 不支持跨目录绝对路径）。
+- 若想引入 TS / npm / 构建步骤 / 云开发 / 第三方组件库：**先问用户**，不要自行引入。
+
+## 2. 单点维护（改之前先找到唯一来源）
+
+- 域名、API 线路、本地存储键**只能**出现在 `utils/constants.js`；其它文件一律用 `SK.xxx` 引用，
+  禁止 `getStorageSync('token')` 这类字面量（后端 `tests/review_guard_test.py` 会扫这条）。
+- `STORAGE_KEYS` 的**键值不可改** —— 改了等于清空所有老用户的登录态与缓存。
+- 分类展示名 → `util.getCategoryName()`；列表分页与秒开缓存 → `utils/listPagerBehavior.js`；
+  下拉刷新编排 → `utils/refreshCenter.js`；登录/注销流程 → `utils/loginBehavior.js`；
+  旧路径转发 → `utils/legacyRedirect.js`。
+- 新增内容页放 `subpackages/content/`，并在 `app.json` 的 `pages` / `subPackages` 注册；
+  旧路径如需保留，照现有兼容桩的做法加一个转发页。
+
+## 3. 硬约定（改动不许破坏）
+
+- 任何 `<image>` 必须配 `binderror` 兜底（换包内默认图或隐藏）——**不允许裂图**。
+- 配置/菜单/分类/轮播取不到时用包内兜底表（`FALLBACK_APP_MENU`、`FALLBACK_CATEGORIES` 等），不出现空白页。
+- **7 个旧路径兼容桩不要删**（`pages/news-detail|like|favorites|history|outdoor|motorcycle|notices`）：
+  它们保证旧链接与旧二维码仍能打开。
+- 列表/刷新方法统一返回 `{ ok, changed, skipped, reason? }`，由 `util.runPullRefresh` 消费并决定提示文案
+  （四态文案全站一致）。
+- 高频入口必须 `util.throttle / util.debounce`；`bindscroll` / `onPageScroll` 必须"值变了才 `setData`"。
+- 页面取请求封装统一 `this.api = app.api`；不要在页面里直接拼 `wx.request`（历史遗留的配置/公告两处除外，
+  改动时优先收敛到 app 层）。
+- 版本号唯一维护点：`app.js` 顶部 `APP_VERSION`（「我的 → 关于」展示 + 版本更新检测的比对基准）。
+
+## 4. 改完必须验证
+
+- 微信开发者工具编译通过；覆盖**四态**（加载中/失败/空/有数据）、**弱网**、**图片失败**、
+  **未登录**与**已登录**两条路径。
+- 涉及 UI 时说明在哪些宽度/机型看过；**真机与模拟器不能互相冒充**（未真机验证就写"未验证"）。
+- 涉及接口时对照 `../fastapi/README.md` 的字段与错误码；改接口要同时改后端与两端 README。
+- 部署提醒：只改前端时，用户需要在微信开发者工具**重新编译**；无需后端改动与数据库变更。

@@ -1,0 +1,57 @@
+---
+description: 发版与部署（需要时用 @40-release-deploy 引用）：后端 Termux 重启、自检、小程序上传提审、数据备份与危险操作
+alwaysApply: false
+enabled: true
+updatedAt: 2026-09-22
+---
+
+# 发版与部署（需要时用 `@40-release-deploy` 引用本规则）
+
+## 1. 当前真实部署形态（不要按"标准云服务器"假设）
+
+- 后端跑在**安卓手机 Termux**，目录 `~/storage/shared/fastapi`，无 Docker、无部署脚本、无 CI。
+- 本机实测的启动方式：
+
+  ```bash
+  ssh -p 8022 -i ~/.ssh/id_ed25519 root@<手机IP> \
+    "cd ~/storage/shared/fastapi && setsid nohup uvicorn main:app --host 0.0.0.0 --port 8000 >> server.log 2>&1 < /dev/null &"
+  ```
+
+- 日志：`~/storage/shared/fastapi/server.log`（**无轮转**，注意体积）。
+- 建议给启动命令加 `PYTHONUNBUFFERED=1`：应用日志走 stderr、uvicorn 访问日志走 stdout，
+  不加会因缓冲导致同一个日志文件里**行序错乱**（已实测）。
+- 重启前先确认旧进程：`pkill -9 -f '[p]ython.*uvicorn'`，再 `ps` 核对只剩一个进程。
+- **开机自启：已配置**（Termux:Boot）。脚本 `~/.termux/boot/start-fastapi.sh` 依次是：
+  `termux-wake-lock`（防休眠）→ `sleep 15`（等网络）→ `pgrep -f "uvicorn main:app"`（已在跑就退出）→
+  `cd ~/storage/shared/fastapi && nohup uvicorn main:app --host 0.0.0.0 --port 8000 --reload >> server.log 2>&1 &`。
+  ⚠️ 两点与建议不一致：它带 `--reload`（生产不建议；且文件一改会自动重启，排查时别误判）、没有 `PYTHONUNBUFFERED=1`。
+  改这个脚本属于改用户设备上的文件 —— **先问，再动**。
+- 除开机自启外没有进程守护：进程崩溃后要手动拉起。
+
+## 2. 后端发版顺序
+
+1. 改代码 → 跑 3 个测试脚本（见 `20-fastapi-backend` 规则第 6 节）；
+2. 按需升 `main.py` 的 `APP_VERSION`（**改了静态资源或模板必升**，理由见同规则第 4 节）；
+3. 重启进程（命令见上）；
+4. **自检**：`curl -s http://127.0.0.1:8000/apitest`、`curl -s http://127.0.0.1:8000/health/ready`，
+   并看启动日志里的「当前版本」「接口缓存后端」两行是否如预期。
+
+## 3. 小程序发版顺序
+
+1. 改代码 → 升 `app.js` 的 `APP_VERSION`（与后端 `data.version` 的 `latest` / `min` 节奏配合）；
+2. 微信开发者工具编译 + 真机走查：四态、弱网、图片失败、未登录/已登录两条路径；
+3. **上传** → 设为**体验版**并加体验成员 → 收集问题 → **提审** → 审核通过后在微信公众平台**正式发布**
+   （"上传代码 / 开发版本 / 体验版 / 提交审核 / 正式发布"是五件不同的事，不要混为一谈）；
+4. ⚠️ 后端 `min`（强制更新线）**只能在新包确实发布、用户能更新到之后**才上调，
+   否则老用户会被卡在"必须更新却无包可更"。
+
+## 4. 数据备份与危险操作
+
+- 备份/同步（**默认只读**）：
+  `python tools/sync.py "<source DSN>"`、`python tools/mysql_to_sqlite.py "<source DSN>" --out 备份.db`；
+- 重置后台口令：`python tools/reset_admin_password.py --list` / `--username … --password … --yes`；
+- 昵称口径体检（只读）：`python tools/check_nicknames.py`。
+- 执行前**必须先确认目标与影响**的操作：清库/批量删除、账号彻底删除与恢复、
+  修改 `ADMIN_INIT_PASSWORD`、关闭 `ENABLE_PUBLIC_PROBE`（会让小程序「检测线路」失效）、
+  在生产打开 `ENABLE_SQL_TOOL` / `ENABLE_API_DOCS` / `OBSERVABILITY_ENABLED`、
+  以及任何"改线上数据"的操作。
