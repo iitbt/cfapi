@@ -46,7 +46,7 @@
 | 兼容日期 | `compatibility_date = "2026-10-04"` | `wrangler.toml:5` |
 | Worker 名 | `lyjxxapp-api` | `wrangler.toml:3` |
 | 本地端口 | `8787` | `wrangler.toml:61-62` |
-| 区域要求 | D1 / R2 **必须手动建在亚太（Asia Pacific）**；不能靠 wrangler 自动建（会落西欧且不可改） | `DEPLOY.md:27-32` |
+| 区域要求 | D1 / R2 **必须手动建在亚太（Asia Pacific）**；不能靠 wrangler 自动建（会落西欧且不可改） | `DEPLOY.md`「第 2 步 / 第 3 步」 |
 
 > 没有 KV / Durable Objects / Vectorize 绑定。配置注入方式：明文 `[vars]`（部署时写入）+ 密文 Secrets（`ADMIN_SESSION_SECRET` 等）。
 
