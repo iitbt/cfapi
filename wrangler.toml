@@ -1,0 +1,62 @@
+# Cloudflare 配置(对外 API, 不含管理后台)
+# 命名约定: Worker / Pages = lyjxxapp-api ; D1 = lyjxxapp-d1 ; R2 = lyjxxapp-r2
+name = "lyjxxapp-api"
+main = "main.js"
+compatibility_date = "2026-10-04"
+
+# ==== 资源绑定: 部署时 Cloudflare 按下面这些名字自动挂上 ====
+# ⚠️ 区域(Location)必须先手动建好, **不要**靠"留空 database_id 让 wrangler 自动建库":
+#    自动创建不带 location hint → 落到默认区域(西欧), 而 D1 primary location / R2 location hint
+#    建完就**不可修改**。本项目踩过一次这个坑, 迁移办法见 DEPLOY.md「区域(Location)与资源重建」。
+#    建库/建桶时都要选亚太: wrangler d1 create lyjxxapp-d1 --location apac
+#                          wrangler r2 bucket create lyjxxapp-r2 --location apac
+[[d1_databases]]
+binding = "DB"
+database_name = "lyjxxapp-d1"
+# Database ID 必须回填(本地 d1 execute、d1 export/import、cf_region 迁移全靠它定位库);
+# 取法: wrangler d1 list, 或 node tools/cf_region.mjs report(需 CLOUDFLARE_API_TOKEN), 或控制台 D1 详情页
+# database_id = "<Database ID>"
+
+# R2: 桶名必须是 lyjxxapp-r2, 绑定名固定 STORAGE(代码只从 core/config.js 的 storage 取, 兼容早期的 MEDIA)
+# 同样**不要**靠部署时自动建桶(自动建桶没有 location hint → 默认区域), 先手动建好再部署
+[[r2_buckets]]
+binding = "STORAGE"
+bucket_name = "lyjxxapp-r2"
+
+# ==== 变量(非密文): 部署时随代码一起写进 Cloudflare, 你只改值 ====
+[vars]
+# 素材对外域名(库里只存相对路径, 下发时拼这个前缀)
+# 两种都行: ① R2 公开域(推荐, 不经 Worker); ② Worker 域名(少一个域名, 但吃 Worker 请求额度)
+# 换成 Worker 域名时 /images/* /news_uploads/* /avatar_uploads/* 已由 Worker 直出, 代码不用改
+MEDIA_BASE = "https://storage.250036.xyz"
+# 版本号**不在这里**: 唯一来源是 main.js 的 `API_VERSION`(与旧站 fastapi/main.py 的 APP_VERSION 同位置)
+# 1 = 微信走本地假数据(联调), 0 = 真调 api.weixin.qq.com
+DEV_WECHAT_MOCK = "0"
+# 头像上传大小上限(字节), 与旧站 config.py 默认值一致(20MB)
+UPLOAD_MAX_BYTES = "20971520"
+# 1 = 开放 /apitest 探测接口, 0 = 关闭
+ENABLE_PUBLIC_PROBE = "1"
+# 1 = 开放 /metrics(最小 Prometheus 文本), 0 = 404
+OBSERVABILITY_ENABLED = "0"
+# CORS 白名单(逗号分隔): "*" = 放开(默认, 与迁移前一致); 填域名后只回白名单内的 Origin
+ALLOWED_ORIGINS = "*"
+# 1 = 开放"数据库工具 / 数据库管理"页(默认关, 与旧站 ENABLE_SQL_TOOL 同口径)
+ENABLE_SQL_TOOL = "1"
+# 管理后台(/admin): 管理员账号在 D1 的 admin_users 表(建表见 app/sql/0004_admin.sql),
+# 登录态是 HMAC 签名的 Cookie(与旧站"签名 Cookie 会话"同一套, 无服务端状态)。
+# 会话密钥 ADMIN_SESSION_SECRET 属于密文, 不写在这个文件里 —— 到 Cloudflare 控制台的
+# Variables and Secrets 里加密添加, 或用 wrangler secret put ADMIN_SESSION_SECRET。
+# 没配它时登录页会直接提示"后台未就绪"(不会用默认值放行)。
+
+# ==== 密钥(密文): 不写进仓库 ====
+# 首次或改值时: 编辑 .secrets.json(模板 .secrets.json.example, 已被 gitignore), 然后
+#   npm run secrets:put      # 等价于 wrangler secret bulk .secrets.json
+# 本地开发用 .dev.vars(模板 .dev.vars.example, 已被 gitignore): 只作用于本机 npm run dev
+# 需要三个: WECHAT_APPID、WECHAT_SECRET、ADMIN_SESSION_SECRET; 想临时用假微信登录就把 DEV_WECHAT_MOCK 改成 "1"
+
+# 定时任务: 每天清一次过期的限流计数行(见 main.js 的 scheduled)
+[triggers]
+crons = ["17 3 * * *"]
+
+[dev]
+port = 8787
