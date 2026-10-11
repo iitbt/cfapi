@@ -2,19 +2,21 @@
 description: 项目主规则（所有会话必读）：语言、回答格式、先读源码、最小改动、改动后如何交代与验证
 alwaysApply: true
 enabled: true
-updatedAt: 2026-09-22
+updatedAt: 2026-10-11
 ---
 
 # 项目主规则（狼牙极限运动笔记）
 
 ## 0. 先建立正确认知
 
-- 仓库根：`D:\Users\Administrator\Desktop\开发者\xapp\iitbt`，两个子项目同仓库：
-  - `lyxj/` —— 微信小程序**原生**前端（无构建、无 npm、无 TypeScript）；
-  - `fastapi/` —— 唯一后端（小程序 JSON 接口 + Jinja2 服务端渲染的管理后台）。
+- 仓库根：`e:\微信小程序\狼牙极限运动助手`（多根工作区 `狼牙极限运动助手.code-workspace`），顶层目录（2026-10-11 迁移自 `D:\Users\Administrator\Desktop\开发者\xapp\iitbt`）：
+  - `xapp/` —— 微信小程序**原生**前端（无构建、无 npm、无 TypeScript；历史目录名 `lyjx`/`lyxj`，迁移时更名为 `xapp`）；
+  - `cfapi/`（`E:\微信小程序\狼牙极限运动助手\cfapi`）—— **主后端**（Cloudflare Workers，域名 `https://lyjx.250036.xyz`；目录/命名镜像 `fastapi/`，行为逐项对齐，见其 `README.md` / `DEPLOY.md`）；
+  - `fastapi/`（`E:\微信小程序\狼牙极限运动助手\fastapi`）—— **备用后端**（Termux 手机部署，域名 `https://api0.250036.xyz` / `https://api.250036.xyz`；小程序 JSON 接口 + Jinja2 服务端渲染的管理后台）；
+  - `txt/`（需求与提示词文本）、`素材/`（图片视频素材库，用户手动维护）。
 - 文档分层（写文档前先确认自己在改哪一类，详见 `30-docs-authoring` 规则）：
-  - **当前状态**：根 `README.md`、`fastapi/README.md`、`lyxj/README.md`（必须与代码一致）；
-  - **历史快照**：`优化建议.md`、`lyxj/小程序前端.md`、`fastapi/后端加速.md`（可参考，**以代码为准**）。
+  - **当前状态**：`fastapi/README.md`、`xapp/README.md`、`cfapi/README.md`（必须与代码一致；迁移后暂无根 `README.md`）；
+  - **历史快照**：`fastapi/后端加速.md`、`fastapi/后端管理页面.md` 等（可参考，**以代码为准**）。
 - 用户是本项目所有者，懂部署、运维与排障：**不要用面向初学者的口吻**，直接给结论、依据与代价。
   不要用奖励/讨好式表达，不要把"应该没问题"写成"已验证"。
 

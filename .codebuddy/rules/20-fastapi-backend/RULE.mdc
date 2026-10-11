@@ -1,11 +1,18 @@
 ---
-description: 后端规则（fastapi/）：唯一实现、代码风格、配置与静态资源版本号、数据库自愈链、测试与前后端联动
+description: 后端规则（cfapi/ 主 + fastapi/ 备用）：主备定位与域名、唯一实现、代码风格、配置与静态资源版本号、数据库自愈链、测试与前后端联动
 alwaysApply: true
 enabled: true
-updatedAt: 2026-09-22
+updatedAt: 2026-10-11
 ---
 
-# 后端规则（`fastapi/`）
+# 后端规则（cfapi/ 主 + fastapi/ 备用）
+
+## 0. 主备定位（2026-10-11 用户指定）
+
+- **主后端：`cfapi/`**（`E:\微信小程序\狼牙极限运动助手\cfapi`，Cloudflare Workers），域名 `https://lyjx.250036.xyz`。
+- **备用后端：`fastapi/`**（`E:\微信小程序\狼牙极限运动助手\fastapi`，Termux 手机部署），域名 `https://api0.250036.xyz` / `https://api.250036.xyz`。
+- 两套后端目录/命名同构、对外行为要求逐项一致（对齐细则见 `cfapi/notes/structure-map.md`）；
+  下面各节的目录结构（`app/core`、`app/api`、`app/admin`…）两套通用，**Python/FastAPI 特有的机制条目（第 3~5 节）只适用于 `fastapi/`**，`cfapi/` 侧的对应机制以 `cfapi/README.md`、`cfapi/DEPLOY.md` 为准。
 
 ## 1. 技术栈与结构
 
@@ -58,9 +65,9 @@ updatedAt: 2026-09-22
 cd fastapi
 python tests/smoke_test.py          # 全量冒烟（临时 SQLite，不连外网）
 python tests/optimized_check.py     # 可观测性与防护（必须与 smoke 分开进程运行）
-python tests/review_guard_test.py   # 审查加固项；指定 LYXJ_DIR=<lyxj 路径> 可连带扫前端域名单点
+python tests/review_guard_test.py   # 审查加固项；指定 LYXJ_DIR=<xapp 路径>（自动定位只认 lyjx/lyxj 旧名） 可连带扫前端域名单点
 ```
 
 - 用例数是"快照"不是契约；**没跑就说没跑**，不要把"应该没问题"写成"已验证"。
 - 与小程序有关的约定（昵称后缀、注销行为、公告已读、图标路径、接口字段）改动时，
-  **必须同一批改 `lyxj/` 侧与两端 README**；接口清单要与实际注册的路由一致。
+  **必须同一批改 `xapp/` 侧与两端 README**；接口清单要与实际注册的路由一致。

@@ -1,11 +1,11 @@
 ---
-description: 小程序前端规则（lyxj/）：技术栈硬约束、单点维护、硬约定、改完必须验证什么
+description: 小程序前端规则（xapp/）：技术栈硬约束、单点维护、硬约定、改完必须验证什么
 alwaysApply: true
 enabled: true
-updatedAt: 2026-09-22
+updatedAt: 2026-10-11
 ---
 
-# 小程序前端规则（`lyxj/`）
+# 小程序前端规则（`xapp/`；历史目录名 `lyjx`/`lyxj`，2026-10 迁移时更名）
 
 ## 1. 技术栈硬约束（不许违反）
 
