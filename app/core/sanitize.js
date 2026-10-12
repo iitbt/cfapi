@@ -45,8 +45,13 @@ export function sanitizeHtml(input) {
   return text;
 }
 
-// 正文里的图片改写成绝对地址(库里存的是相对路径)
-export function absolutizeImages(env, htmlText) {
-  return String(htmlText || '').replace(/(<img[^>]+src=["'])([^"']+)(["'])/gi,
-    (all, head, src, tail) => head + assetUrl(env, src) + tail);
+// 正文里的图片与视频封面改写成绝对地址(库里存的是相对路径)
+// 视频封面也要改: <wx-video> 的 poster 与 <img src> 一样存的是库内相对路径, 只补图片不补封面时,
+// 小程序拿到的是站内相对地址 → 封面加载不出来, 未播放的视频又退回一片纯黑
+export function absolutizeMedia(env, htmlText) {
+  return String(htmlText || '')
+    .replace(/(<img[^>]+src=["'])([^"']+)(["'])/gi,
+      (all, head, src, tail) => head + assetUrl(env, src) + tail)
+    .replace(/(<(?:wx-video|video)[^>]+poster=["'])([^"']+)(["'])/gi,
+      (all, head, poster, tail) => head + assetUrl(env, poster) + tail);
 }

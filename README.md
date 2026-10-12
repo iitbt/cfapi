@@ -1,6 +1,6 @@
 # 狼牙极限运动笔记 · 主后端（cfapi / Cloudflare Workers）
 
-> **版本**：`v2.4.6` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
+> **版本**：`v2.4.7` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
 > **主域名**：**https://lyjx.250036.xyz**（对外 API + `/admin` 管理后台同一域名）。
 > **素材域名**：**https://storage.250036.xyz**（R2 公开域，与接口域名分离）。
 > **定位**：微信小程序「狼牙极限运动笔记」的**主要后端**。今后小程序的开发、接口变更、联调、发版均以本工程为准；FastAPI 工程（`../fastapi/`）为**备用后端**。
@@ -138,7 +138,7 @@ cfapi/
 | `media_scheme.js` | 素材地址拼装 `assetUrl`/`iconAssetUrl`/`putObject` |
 | `timeutil.js` | 全站东八区时间口径 |
 | `wechat.js` | 微信 `code2session` / `access_token` 缓存（D1）/ 昵称安全送审 |
-| `sanitize.js` | 富文本白名单净化 + 图片改绝对地址 |
+| `sanitize.js` | 富文本白名单净化 + 图片与视频封面改绝对地址 |
 | `overview.js` | 表行数 / 核心计数唯一实现（须排除 D1 内部表，逐表 COUNT） |
 | `favicon.js` | 站点图标内联字节（约 65KB 生成物，按需解码直出） |
 
@@ -209,7 +209,7 @@ cfapi/
 
 ### 6.6 `tests/` `tools/` `notes/` `out/`
 
-- **`tests/`**：`*.test.mjs`（约 142 条用例，`node --test`，桩模拟 D1/R2），含 `api_contract`/`api_reads`/`api_writes`、`admin_*`、`unit`、`stub` 等。
+- **`tests/`**：`*.test.mjs`（约 256 条用例，`node --test`，桩模拟 D1/R2），含 `api_contract`/`api_reads`/`api_writes`、`admin_*`、`unit`、`stub` 等。
 - **`tools/`**：`diff_api.mjs`（新旧站 JSON 对拍）、`live_smoke.mjs`（真实数据端到端冒烟）、`cf_region.mjs`（R2/D1 区域迁移）、`embed_admin_assets.mjs`（打包静态资源）、`embed_favicon.mjs`（内联 favicon）、`export_sqlite.py`（旧库导出 seed）、`split_sql.py`（SQL 拆块便于控制台粘贴）、`verify_counts.py`（行数校验）、`media_to_r2.md`（素材搬 R2 说明）。
 - **`notes/`**：`api-inventory.md`（对外接口台账）、`structure-map.md`（fastapi↔cfapi 结构与机制对照）、`limits-design.md`（限流方案）、`ops-sql.md`（运营改数 SQL）。
 - **`out/`**：**生成物**（已被 `.gitignore` 忽略）：`seed.sql`（全量数据）+ 拆块 `schema/`、`seed/`、`schema-big/`、`seed-big/`，供控制台逐块粘贴建表/导数据。
@@ -305,7 +305,7 @@ cfapi/
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | GET | `/news/list` | 列表（无 `page` 返回数组；已审核、未删除） |
-| GET | `/news/detail` | 详情（含作者 / 点赞收藏等状态、浏览量自增、富文本净化） |
+| GET | `/news/detail` | 详情（含作者 / 点赞收藏等状态、浏览量自增、富文本净化；正文图片与视频封面 `poster` 都转绝对地址，供小程序未播放时显示封面） |
 | POST | `/news/like` `/news/favorite` | 点赞 / 收藏（带限流，内部测试免审） |
 | POST | `/news/share` | 分享计数（可游客） |
 | POST | `/news/add_comment` | 留言（≤500 字，内部测试免审） |
@@ -334,7 +334,7 @@ cfapi/
 | --- | --- | --- |
 | 技术栈 | Cloudflare Workers + D1 + R2，零运行时依赖 | Python + FastAPI + SQLite/MySQL（双驱动） |
 | 域名 | `lyjx.250036.xyz` | `api0.250036.xyz`、`api.250036.xyz` |
-| 版本号 | `API_VERSION=2.4.6` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.3.4`） |
+| 版本号 | `API_VERSION=2.4.7` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.4.0`） |
 | 接口 | 33 条业务接口已全量实现并自测 | 历史「唯一后端」，接口同构可互切 |
 | 后台 | 17 页面（字符串拼 HTML） | 同样 17+ 模块（Jinja2 服务端渲染） |
 | 口令哈希 | PBKDF2-SHA256（Workers CPU 限制，不用 bcrypt） | bcrypt |

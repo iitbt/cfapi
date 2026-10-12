@@ -4,7 +4,7 @@ import { all, idList, intOf, one, run, str } from '../core/db.js';
 import { assetUrl } from '../core/media_scheme.js';
 import { AUTH_MESSAGES, currentUser, identity, tokenOf } from './helpers.js';
 import { MAX_BATCH_NEWS_IDS, MAX_COMMENT_LENGTH, PAGE_MAX, clampPage } from './schemas.js';
-import { absolutizeImages, sanitizeHtml } from '../core/sanitize.js';
+import { absolutizeMedia, sanitizeHtml } from '../core/sanitize.js';
 import { beijingNow } from '../core/timeutil.js';
 import { QUOTAS, checkQuota, quotaStatement, userKey } from '../core/ratelimit.js';
 
@@ -113,7 +113,7 @@ export function registerNewsRoutes(router) {
       delete data.author_nickname;
       if (data.image) data.image = assetUrl(env, data.image);
       if (data.video_url) data.video_url = assetUrl(env, data.video_url);
-      data.content = absolutizeImages(env, sanitizeHtml(data.content));
+      data.content = absolutizeMedia(env, sanitizeHtml(data.content));
 
       // 作者信息: 三种情况与旧站一致(含 is_admin 键不出现的情况)
       if (authorId && item.author) {

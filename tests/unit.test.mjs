@@ -8,7 +8,7 @@ import { beijingNow, datePart, nowEpoch, toEpoch, windowStart } from '../app/cor
 import { assetUrl, iconAssetUrl } from '../app/core/media_scheme.js';
 import { checkObjectKey, isRootTreePath, listNewsMedia, listUnder, normRel, relPathsIn } from '../app/core/storage.js';
 import { safeRelPath, safeTargetDir, saveUpload } from '../app/admin/lib/mediaUpload.js';
-import { sanitizeHtml } from '../app/core/sanitize.js';
+import { absolutizeMedia, sanitizeHtml } from '../app/core/sanitize.js';
 import { QUOTAS } from '../app/core/ratelimit.js';
 import { redactText } from '../app/core/logging.js';
 import { makeAdminEnv } from './admin_stub.mjs';
@@ -344,6 +344,18 @@ test('富文本净化: 去脚本/事件属性/危险协议, 保留白名单标�
   assert.ok(!clean.includes('javascript:'));
   assert.ok(clean.includes('<p>正常</p>'));
   assert.ok(clean.includes('<img src="a.png">'));
+});
+
+test('正文媒体改绝对地址: 图片 src 与视频封面 poster 都要拼上媒体域', () => {
+  const env = { MEDIA_BASE: 'https://storage.250036.xyz/' };
+  const html = sanitizeHtml('<p><img src="news_uploads/a.png"></p>'
+    + '<wx-video src="video/v.mp4" poster="news_uploads/cover.jpg" controls="true"></wx-video>');
+  const out = absolutizeMedia(env, html);
+  assert.ok(out.includes('src="https://storage.250036.xyz/news_uploads/a.png"'), out);
+  // 只补图片不补封面 → 小程序拿到站内相对地址, 未播放的视频会退回一片纯黑
+  assert.ok(out.includes('poster="https://storage.250036.xyz/news_uploads/cover.jpg"'), out);
+  // 视频自身的 src 与之前一样保持原样下发(小程序侧统一走 normalizeRemoteUrl), 这里顺带钉住, 免得以后误改口径
+  assert.ok(out.includes('src="video/v.mp4"'), out);
 });
 
 test('路由表就是计划里的 33 条对外接口(静态页不计入)', () => {
