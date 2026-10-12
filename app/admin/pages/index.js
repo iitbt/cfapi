@@ -20,8 +20,12 @@ import { routes as settingsRoutes } from './settings.js';
 import { routes as systemInfoRoutes } from './systemInfo.js';
 import { routes as topicRoutes } from './topics.js';
 import { routes as userRoutes } from './users.js';
+import { DASHBOARD_PATH } from '../lib/guard.js';
+import { dashboardPage } from '../routes.js';
 
 export const PAGE_ROUTES = [
+  // 控制面板也放进这张表(2.4.9): 以前它在 index.js 里另有一条分支, 找页面要翻两处
+  { methods: ['GET', 'HEAD'], path: DASHBOARD_PATH, handler: dashboardPage },
   ...bannerRoutes,
   ...noticeRoutes,
   ...categoryRoutes,

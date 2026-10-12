@@ -1,6 +1,6 @@
 # 狼牙极限运动笔记 · 主后端（cfapi / Cloudflare Workers）
 
-> **版本**：`v2.4.8` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
+> **版本**：`v2.4.9` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
 > **主域名**：**https://lyjx.250036.xyz**（对外 API + `/admin` 管理后台同一域名）。
 > **素材域名**：**https://storage.250036.xyz**（R2 公开域，与接口域名分离）。
 > **定位**：微信小程序「狼牙极限运动笔记」的**主要后端**。今后小程序的开发、接口变更、联调、发版均以本工程为准；FastAPI 工程（`../fastapi/`）为**备用后端**。
@@ -149,7 +149,7 @@ cfapi/
 
 | 文件 | 职责 |
 | --- | --- |
-| `index.js` | 后台总分发：静态资源 / 登录态 / 写权限拦截 / 页面路由表 `PAGE_ROUTES` |
+| `index.js` | 后台总分发：静态资源（生成物直出，未命中的大件从 R2 取）/ 登录态 / 写权限拦截（含来源校验）/ 页面路由表 `PAGE_ROUTES`；**每笔写请求留一条 `admin.write` 审计**（操作人 + IP/UA + 路径 + 结果） |
 | `routes.js` | 控制面板 `dashboardPage`（13 卡+2 趋势+3 最新列表）+ 待迁占位页 `pendingPage` |
 | `routes/auth.js` | 登录 / 登出 / 首次初始化（签名 Cookie 会话；未配密钥显示「后台未就绪」） |
 
@@ -157,10 +157,11 @@ cfapi/
 
 | 文件 | 职责 |
 | --- | --- |
-| `session.js` | `admin_session` Cookie 的 HMAC-SHA256 签名与会话读写（无服务端状态） |
-| `password.js` | 管理员口令 `PBKDF2-SHA256`（10000 轮，因 Workers CPU 限制不用 bcrypt） |
-| `guard.js` | 访问控制常量 + `currentAdmin` |
-| `auth-store.js` | `admin_users` 表读写 |
+| `session.js` | `admin_session` Cookie 的 HMAC-SHA256 签名与会话读写（**无服务端状态但每次回查库**：改密/降权/删号后旧 Cookie 立刻失效；D1 不可用时退回"只信签名"，免得库一抖就把人踢到登录页） |
+| `password.js` | 管理员口令 `PBKDF2-SHA256`（10000 轮 —— 实测每万轮约 9.6ms，已接近免费套餐 10ms CPU 上限，不再往上提；改用可选 `ADMIN_PASSWORD_PEPPER` 提升离线爆破成本，并在登录成功后按当前参数自动重哈希升级） |
+| `guard.js` | 访问控制常量 + `currentAdmin` + 写请求来源校验 `writeOriginAllowed` |
+| `auth-store.js` | `admin_users` 表读写（含按 id 取数与写回新口令哈希） |
+| `http.js` | `json` / `redirect` 的**唯一实现**（以前散在十几个页面模块里各写一份） |
 | `nav.js` | 侧栏菜单唯一来源 `NAV_GROUPS` + `migrationProgress()` |
 | `entities.js` | 实体注册表 + 后台写权限四份清单 + `classifyWritePath` |
 | `catalog.js` | 目录 / 文案 / 菜单常量唯一来源（同旧站 `catalog.py`） |
@@ -172,8 +173,8 @@ cfapi/
 | `mediaUpload.js` | 上传（写 R2，不生成缩略图）+ 素材库列举 |
 | `newsContent.js` | 富文本 `<wx-video>`↔`<video>` 转换 + 摘要生成 |
 | `partials.js` | 后台页面「宏」唯一实现 |
-| `status.js` | 后台「状态切换」注册表 |
-| `utils.js` | 后台通用小工具（分页 / 审计 / 缓存失效 / 幂等键） |
+| `status.js` | 后台「状态切换」注册表 + 行内徽章/启停按钮的唯一渲染入口 `statusCell`/`statusButtons` |
+| `utils.js` | 后台通用小工具（分页 / 审计 / 幂等键 / `positiveId`；`invalidateEntityCache` 是**预留的空实现** —— 当前接口层没有缓存） |
 | `base64url.js` | base64url 编解码 |
 
 `pages/`（17 个后台页面模块，各导出 `routes` 合并进 `PAGE_ROUTES`）：
@@ -203,14 +204,16 @@ cfapi/
 
 | 文件 | 职责 |
 | --- | --- |
-| `0001_schema.sql` | 18 张业务表建表 + 索引（来自旧库真实 DDL） |
+| `0001_schema.sql` | 18 张业务表建表 + 索引（来自旧库真实 DDL；2.4.9 起热点列补 `NOT NULL` 默认值，**只影响新建库**） |
 | `0002_rate_limit.sql` | `rate_limit_counters` 限流计数表（新站新增） |
 | `0003_wechat_token.sql` | `wechat_tokens` access_token 缓存表（新站新增） |
 | `0004_admin.sql` | `admin_users` 管理员账号表（首启 `/admin/bootstrap` 建超管） |
+| `0005_drop_redundant_indexes.sql` | 冗余索引清理（幂等；老库与新建库都跑一次） |
+| `0006_news_notnull_rebuild.sql` | **老库专用**：重建 news 与三张关联表以收紧约束（会重建表，执行前必须备份，见文件头） |
 
 ### 6.6 `tests/` `tools/` `notes/` `out/`
 
-- **`tests/`**：`*.test.mjs`（约 256 条用例，`node --test`，桩模拟 D1/R2），含 `api_contract`/`api_reads`/`api_writes`、`admin_*`、`unit`、`stub` 等。
+- **`tests/`**：`*.test.mjs`（约 279 条用例，`node --test`，桩模拟 D1/R2），含 `api_contract`/`api_reads`/`api_writes`、`admin_*`、`unit`、`sql_migrations`（用真实 SQLite 跑迁移脚本）、`stub` 等。
 - **`tools/`**：`diff_api.mjs`（新旧站 JSON 对拍）、`live_smoke.mjs`（真实数据端到端冒烟）、`cf_region.mjs`（R2/D1 区域迁移）、`embed_admin_assets.mjs`（打包静态资源）、`embed_favicon.mjs`（内联 favicon）、`export_sqlite.py`（旧库导出 seed）、`split_sql.py`（SQL 拆块便于控制台粘贴）、`verify_counts.py`（行数校验）、`media_to_r2.md`（素材搬 R2 说明）。
 - **`notes/`**：`api-inventory.md`（对外接口台账）、`structure-map.md`（fastapi↔cfapi 结构与机制对照）、`limits-design.md`（限流方案）、`ops-sql.md`（运营改数 SQL）。
 - **`out/`**：**生成物**（已被 `.gitignore` 忽略）：`seed.sql`（全量数据）+ 拆块 `schema/`、`seed/`、`schema-big/`、`seed-big/`，供控制台逐块粘贴建表/导数据。
@@ -256,8 +259,8 @@ cfapi/
 | `UPLOAD_MAX_BYTES` | `"20971520"` | 头像上传上限 20MB |
 | `ENABLE_PUBLIC_PROBE` | `"1"` | `1`=开放 `/apitest` 探测 |
 | `OBSERVABILITY_ENABLED` | `"0"` | `1`=开放 `/metrics` |
-| `ALLOWED_ORIGINS` | `"*"` | CORS 白名单，`*`=放开 |
-| `ENABLE_SQL_TOOL` | `"0"`（文件内默认） | `1`=开放数据库工具 / 素材库管理页（默认关） |
+| `ALLOWED_ORIGINS` | `https://lyjx.250036.xyz` | CORS 白名单（逗号分隔）；留空或 `*` = 放开。同源访问不需要 CORS 头，所以收窄不影响后台与状态页 |
+| `ENABLE_SQL_TOOL` | `"0"` | `1`=开放数据库工具 / 素材库管理页；**出厂 0**，要用临时改，用完改回 |
 | `SITE_NAME` / `SITE_SHORT` | 狼牙极限运动笔记 / 狼牙极限 | 后台标题 / 登录页 / 图标 alt |
 
 **密文 Secrets（`.secrets.json` / `.dev.vars`，不入库）**：
@@ -267,6 +270,7 @@ cfapi/
 | `WECHAT_APPID` | 小程序 AppID（与 `xapp/project.config.json` 一致：`wxe05d1286861259e7`） |
 | `WECHAT_SECRET` | 小程序 AppSecret |
 | `ADMIN_SESSION_SECRET` | 后台会话 HMAC 签名密钥（32+ 位随机字符；不配则登录页显示「后台未就绪」，不用默认值放行） |
+| `ADMIN_PASSWORD_PEPPER`（可选） | 口令 pepper：配了就与口令拼在一起派生，拿到库也爆不动；**配了之后不能删** —— 删掉后已升级成带 pepper 的账号都验不过，只能到 D1 控制台重置口令 |
 
 > `.gitignore` 已忽略 `.secrets.json`、`.dev.vars`、`out/`、`node_modules/`、`.wrangler/`、`notes/`。
 
@@ -335,18 +339,18 @@ cfapi/
 | --- | --- | --- |
 | 技术栈 | Cloudflare Workers + D1 + R2，零运行时依赖 | Python + FastAPI + SQLite/MySQL（双驱动） |
 | 域名 | `lyjx.250036.xyz` | `api0.250036.xyz`、`api.250036.xyz` |
-| 版本号 | `API_VERSION=2.4.8` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.4.0`） |
+| 版本号 | `API_VERSION=2.4.9` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.4.0`） |
 | 接口 | 33 条业务接口已全量实现并自测 | 历史「唯一后端」，接口同构可互切 |
 | 后台 | 17 页面（字符串拼 HTML） | 同样 17+ 模块（Jinja2 服务端渲染） |
 | 口令哈希 | PBKDF2-SHA256（Workers CPU 限制，不用 bcrypt） | bcrypt |
 | 缩略图 | 整体移除（2.4.0 起） | 保留（Pillow 压缩/缩略图） |
-| 缓存 | 无进程内缓存（替代旧站 SharedCache） | 进程内 memory / 可选 redis |
+| 缓存 | 无进程内缓存（替代旧站 SharedCache）；`lib/utils.js` 的 `invalidateEntityCache` 是**预留入口**（当前什么也不做，将来上 Cache API 只改这一处） | 进程内 memory / 可选 redis |
 | 限流 | D1 计数表 + Cron 清理 | 内存桶 + 登录限速 |
 | 媒体 | R2（公开域 `storage.250036.xyz`） | 本地目录 `avatar_uploads/`/`news_uploads/` |
 
 **已知实现差异（接口层面已尽量对齐，但实现机制不同）**：
 
-1. 口令哈希 bcrypt → **PBKDF2-SHA256**（Workers 免费套餐 CPU 仅 10ms/请求，bcrypt 会 Error 1102）。
+1. 口令哈希 bcrypt → **PBKDF2-SHA256**（Workers 免费套餐 CPU 仅 10ms/请求，bcrypt 会 Error 1102）；迭代数保持 10000 并用可选 pepper 补强度（见 `lib/password.js` 顶部注释）。
 2. 缩略图整体移除（接口/前端引用全删）；存量 `_thumb/` 对象清理**待确认**（见 `tools/media_to_r2.md`）。
 3. 无进程内缓存；限流改 D1 计数表 + Cron 清理；模板 Jinja2 → 字符串拼 HTML；access_token 缓存改存 D1（`wechat_tokens`）；gzip 交 Cloudflare 边缘。
 4. 表行数统计必须排除 D1 内部表（`sqlite_%`/`_cf_%`/`d1_migrations`），且用 `batch()` 逐表 COUNT（旧站一条 `UNION ALL` 在 D1 上会失败）。

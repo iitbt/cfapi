@@ -14,8 +14,9 @@ import {
 } from '../lib/partials.js';
 import { statusActions, statusBadgeClass, statusKind, statusLabel } from '../lib/status.js';
 import {
-  CONTROLLED_LIST_LIMIT, auditLog, buildListUrl, intOr, invalidateEntityCache, strOf
+  CONTROLLED_LIST_LIMIT, auditLog, buildListUrl, intOr, invalidateEntityCache, positiveId, strOf
 } from '../lib/utils.js';
+import { redirect } from '../lib/http.js';
 
 const MANAGE_URL = '/admin/app_menu_manage';
 const COLUMNS = ['菜单标识', '图标', '标题', '跳转目标', '可见性', '排序', '状态', '操作'];
@@ -139,9 +140,6 @@ async function managePage(ctx) {
   });
 }
 
-function redirect(location) {
-  return new Response(null, { status: 302, headers: { location } });
-}
 
 async function keyExists(env, menuKey, rowId) {
   try {
@@ -281,7 +279,7 @@ function editView(ctx, { isNew, row, error, errorField }) {
 
 async function deleteSubmit(ctx) {
   const rawId = ctx.form.id;
-  if (!rawId || !/^\d+$/.test(String(rawId).replace('-', ''))) {
+  if (!positiveId(rawId)) {
     return redirect(buildListUrl(MANAGE_URL, { error: '参数错误' }));
   }
   let message = '';

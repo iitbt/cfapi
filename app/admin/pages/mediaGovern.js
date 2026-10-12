@@ -43,6 +43,7 @@ import {
   pagerScript, searchBar, searchInput, searchSelect, selectField, textField
 } from '../lib/partials.js';
 import { PER_PAGE, auditLog, fmtDatetime, strOf, urlenc } from '../lib/utils.js';
+import { json, redirect } from '../lib/http.js';
 
 const LIST_URL = '/admin/media_manage';
 const DELETE_URL = '/admin/media_manage_delete';
@@ -99,13 +100,6 @@ const OTHER_REF_SOURCES = [
   ['app_menu_items', 'icon', '我的页菜单图标']
 ];
 
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json; charset=utf-8' }
-  });
-}
-
 function redirectTo(url) {
   return new Response(null, { status: 302, headers: { location: url } });
 }
@@ -128,12 +122,19 @@ function backWith(back, params) {
   return `${back}${joiner}${search.toString()}`;
 }
 
+//: 粗筛的取行上限: 命中上限只说明"可能没扫全", 必须按没扫全处理(拒绝删除/改名), 不能当成"没被引用"
+const REF_SCAN_LIMIT = 2000;
+const OTHER_REF_SCAN_LIMIT = 500;
+
 /**
  * 全库引用扫描 —— **唯一判定实现**(列表列 /「查看引用」/ 删除前复查三处共用)。
  * only 传入时只保留这批路径(列表页用, 免得为几百条素材攒无用条目)。
+ * 返回 { ok, refs, truncated }: ok=false 表示**没扫全**(有一条查询失败, 或命中取行上限) ——
+ * 把"扫不到"当成"没被引用"就会删掉仍在使用的素材(2026-10-07 线上事故), 所以调用方必须据 ok 拒绝破坏性操作。
  */
 export async function scanReferences(env, only = null) {
   const hits = {};
+  let failed = false;
   const keep = only ? new Set(only) : null;
   // 根目录那一块的记录值(裸文件名或根下自定义目录里的路径)没有"前缀"可筛, 只能按候选名单精确命中;
   // 只收图片/视频(站内资源如 assets/app.js 笔记引用不到, 收进来只会多匹配)
@@ -170,9 +171,11 @@ export async function scanReferences(env, only = null) {
     }
     return { sql: `(${parts.join(' OR ')})`, args };
   }
-  // 查询失败要能在日志里看见(静默 catch 正是上面的“零命中”藏了两周的原因)
+  // 查询失败要能在日志里看见(静默 catch 正是上面的“零命中”藏了两周的原因); 同时记 failed,
+  // 让调用方知道"这次没扫全", 而不是拿着半份结果去删素材
   const softFail = (what) => (error) => {
     console.error('引用扫描失败', what, error && error.message);
+    failed = true;
     return [];
   };
 
@@ -181,15 +184,18 @@ export async function scanReferences(env, only = null) {
   const jobs = [
     all(env,
       'SELECT id,title,image,video_url,content,deleted_at FROM news '
-      + `WHERE ${newsGroups.map((group) => group.sql).join(' OR ')} LIMIT 2000`,
+      + `WHERE ${newsGroups.map((group) => group.sql).join(' OR ')} LIMIT ${REF_SCAN_LIMIT}`,
       ...newsGroups.flatMap((group) => group.args)).catch(softFail('笔记'))
   ].concat(OTHER_REF_SOURCES.map(([table, column, label]) => {
     const group = likeGroup(`"${column}"`);
     return all(env,
-      `SELECT id, "${column}" AS value FROM "${table}" WHERE ${group.sql} LIMIT 500`,
+      `SELECT id, "${column}" AS value FROM "${table}" WHERE ${group.sql} LIMIT ${OTHER_REF_SCAN_LIMIT}`,
       ...group.args).catch(softFail(label));
   }));
   const [newsRows, ...otherRows] = await Promise.all(jobs);
+  // 命中上限说明"可能还有更多没取回来" —— 与查询失败一样算没扫全
+  const truncated = newsRows.length >= REF_SCAN_LIMIT
+    || otherRows.some((rows) => rows.length >= OTHER_REF_SCAN_LIMIT);
 
   // 笔记: 三个来源列一起看(deleted_at 两种状态都算 —— 回收站里的笔记同样算引用)
   for (const row of newsRows) {
@@ -201,7 +207,7 @@ export async function scanReferences(env, only = null) {
   OTHER_REF_SOURCES.forEach(([, , label], index) => {
     for (const row of otherRows[index] || []) record(row.value, label, row.id, '', false);
   });
-  return hits;
+  return { ok: !failed && !truncated, refs: hits, truncated };
 }
 
 function sortItems(items, sort) {
@@ -227,16 +233,33 @@ function jsonOrForm(ctx) {
 }
 
 /**
- * 批量参数解析(2.4.6 泛化到**任意对象键**): `paths` 是逗号列表(URL 与表单都只用这一个字段 ——
- * ctx.query/ctx.form 都是普通对象, 重复键会被覆盖), 每个键都过一遍 checkObjectKey(不合法就丢掉)。
+ * 批量参数解析: `paths` 是 **JSON 数组**。
+ * 为什么不用逗号分隔: 对象键里允许逗号, `image/a,b.png` 会被拆成两个键 —— 那就删错对象了。
+ * 解析不出来就回空数组(调用方按"参数错误"处理), 绝不"尽力而为"地拆。
  */
-function keysOf(raw) {
+function keysOf(rawPaths) {
+  const text = strOf(rawPaths);
+  if (!text) return [];
+  let parsed = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    console.error('批量对象键不是合法 JSON, 已拒绝:', text.slice(0, 120));
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
   const list = [];
-  for (const piece of String(raw || '').split(',')) {
-    const checked = checkObjectKey(piece.trim());
+  for (const piece of parsed) {
+    const checked = checkObjectKey(piece);
     if (checked.ok && !list.includes(checked.key)) list.push(checked.key);
   }
   return list;
+}
+
+/** 单条路径(旧地址 ?path= / 行内删除链接) → [键](不合法回空数组)。 */
+function singleKeys(rawPath) {
+  const checked = checkObjectKey(strOf(rawPath));
+  return checked.ok ? [checked.key] : [];
 }
 
 /** 对象键的父目录(带尾斜杠; 桶根返回空串)。 */
@@ -296,9 +319,18 @@ function mbOf(bytes) {
   return `${Math.floor(Number(bytes) / 1024 / 1024)} MB`;
 }
 
-/** 引用明细区块(详情页与改名确认页共用): 逐条给出中文来源 + 跳转, 笔记直接链到编辑页。 */
-function refsBlock(refs) {
-  if (!refs.length) return '<div class="alert alert-success py-2 mb-0">没有任何引用，可以安全改名或删除。</div>';
+/**
+ * 引用明细区块(详情页与改名确认页共用): 逐条给出中文来源 + 跳转, 笔记直接链到编辑页。
+ * ok=false 表示这次扫描没扫全(见 scanReferences 的返回值): 必须先警告"结果可能不全", 不能说"没有任何引用"。
+ */
+function refsBlock(refs, ok = true) {
+  const incomplete = ok
+    ? ''
+    : '<div class="alert alert-warning py-2">引用扫描未完成（查询失败或超出取行上限），下面只是已扫到的部分；'
+      + '改名与删除都会被拒绝，请稍后重试。</div>';
+  if (!refs.length) {
+    return ok ? '<div class="alert alert-success py-2 mb-0">没有任何引用，可以安全改名或删除。</div>' : incomplete;
+  }
   const rows = refs.map((ref) => {
     const link = ref.source.startsWith('笔记')
       ? `<a href="/admin/news_edit?id=${encodeURIComponent(ref.id)}" target="_blank" rel="noopener">笔记 #${escapeHtml(ref.id)}</a>`
@@ -306,9 +338,12 @@ function refsBlock(refs) {
     return `<li>${escapeHtml(ref.source)} ${link}${ref.title ? ` · ${escapeHtml(ref.title)}` : ''}`
       + `${ref.recycle ? ' <span class="badge text-bg-warning">回收站</span>' : ''}</li>`;
   }).join('');
-  return `<div class="alert alert-warning py-2">这个素材被 <b>${refs.length}</b> 处引用（含回收站）：</div>
+  return `${incomplete}<div class="alert alert-warning py-2">这个素材被 <b>${refs.length}</b> 处引用（含回收站）：</div>
     <ul class="mb-0">${rows}</ul>`;
 }
+
+//: 引用扫描没扫全时的统一拒绝文案(确认页与提交处共用, 免得两处口径不一致)
+const REF_SCAN_INCOMPLETE = '引用扫描未完成（查询失败或超出取行上限），已拒绝本次操作，请稍后重试';
 
 /**
  * 上传卡片(2.4.1 拆分入口 + 2.4.2 文案与目录保留):
@@ -653,7 +688,8 @@ const PAGE_SCRIPT = `<script>
     }
     function refresh() {
       var list = picked();
-      if (hidden) hidden.value = list.join(',');
+      // 服务端按 JSON 数组解析 paths: 键名里允许逗号, 用逗号拼会拆错(见 keysOf)
+      if (hidden) hidden.value = JSON.stringify(list);
       if (countEl) countEl.textContent = '已选 ' + list.length + ' 个' + (list.length > BATCH_MAX ? '（一次最多 ' + BATCH_MAX + ' 个）' : '');
       if (button) button.disabled = list.length === 0 || list.length > BATCH_MAX;
     }
@@ -699,17 +735,27 @@ async function browseQuery(ctx) {
   // 浏览 avatar/、站点资源这类目录时不做引用扫描(白花 9 条 D1 查询)
   const mediaish = files.some((one) => isMediaKey(one.key));
   let refs = {};
-  if (mediaish && ref) refs = await scanReferences(ctx.env, files.map((one) => one.key));
+  let refsOk = true;
+  if (mediaish && ref) {
+    const scan = await scanReferences(ctx.env, files.map((one) => one.key));
+    refs = scan.refs;
+    refsOk = scan.ok;
+  }
   const sorted = sortFiles(files, sort);
-  const filtered = ref
+  // 没扫全时不做"已引用/未引用"筛选: 那会把整层都当成"未引用", 比不筛更误导
+  const filtered = ref && refsOk
     ? sorted.filter((one) => (ref === 'used' ? (refs[one.key] || []).length > 0 : (refs[one.key] || []).length === 0))
     : sorted;
   const totalPages = Math.max(1, Math.ceil(filtered.length / PER_PAGE));
   const page = Math.min(wantsPage, totalPages);
   const pageItems = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE);
-  if (mediaish && !ref) refs = await scanReferences(ctx.env, pageItems.map((one) => one.key));
+  if (mediaish && !ref) {
+    const scan = await scanReferences(ctx.env, pageItems.map((one) => one.key));
+    refs = scan.refs;
+    refsOk = scan.ok;
+  }
   return {
-    prefix, q, kind, sort, ref, folders: level.folders, filtered, totalPages, page, pageItems, refs,
+    prefix, q, kind, sort, ref, folders: level.folders, filtered, totalPages, page, pageItems, refs, refsOk,
     truncated: level.truncated, levelCount: level.objects.length, mediaish,
     base: String(settings(ctx.env).mediaBase || '').replace(/\/+$/, ''),
     currentUrl: ctx.url.pathname + ctx.url.search
@@ -724,9 +770,12 @@ function levelRows(files, data) {
     const kind = kindOfFile(item.key);
     const refCell = !data.mediaish
       ? '<span class="text-muted">—</span>'
-      : (itemRefs.length
-        ? `<a href="${REFS_URL}?path=${urlenc(item.key)}" target="_blank" rel="noopener">${itemRefs.length} 处</a>${recycle ? ' <span class="badge text-bg-warning">含回收站</span>' : ''}`
-        : '<span class="text-muted">未引用</span>');
+      : (data.refsOk === false
+        // 没扫全时不敢说"未引用": 说"未引用"会让人放心去删, 而删除入口自己还会再复查一次(那里会直接拒绝)
+        ? '<span class="text-muted" title="引用扫描未完成（查询失败或超出取行上限），这次不做引用判断">扫描未完成</span>'
+        : (itemRefs.length
+          ? `<a href="${REFS_URL}?path=${urlenc(item.key)}" target="_blank" rel="noopener">${itemRefs.length} 处</a>${recycle ? ' <span class="badge text-bg-warning">含回收站</span>' : ''}`
+          : '<span class="text-muted">未引用</span>'));
     const url = data.base ? `${data.base}/${item.key}` : '';
     // 2.4.0: 缩略图没了 —— 小图(≤512KB)直接给原图预览, 其它给图标;
     // 免得"打开治理页顺带下几十 MB 原图"; 要看原图/视频点「详情」。
@@ -884,14 +933,15 @@ async function refsJson(ctx) {
   const path = checked.key;
   // 非素材路径(站点资源等)笔记引用不到, 直接回空, 不做 9 条 D1 查询
   if (!isMediaKey(path)) return json({ success: true, path, total: 0, items: [] });
-  const refs = await scanReferences(ctx.env, [path]);
-  const items = refs[path] || [];
+  const scan = await scanReferences(ctx.env, [path]);
+  if (!scan.ok) return json({ success: false, message: REF_SCAN_INCOMPLETE });
+  const items = scan.refs[path] || [];
   return json({ success: true, path, total: items.length, items });
 }
 
 async function deleteGet(ctx) {
   if (!isSuper(ctx)) return denied(ctx);
-  const keys = keysOf(strOf(ctx.query.paths) || strOf(ctx.query.path));
+  const keys = strOf(ctx.query.paths) ? keysOf(ctx.query.paths) : singleKeys(ctx.query.path);
   const back = safeBack(ctx.query.back);
   if (!keys.length) return redirectTo(backWith(LIST_URL, { error: '参数错误' }));
   if (keys.length > BATCH_MAX) {
@@ -899,7 +949,10 @@ async function deleteGet(ctx) {
   }
   // 引用检查只对**素材路径**有意义(image/、video/、news_uploads/ 与根目录树); 站点资源(images/、avatar/)不会被笔记引用, 不做扫描
   const mediaKeys = keys.filter((key) => isMediaKey(key));
-  const refs = mediaKeys.length ? await scanReferences(ctx.env, mediaKeys) : {};
+  const scan = mediaKeys.length ? await scanReferences(ctx.env, mediaKeys) : { ok: true, refs: {} };
+  // 没扫全就不给确认页: 否则页面会摆出一份"看着没引用"的清单, 而提交处还会再拒一次
+  if (!scan.ok) return redirectTo(backWith(back, { error: REF_SCAN_INCOMPLETE }));
+  const refs = scan.refs;
   const blocked = mediaKeys.filter((path) => (refs[path] || []).length > 0);
 
   // 只要有一个还被引用就整批拒绝(部分成功最容易让人以为"都删了") —— 删了不可恢复。
@@ -921,7 +974,7 @@ async function deleteGet(ctx) {
       impact: [['待删除对象', keys.length]],
       totalImpact: keys.length,
       submitAction: DELETE_URL,
-      hiddenFields: [['paths', keys.join(',')], ['back', back], ['confirm', '1']],
+      hiddenFields: [['paths', JSON.stringify(keys)], ['back', back], ['confirm', '1']],
       backUrl: back,
       recoverable: false,
       tip: 'R2 上的对象删除后不可恢复（没有回收站）；提交前会再复查一次引用，有一个被引用就整批不删。'
@@ -944,7 +997,8 @@ async function detailPage(ctx) {
   if (!head) return redirectTo(backWith(back, { error: '文件不存在（可能已被删除）' }));
 
   const media = isMediaKey(key);
-  const refs = media ? ((await scanReferences(ctx.env, [key]))[key] || []) : [];
+  const scan = media ? await scanReferences(ctx.env, [key]) : { ok: true, refs: {} };
+  const refs = scan.refs[key] || [];
   const meta = head.httpMetadata || {};
   const base = String(settings(ctx.env).mediaBase || '').replace(/\/+$/, '');
   const url = base ? `${base}/${key}` : '';
@@ -984,7 +1038,7 @@ async function detailPage(ctx) {
   </div></div>
   <div class="card mb-3"><div class="card-body">
     <h6 class="mb-2">引用情况</h6>
-    ${media ? refsBlock(refs) : '<div class="alert alert-secondary py-2 mb-0">这个对象不在素材路径下（不是 <code>image/</code>、<code>video/</code>、<code>news_uploads/</code>，也不在根目录树里），笔记引用不到它，所以不做引用检查。</div>'}
+    ${media ? refsBlock(refs, scan.ok) : '<div class="alert alert-secondary py-2 mb-0">这个对象不在素材路径下（不是 <code>image/</code>、<code>video/</code>、<code>news_uploads/</code>，也不在根目录树里），笔记引用不到它，所以不做引用检查。</div>'}
   </div></div>
   <div class="card"><div class="card-body d-flex flex-wrap gap-2">
     <a class="btn btn-outline-secondary" href="${RENAME_URL}?path=${urlenc(key)}&amp;back=${urlenc(back)}">改名 / 移动</a>
@@ -1012,7 +1066,9 @@ async function renameGet(ctx) {
   const head = await settings(ctx.env).storage.head(key).catch(() => null);
   if (!head) return redirectTo(backWith(back, { error: '文件不存在（可能已被删除）' }));
   const media = isMediaKey(key);
-  const refs = media ? ((await scanReferences(ctx.env, [key]))[key] || []) : [];
+  // 没扫全时也把"确认改名"页收起来: 页面不能一边说"可以安全改名"一边在提交处拒绝
+  const scan = media ? await scanReferences(ctx.env, [key]) : { ok: true, refs: {} };
+  const refs = scan.refs[key] || [];
   const dir = parentOf(key);
   const name = key.slice(dir.length);
   const blocked = media && refs.length > 0;
@@ -1094,7 +1150,12 @@ async function renamePost(ctx) {
 
   // 引用检查: 源或目标**只要有一个落在素材路径上**就查; 两边都不是素材路径时跳过(笔记引用不到)
   const refKeys = [from, to].filter((one) => isMediaKey(one));
-  const refs = refKeys.length ? await scanReferences(ctx.env, refKeys) : {};
+  const scan = refKeys.length ? await scanReferences(ctx.env, refKeys) : { ok: true, refs: {} };
+  if (!scan.ok) {
+    auditLog('admin.media_manage_rename', { username: ctx.session.username, from, to, ok: false, reason: 'ref_scan_incomplete' });
+    return redirectTo(backWith(back, { error: REF_SCAN_INCOMPLETE }));
+  }
+  const refs = scan.refs;
   if (!copy && (refs[from] || []).length) {
     auditLog('admin.media_manage_rename', { username: ctx.session.username, from, to, ok: false, refs: refs[from].length });
     return redirectTo(backWith(back, { error: `该素材仍有 ${refs[from].length} 处引用，已拒绝改名（不会自动改写笔记内容）` }));
@@ -1132,7 +1193,9 @@ async function dirPage(ctx) {
   const limit = action === 'delete' ? BATCH_MAX : DIR_MOVE_MAX;
   const take = under.objects.slice(0, limit);
   const mediaKeys = take.map((one) => one.key).filter((one) => isMediaKey(one));
-  const refs = mediaKeys.length ? await scanReferences(ctx.env, mediaKeys) : {};
+  const scan = mediaKeys.length ? await scanReferences(ctx.env, mediaKeys) : { ok: true, refs: {} };
+  if (!scan.ok) return redirectTo(backWith(back, { error: REF_SCAN_INCOMPLETE }));
+  const refs = scan.refs;
   const blocked = mediaKeys.filter((one) => (refs[one] || []).length > 0);
   const totalBytes = under.objects.reduce((sum, one) => sum + Number(one.size || 0), 0);
   const remaining = under.objects.length - take.length;
@@ -1191,9 +1254,19 @@ async function dirPost(ctx) {
   const take = under.objects.slice(0, limit).map((one) => one.key);
   const remaining = under.objects.length - take.length;
 
+  // 服务端确认: 页面上那条"确认删除/移动"只是给人看的, 真正拦的是这里
+  if (strOf(body.confirm) !== '1') {
+    return redirectTo(backWith(back, { error: '请从确认页提交（缺少确认标记）' }));
+  }
+
   // 提交前**复查**引用(与单条删除同一口径): 有一个仍被引用就整批拒绝
   const mediaKeys = take.filter((one) => isMediaKey(one));
-  const refs = mediaKeys.length ? await scanReferences(ctx.env, mediaKeys) : {};
+  const scan = mediaKeys.length ? await scanReferences(ctx.env, mediaKeys) : { ok: true, refs: {} };
+  if (!scan.ok) {
+    auditLog('admin.media_manage_dir', { username: ctx.session.username, action, prefix, ok: false, reason: 'ref_scan_incomplete' });
+    return redirectTo(backWith(back, { error: REF_SCAN_INCOMPLETE }));
+  }
+  const refs = scan.refs;
   const blocked = mediaKeys.filter((one) => (refs[one] || []).length > 0);
   if (blocked.length) {
     auditLog('admin.media_manage_dir', { username: ctx.session.username, action, prefix, count: take.length, blocked: blocked.length, ok: false });
@@ -1240,17 +1313,28 @@ async function dirPost(ctx) {
 async function deletePost(ctx) {
   if (!isSuper(ctx)) return json({ success: false, message: '该操作仅超级管理员可执行' }, 403);
   const body = jsonOrForm(ctx);
-  const keys = keysOf(strOf(body.paths) || strOf(body.path));
+  const keys = strOf(body.paths) ? keysOf(body.paths) : singleKeys(body.path);
   const back = safeBack(body.back);
   if (!keys.length) return redirectTo(backWith(back, { error: '参数错误' }));
   if (keys.length > BATCH_MAX) {
     return redirectTo(backWith(back, { error: `一次最多删除 ${BATCH_MAX} 个对象，请分次操作` }));
   }
+  // 服务端确认: 确认页里的 confirm=1 必须带上 —— 只靠页面上的按钮拦不住直接构造的 POST
+  if (strOf(body.confirm) !== '1') {
+    return redirectTo(backWith(back, { error: '请从确认页提交（缺少确认标记）' }));
+  }
 
   // 删除前**复查**引用: 从打开确认页到点提交之间, 可能刚好有人加了一条引用(含回收站)。
   // 只查素材路径(非素材对象笔记引用不到)。
   const mediaKeys = keys.filter((key) => isMediaKey(key));
-  const refs = mediaKeys.length ? await scanReferences(ctx.env, mediaKeys) : {};
+  const scan = mediaKeys.length ? await scanReferences(ctx.env, mediaKeys) : { ok: true, refs: {} };
+  if (!scan.ok) {
+    auditLog('admin.media_manage_delete', {
+      username: ctx.session.username, count: keys.length, ok: false, reason: 'ref_scan_incomplete'
+    });
+    return redirectTo(backWith(back, { error: REF_SCAN_INCOMPLETE }));
+  }
+  const refs = scan.refs;
   const blocked = mediaKeys.filter((key) => (refs[key] || []).length > 0);
   if (blocked.length) {
     auditLog('admin.media_manage_delete', {

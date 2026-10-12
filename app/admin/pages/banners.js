@@ -8,11 +8,12 @@ import {
   addButton, emptyRow, imageUploadField, imageUploadModal, listShell, mediaLibraryModal, numberField,
   pagerScript, selectField, switchField, textField, editShell
 } from '../lib/partials.js';
-import { statusActions, statusBadgeClass, statusKind, statusLabel } from '../lib/status.js';
+import { statusButtons, statusCell } from '../lib/status.js';
 import {
   PER_PAGE, auditLog, buildListUrl, clampPage, firstScreenLimit, idemKey,
-  invalidateEntityCache, isDuplicateSubmit, intOr, strOf
+  invalidateEntityCache, isDuplicateSubmit, intOr, positiveId, strOf
 } from '../lib/utils.js';
+import { json, redirect } from '../lib/http.js';
 
 const MANAGE_URL = '/admin/banner_manage';
 // 展示位置的中文名(唯一维护点): 列表里不显示 news/index 这类英文原值
@@ -34,16 +35,8 @@ function bannerWhere(keyword) {
   return { sql: ' WHERE (title LIKE ? OR link_url LIKE ?)', args: [`%${keyword}%`, `%${keyword}%`] };
 }
 
-function statusCell(row) {
-  const kind = statusKind('banner');
-  return `<span class="badge text-bg-${statusBadgeClass(kind, row.status)}" data-status-badge>${escapeHtml(statusLabel(kind, row.status))}</span>`;
-}
-
 function actionsCell(ctx, row) {
-  const kind = statusKind('banner');
-  const buttons = statusActions(kind, row.status).map((action) => `<button type="button" class="btn btn-sm btn-${action.btnClass}"`
-    + ` data-status-kind="${kind.key}" data-status-id="${row.id}" data-status-action="${escapeHtml(action.value)}"`
-    + `${action.visible ? '' : ' hidden'}>${escapeHtml(action.label)}</button>`).join('');
+  const buttons = statusButtons('banner', row);
   const page = Number(ctx.query.page) || 1;
   return `<div class="action-cell justify-content-center">
     <a class="btn btn-sm btn-outline-primary" href="/admin/banner_edit?id=${row.id}"><i class="bi bi-pencil" aria-hidden="true"></i> 编辑</a>
@@ -67,7 +60,7 @@ export function renderRows(ctx, banners, page) {
   <td><div class="text-truncate clamp-lg" title="${escapeHtml(row.title || '')}">${escapeHtml(row.title || '-')}</div></td>
   <td class="text-nowrap">${escapeHtml(row.position_text || row.position || '-')}</td>
   <td class="text-nowrap">${row.sort_order}</td>
-  <td class="text-nowrap">${statusCell(row)}</td>
+  <td class="text-nowrap">${statusCell('banner', row)}</td>
   <td class="text-nowrap">${actionsCell(ctx, row)}</td>
 </tr>`).join('');
 }
@@ -136,12 +129,6 @@ async function rowsFragment(ctx) {
   // 越界时返回空串: 以前返回"暂无内容"行, 前端会当数据插入并继续翻页
   if (!banners.length) return json({ success: true, rows: '', has_more: false });
   return json({ success: true, rows: renderRows(ctx, banners, page), has_more: hasMore });
-}
-
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status, headers: { 'content-type': 'application/json; charset=utf-8' }
-  });
 }
 
 async function editPage(ctx) {
@@ -239,7 +226,7 @@ async function deleteSubmit(ctx) {
   const form = ctx.form;
   const rawId = form.id;
   const page = form.page;
-  if (!rawId || !/^\d+$/.test(String(rawId).replace('-', ''))) {
+  if (!positiveId(rawId)) {
     return redirect(buildListUrl(MANAGE_URL, { error: '参数错误', page }));
   }
   if (await isDuplicateSubmit(ctx.env, idemKey('banner_delete', String(ctx.session.id || '-'), String(rawId)))) {
@@ -265,7 +252,7 @@ async function copySubmit(ctx) {
   const form = ctx.form;
   const rawId = form.id;
   const page = form.page;
-  if (!rawId || !/^\d+$/.test(String(rawId).replace('-', ''))) {
+  if (!positiveId(rawId)) {
     return redirect(buildListUrl(MANAGE_URL, { error: '参数错误', page }));
   }
   if (await isDuplicateSubmit(ctx.env, idemKey('banner_copy', String(ctx.session.id || '-'), String(rawId)))) {
@@ -289,10 +276,6 @@ async function copySubmit(ctx) {
     return redirect(buildListUrl(MANAGE_URL, { error: '复制失败，请稍后重试', page }));
   }
   return redirect(buildListUrl(MANAGE_URL, { message, page }));
-}
-
-function redirect(location) {
-  return new Response(null, { status: 302, headers: { location } });
 }
 
 export const routes = [

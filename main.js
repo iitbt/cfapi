@@ -22,12 +22,12 @@ import { registerNewsRoutes } from './app/api/news.js';
 import { registerUserRoutes } from './app/api/user.js';
 import { faviconResponse } from './app/core/favicon.js';
 import { settings } from './app/core/config.js';
-import { SERVED_PREFIXES } from './app/core/storage.js';
+import { SERVED_PREFIXES, mediaContentType } from './app/core/storage.js';
 
 // 版本号(**唯一来源**): 与旧站 fastapi/main.py 的 APP_VERSION 同一处 ——
 // 状态页 / /health/ready / /apitest 展示它, 后台静态资源的 ?v= 缓存键也用它。
 // 改版本只改这一行; wrangler.toml 里不再有 API_VERSION, 也不再有第二份默认值。
-export const API_VERSION = '2.4.8';
+export const API_VERSION = '2.4.9';
 
 // ==== 路由装配(对应旧站 main.py 的 include_router 段) ====
 const router = createRouter();
@@ -48,16 +48,12 @@ export function routeTable() {
 // ==== 媒体直出(旧站是 StaticFiles 挂载): 前缀清单见 core/storage.js ====
 const MEDIA_PREFIXES = SERVED_PREFIXES;
 
-//: R2 对象没带 httpMetadata 时按扩展名兜底(上传工具传上去的素材常常没有 content-type)
-const CONTENT_TYPES = {
-  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp',
-  bmp: 'image/bmp', ico: 'image/x-icon', svg: 'image/svg+xml',
-  mp4: 'video/mp4', mov: 'video/quicktime', m4v: 'video/x-m4v', webm: 'video/webm'
-};
-
+//: R2 对象没带 httpMetadata 时按扩展名兜底(上传工具传上去的素材常常没有 content-type);
+// 扩展名与 Content-Type 的对应表在 core/storage.js, 与后台上传写 R2 时用的是同一份
 function contentTypeOf(key) {
   const text = String(key || '');
-  return CONTENT_TYPES[text.slice(text.lastIndexOf('.') + 1).toLowerCase()] || '';
+  const ext = text.slice(text.lastIndexOf('.') + 1);
+  return ext && ext !== text ? mediaContentType(ext) : '';
 }
 
 // 解析单段 Range: 旧站 StaticFiles 支持 Range, 视频拖动/续播依赖它

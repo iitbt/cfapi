@@ -1,7 +1,8 @@
 // 笔记管理: 列表(搜索/筛选/批量) / 行片段 / 发布编辑 / 预览 / 软删除 / 复制 / 回收站 / 恢复 / 彻底删除
 // 逐条对齐旧站 fastapi/app/admin/news_admin.py + news_edit.py + news_recycle.py
 import { escapeHtml } from '../../core/html.js';
-import { all, one, run } from '../../core/db.js';
+import { json, redirect } from '../lib/http.js';
+import { all, chunkIds, marksOf, one, run } from '../../core/db.js';
 import { assetUrl, mediaBase } from '../../core/media_scheme.js';
 import { sanitizeHtml } from '../../core/sanitize.js';
 import { MEDIA_PREFIXES } from '../../core/storage.js';
@@ -13,15 +14,16 @@ import {
   addButton, backButton, emptyRow, filterButtons, imageUploadField, imageUploadModal, listShell, mediaLibraryModal,
   pagerScript, searchBar, searchInput, searchSelect, selectField, switchField, textareaField, textField
 } from '../lib/partials.js';
-import { statusActions, statusBadgeClass, statusKind, statusLabel } from '../lib/status.js';
+import { statusButtons, statusCell, statusKind, statusLabel } from '../lib/status.js';
 import {
   MAX_FIRST_SCREEN_PAGES, PER_PAGE, auditLog, buildListUrl, clampPage, datetimeLocalValue,
   firstScreenLimit, idemKey, invalidateEntityCache, isDuplicateSubmit, intOr, normalizeDatetime,
-  nowLocalMinute, strOf
+  nowLocalMinute, positiveId, strOf
 } from '../lib/utils.js';
 
 const MANAGE_URL = '/admin/news_manage';
 const RECYCLE_URL = '/admin/news_recycle';
+const PURGE_EXPIRED_URL = '/admin/news_purge_expired';
 const RECYCLE_LIMIT = 100;
 const RECYCLE_RETENTION_DAYS = 30;
 const BATCH_MAX = 200;
@@ -57,17 +59,9 @@ function listWhere(query) {
   return { sql: ` WHERE ${clauses.join(' AND ')}`, args };
 }
 
-function statusCell(row) {
-  const kind = statusKind('news');
-  return `<span class="badge text-bg-${statusBadgeClass(kind, row.status)}" data-status-badge>${escapeHtml(statusLabel(kind, row.status))}</span>`;
-}
-
 function actionsCell(ctx, row) {
-  const kind = statusKind('news');
   const page = clampPage(ctx.query.page, null);
-  const buttons = statusActions(kind, row.status).map((action) => `<button type="button" class="btn btn-sm btn-${action.btnClass}"`
-    + ` data-status-kind="${kind.key}" data-status-id="${row.id}" data-status-action="${escapeHtml(action.value)}"`
-    + `${action.visible ? '' : ' hidden'}>${escapeHtml(action.label)}</button>`).join('');
+  const buttons = statusButtons('news', row);
   return `<div class="action-cell justify-content-center">
     <a class="btn btn-sm btn-outline-primary" href="/admin/news_edit?id=${row.id}"><i class="bi bi-pencil" aria-hidden="true"></i> 编辑</a>
     <a class="btn btn-sm btn-outline-secondary" href="/admin/news_preview?id=${row.id}" target="_blank" rel="noopener"><i class="bi bi-eye" aria-hidden="true"></i> 预览</a>
@@ -100,7 +94,7 @@ function renderRows(ctx, rows) {
   </td>
   <td class="text-nowrap">${escapeHtml(nameFor(ctx.nameMap || {}, row.category, strOf(row.category) || '-'))}</td>
   <td>${cover}</td>
-  <td class="text-nowrap">${statusCell(row)}</td>
+  <td class="text-nowrap">${statusCell('news', row)}</td>
   <td class="text-nowrap small">${intOr(row.view_count, 0)} / ${intOr(row.likes, 0)} / ${intOr(row.favorites, 0)}</td>
   <td class="text-nowrap small">${escapeHtml(strOf(row.publish_time).slice(0, 16))}</td>
   <td class="text-nowrap">${actionsCell(ctx, row)}</td>
@@ -255,13 +249,6 @@ async function rowsFragment(ctx) {
   return json({ success: true, rows: renderRows(ctx, rows), has_more: hasMore });
 }
 
-function json(body) {
-  return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json; charset=utf-8' } });
-}
-
-function redirect(location) {
-  return new Response(null, { status: 302, headers: { location } });
-}
 
 // 预览: 只读, 不给前台浏览量 +1(与旧站一致)
 // 正文管线顺序照旧站 news_admin.news_preview: 净化 → 视频转 <video>(绝对地址) → 图片绝对化
@@ -296,7 +283,7 @@ async function previewPage(ctx) {
     <div class="card">
       <div class="card-body">
         <div class="d-flex justify-content-between align-items-center mb-3">
-          <span class="badge text-bg-${statusBadgeClass(kind, row.status)}">${escapeHtml(statusLabel(kind, row.status))}</span>
+          ${statusCell('news', row)}
           <span class="text-muted small">
             <i class="bi bi-eye" aria-hidden="true"></i> ${intOr(row.view_count, 0)} ｜
             <i class="bi bi-hand-thumbs-up" aria-hidden="true"></i> ${intOr(row.likes, 0)} ｜
@@ -524,7 +511,7 @@ function editView(ctx, { isNew, row, error, errorField, options }) {
 async function deleteSubmit(ctx) {
   const rawId = strOf(ctx.form.id);
   const page = strOf(ctx.form.page) || null;
-  if (!/^\d+$/.test(rawId.replace('-', ''))) {
+  if (!positiveId(rawId)) {
     return redirect(buildListUrl(MANAGE_URL, { error: '无效的请求', page }));
   }
   if (await isDuplicateSubmit(ctx.env, idemKey('news_delete', String(ctx.session.id || '-'), rawId))) {
@@ -550,7 +537,7 @@ async function deleteSubmit(ctx) {
 async function copySubmit(ctx) {
   const rawId = strOf(ctx.form.id);
   const page = strOf(ctx.form.page) || null;
-  if (!/^\d+$/.test(rawId.replace('-', ''))) {
+  if (!positiveId(rawId)) {
     return redirect(buildListUrl(MANAGE_URL, { error: '缺少有效的笔记ID参数', page }));
   }
   if (await isDuplicateSubmit(ctx.env, idemKey('news_copy', String(ctx.session.id || '-'), rawId))) {
@@ -617,12 +604,14 @@ async function batchSubmit(ctx) {
   return redirect(buildListUrl(MANAGE_URL, { message, filters, page }));
 }
 
-// 到期自动清理: 访问回收站时把超过保留期的记录连带子表一起清掉(可用 ?purge=0 关闭)
+// 到期清理: 把超过保留期的回收站记录连带子表一起清掉。
+// 只由 purgeExpiredSubmit(超管 POST) 调用 —— 以前挂在回收站的 GET 上, 结果"打开页面就删数据",
+// 既没有审计记录也说不清是谁删的, 还可能被浏览器/爬虫预取触发。
+// 异常不再吞掉: 清理失败要能报给页面与日志, 静默失败会让人以为"回收站已经清干净了"。
 async function purgeExpired(env) {
   const cutoff = new Date(Date.now() - RECYCLE_RETENTION_DAYS * 24 * 3600 * 1000);
   const cutoffText = new Date(cutoff.getTime() + 8 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ');
-  const expired = await all(env, 'SELECT id FROM news WHERE deleted_at IS NOT NULL AND deleted_at < ?', cutoffText)
-    .catch(() => []);
+  const expired = await all(env, 'SELECT id FROM news WHERE deleted_at IS NOT NULL AND deleted_at < ?', cutoffText);
   const ids = expired.map((item) => intOr(item.id, 0)).filter((id) => id > 0);
   if (!ids.length) return 0;
   await cleanupNews(env, ids);
@@ -631,13 +620,15 @@ async function purgeExpired(env) {
 }
 
 // 彻底删除时连带清子表: 与对外接口/用户彻底删除同一份表清单(全库无外键, 必须应用层级联)
+// ids 可能一次上百条(批量操作 / 到期清理), 每条 IN 都按 D1 的 100 个绑定参数上限切片
 async function cleanupNews(env, ids) {
-  const marks = ids.map(() => '?').join(',');
   const statements = [];
-  for (const table of ['news_likes', 'news_favorites', 'news_view_history', 'news_shares', 'news_comments']) {
-    statements.push(env.DB.prepare(`DELETE FROM ${table} WHERE news_id IN (${marks})`).bind(...ids));
+  for (const chunk of chunkIds(ids)) {
+    for (const table of ['news_likes', 'news_favorites', 'news_view_history', 'news_shares', 'news_comments']) {
+      statements.push(env.DB.prepare(`DELETE FROM ${table} WHERE news_id IN (${marksOf(chunk)})`).bind(...chunk));
+    }
+    statements.push(env.DB.prepare(`DELETE FROM news WHERE id IN (${marksOf(chunk)})`).bind(...chunk));
   }
-  statements.push(env.DB.prepare(`DELETE FROM news WHERE id IN (${marks})`).bind(...ids));
   await env.DB.batch(statements);
 }
 
@@ -655,10 +646,6 @@ async function recyclePage(ctx) {
   let rows = [];
   let total = 0;
   let error = '';
-  let purged = 0;
-  if (strOf(ctx.query.purge) !== '0') {
-    purged = await purgeExpired(ctx.env).catch(() => 0);
-  }
   try {
     const where = ` WHERE ${clauses.join(' AND ')}`;
     // 两条查询互不依赖(回收站固定取 RECYCLE_LIMIT 行) → 一起发, 少等一次 D1 往返
@@ -717,8 +704,13 @@ async function recyclePage(ctx) {
   <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
     <a class="btn btn-outline-secondary" href="${MANAGE_URL}"><i class="bi bi-arrow-left" aria-hidden="true"></i> 返回笔记管理</a>
     ${filterForm}
+    ${ctx.session.isSuper ? `<form method="post" action="${PURGE_EXPIRED_URL}" class="d-inline"
+        onsubmit="return confirm('清理超过 ${RECYCLE_RETENTION_DAYS} 天、已删除的记录？此操作不可恢复。')">
+      <input type="hidden" name="confirm" value="1">
+      <button class="btn btn-outline-danger" type="submit"><i class="bi bi-eraser" aria-hidden="true"></i> 清理到期记录</button>
+    </form>` : ''}
     <span class="ms-auto text-end text-muted small">共 ${total} 条${total > rows.length ? `（仅显示最近 ${RECYCLE_LIMIT} 条）` : ''}
-      · 超过 ${RECYCLE_RETENTION_DAYS} 天会被自动清理</span>
+      · 超过 ${RECYCLE_RETENTION_DAYS} 天的记录由超管手工清理（打开本页不会再删任何东西）</span>
   </div>
   <div class="table-responsive">
     <table aria-label="回收站" class="table table-hover align-middle text-center">
@@ -727,18 +719,17 @@ async function recyclePage(ctx) {
     </table>
   </div>
 </div></div>`;
-  const purgeMessage = purged ? `已自动清理 ${purged} 条超过 ${RECYCLE_RETENTION_DAYS} 天的记录` : '';
   return adminLayout({
     title: '笔记回收站', currentPage: 'news_recycle', admin: ctx.session.username,
     isSuper: ctx.session.isSuper, version: ctx.version,
-    message: [purgeMessage, ctx.message].filter(Boolean).join('；'), error: error || ctx.error, content
+    message: ctx.message, error: error || ctx.error, content
   });
 }
 
 async function restoreSubmit(ctx) {
   const rawId = strOf(ctx.form.id);
   const filters = { source: strOf(ctx.form.source), keyword: strOf(ctx.form.keyword) };
-  if (!/^\d+$/.test(rawId.replace('-', ''))) {
+  if (!positiveId(rawId)) {
     return redirect(buildListUrl(RECYCLE_URL, { error: '参数错误', filters }));
   }
   let message = '';
@@ -758,7 +749,7 @@ async function restoreSubmit(ctx) {
 
 async function purgeSubmit(ctx) {
   const rawId = strOf(ctx.form.id);
-  if (!/^\d+$/.test(rawId.replace('-', ''))) {
+  if (!positiveId(rawId)) {
     return redirect(buildListUrl(RECYCLE_URL, { error: '参数错误' }));
   }
   if (await isDuplicateSubmit(ctx.env, idemKey('news_purge', String(ctx.session.id || '-'), rawId))) {
@@ -779,6 +770,28 @@ async function purgeSubmit(ctx) {
   return redirect(buildListUrl(RECYCLE_URL, { message }));
 }
 
+// 到期清理(超管手工触发): 只认 POST + 确认标记, 并写一条审计 —— 删了多少、谁删的都能查
+async function purgeExpiredSubmit(ctx) {
+  if (strOf(ctx.form.confirm) !== '1') {
+    return redirect(buildListUrl(RECYCLE_URL, { error: '请从回收站点「清理到期记录」提交（缺少确认标记）' }));
+  }
+  if (await isDuplicateSubmit(ctx.env, idemKey('news_purge_expired', String(ctx.session.id || '-')))) {
+    return redirect(buildListUrl(RECYCLE_URL, { error: '该操作刚刚已执行，请勿重复提交' }));
+  }
+  let purged = 0;
+  try {
+    purged = await purgeExpired(ctx.env);
+  } catch (err) {
+    console.error('清理到期笔记失败', err && err.message);
+    auditLog('admin.news.purge_expired', { user: ctx.session.username, ok: false, reason: err && err.message });
+    return redirect(buildListUrl(RECYCLE_URL, { error: '清理失败，请稍后重试' }));
+  }
+  auditLog('admin.news.purge_expired', { user: ctx.session.username, count: purged });
+  return redirect(buildListUrl(RECYCLE_URL, {
+    message: purged ? `已清理 ${purged} 条超过 ${RECYCLE_RETENTION_DAYS} 天的记录` : '没有超过保留期的记录'
+  }));
+}
+
 export const routes = [
   { methods: ['GET', 'HEAD'], path: MANAGE_URL, handler: managePage },
   { methods: ['GET', 'HEAD'], path: '/admin/news_manage_rows', handler: rowsFragment },
@@ -789,5 +802,7 @@ export const routes = [
   { methods: ['POST'], path: '/admin/news_batch_action', handler: batchSubmit },
   { methods: ['GET', 'HEAD'], path: RECYCLE_URL, handler: recyclePage },
   { methods: ['POST'], path: '/admin/news_restore', handler: restoreSubmit },
-  { methods: ['POST'], path: '/admin/news_purge', handler: purgeSubmit }
+  { methods: ['POST'], path: '/admin/news_purge', handler: purgeSubmit },
+  // 到期清理: 从回收站的 GET 挪到这里(超管 POST), 见 purgeExpiredSubmit
+  { methods: ['POST'], path: PURGE_EXPIRED_URL, handler: purgeExpiredSubmit }
 ];

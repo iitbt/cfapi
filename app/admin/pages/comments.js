@@ -3,9 +3,10 @@
 import { escapeHtml } from '../../core/html.js';
 import { all, one, run } from '../../core/db.js';
 import { adminLayout } from '../lib/layout.js';
+import { json, redirect } from '../lib/http.js';
 import { emptyRow, filterButtons, listShell, pagerScript } from '../lib/partials.js';
-import { applyStatus, statusActions, statusBadgeClass, statusKind, statusLabel } from '../lib/status.js';
-import { PER_PAGE, auditLog, buildListUrl, clampPage, firstScreenLimit, intOr, strOf } from '../lib/utils.js';
+import { applyStatus, statusButtons, statusCell, statusKind } from '../lib/status.js';
+import { PER_PAGE, auditLog, buildListUrl, clampPage, firstScreenLimit, intOr, positiveId, strOf } from '../lib/utils.js';
 
 const MANAGE_URL = '/admin/comments_manage';
 const ALLOWED_STATUS = ['approved', 'pending', 'rejected'];
@@ -44,10 +45,7 @@ function userLabel(row) {
 }
 
 function actionsCell(row) {
-  const kind = statusKind('comment');
-  const buttons = statusActions(kind, row.status).map((action) => `<button type="button" class="btn btn-sm btn-${action.btnClass}"`
-    + ` data-status-kind="${kind.key}" data-status-id="${row.id}" data-status-action="${escapeHtml(action.value)}"`
-    + `${action.visible ? '' : ' hidden'}>${escapeHtml(action.label)}</button>`).join('');
+  const buttons = statusButtons('comment', row);
   return `<div class="action-cell justify-content-center">
     ${buttons}
     <a class="btn btn-sm btn-outline-danger" href="/admin/delete_confirm?kind=comment_row&amp;id=${row.id}&amp;back=${encodeURIComponent(MANAGE_URL)}">
@@ -58,7 +56,6 @@ function actionsCell(row) {
 function renderRows(ctx, rows) {
   if (!rows || !rows.length) return emptyRow(COLUMNS, '暂无留言');
   return rows.map((row) => {
-    const kind = statusKind('comment');
     const trusted = intOr(row.is_trusted, 0) === 1 ? ' <span class="badge text-bg-danger">内部测试</span>' : '';
     const newsTitle = strOf(row.news_title) || (row.news_id ? `笔记#${row.news_id}` : '-');
     const newsLink = row.news_id
@@ -69,7 +66,7 @@ function renderRows(ctx, rows) {
   <td><div class="text-truncate clamp-lg" title="${escapeHtml(strOf(row.content))}">${escapeHtml(strOf(row.content))}</div></td>
   <td class="text-nowrap"><a href="${MANAGE_URL}?user_id=${row.user_id}">${escapeHtml(userLabel(row))}</a>${trusted}</td>
   <td>${newsLink}</td>
-  <td class="text-nowrap"><span class="badge text-bg-${statusBadgeClass(kind, row.status)}" data-status-badge>${escapeHtml(statusLabel(kind, row.status))}</span></td>
+  <td class="text-nowrap">${statusCell('comment', row)}</td>
   <td class="text-nowrap small">${escapeHtml(strOf(row.created_at).slice(0, 19))}</td>
   <td class="text-nowrap">${actionsCell(row)}</td>
 </tr>`;
@@ -152,21 +149,13 @@ async function rowsFragment(ctx) {
   return json({ success: true, rows: renderRows(ctx, rows), has_more: hasMore });
 }
 
-function json(body) {
-  return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json; charset=utf-8' } });
-}
-
-function redirect(location) {
-  return new Response(null, { status: 302, headers: { location } });
-}
-
 // 写操作: 通过/拒绝走统一状态接口(comment 是 superOnly), 删除是**物理删除、没有回收站**
 async function writeSubmit(ctx) {
   const form = ctx.form;
   const action = strOf(form.action);
   const rawId = form.id || form.news_id || form.comment_id;
   if (action === 'delete') {
-    if (!rawId || !/^\d+$/.test(String(rawId).replace('-', ''))) {
+    if (!positiveId(rawId)) {
       return redirect(buildListUrl(MANAGE_URL, { error: '参数错误' }));
     }
     try {

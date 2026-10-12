@@ -83,6 +83,16 @@ test('批量点赞态: 缺参 400, 正常返回 liked_news_ids', async () => {
   assert.deepEqual(body.data.liked_news_ids, [5]);
 });
 
+test('批量点赞态: 200 个 id 必须分片(单条语句绑定参数不能超过 D1 的 100 上限)', async () => {
+  const { env, calls } = makeEnv({ db: baseDb() });
+  const ids = Array.from({ length: 200 }, (item, index) => index + 1).join(',');
+  const body = await postJson('/news/check_user_like_batch', { user_id: 7, news_ids: ids, token: 'tok-1' }, env);
+  assert.equal(body.code, 200);
+  const queries = calls.filter((item) => /FROM news_likes WHERE user_id=\? AND news_id IN/i.test(item.sql));
+  assert.deepEqual(queries.map((item) => item.args.length - 1), [90, 90, 20], '200 个 id 切成 90/90/20 三批');
+  queries.forEach((item) => assert.ok(item.args.length <= 100, `单条语句最多 100 个绑定参数, 实际 ${item.args.length}`));
+});
+
 test('限流: 达到配额返回 429 与旧文案', async () => {
   const { env } = makeEnv({
     db: (sql, args, kind) => {
@@ -249,6 +259,22 @@ test('注销与后续动作: 需确认 / 已注销 / defer / restore / purge', a
 
   const purge = await postJson('/user/deleted_account_action', { action: 'purge', code: 'c' }, deletedUser.env);
   assert.equal(purge.msg, '账号已彻底删除');
+
+  // 笔记数超过分片粒度: 每条 IN 语句仍必须 ≤100 个绑定参数(超过时 D1 是整条语句报错, 用户删不掉)
+  const manyNotes = Array.from({ length: 150 }, (item, index) => ({ id: index + 1 }));
+  const bulk = makeEnv({
+    db: (sql, args, kind) => {
+      if (/FROM users WHERE openid=/i.test(sql)) return Object.assign({}, USER_ROW, { status: 1 });
+      if (kind === 'all' && /SELECT id FROM news WHERE user_id=\?/i.test(sql)) return { all: manyNotes };
+      return baseDb()(sql, args, kind);
+    }
+  });
+  const body2 = await postJson('/user/deleted_account_action', { action: 'purge', code: 'c' }, bulk.env);
+  assert.equal(body2.msg, '账号已彻底删除');
+  assert.equal(body2.data.deleted.news, 150);
+  const inQueries = bulk.calls.filter((item) => / WHERE news_id IN \(| WHERE id IN \(/i.test(item.sql));
+  assert.ok(inQueries.length >= 12, `150 条要切两批(5 张子表 + news), 实际 ${inQueries.length} 条 IN 语句`);
+  inQueries.forEach((item) => assert.ok(item.args.length <= 100, `每条 IN 语句 ≤100 参数, 实际 ${item.args.length}`));
 
   const stale = await postJson('/user/deleted_account_action', { action: 'defer', code: 'c' },
     makeEnv({ db: (sql, args, kind) => (/FROM users WHERE openid=/i.test(sql) ? Object.assign({}, USER_ROW, { status: 0 }) : baseDb()(sql, args, kind)) }).env);

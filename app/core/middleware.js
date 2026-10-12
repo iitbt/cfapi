@@ -25,7 +25,8 @@ export const SECURITY_HEADERS = {
 
 /**
  * CORS: 旧站按 settings.cors_origins 白名单(生产=同源), 小程序无 Origin 不受影响。
- * 白名单由 ALLOWED_ORIGINS 配置, 值为 `*` 时保持现状(默认, 与迁移前的行为一致)。
+ * 白名单由 ALLOWED_ORIGINS 配置: 值为 `*` 时放开(只是"没配"时的兼容缺省), 生产在 wrangler.toml 里填实际域名。
+ * 注意同源请求根本不需要 CORS 头, 所以收窄白名单不会影响后台/状态页, 只会让别的站点读不到接口响应。
  */
 export const CORS_HEADERS = {
   'access-control-allow-origin': '*',
@@ -41,6 +42,7 @@ export const CORS_HEADERS = {
  * 且不启用 allow-credentials(旧站也是 False)。
  */
 export function corsHeadersFor(request, env) {
+  // 空值按"没配"处理(放开), 语义与 core/config.js 的缺省一致
   const configured = String(settings(env).allowedOrigins || '*').trim();
   if (!configured || configured === '*') return CORS_HEADERS;
   const list = configured.split(',').map((item) => item.trim()).filter(Boolean);

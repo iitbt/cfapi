@@ -69,11 +69,12 @@ export function logError(event, error, fields) {
  * 迁到 Cloudflare 后落到 Workers Logs, 事件名统一为 `admin.audit`, 字段与旧站一致
  * (需要长期可查询时再接 Logpush 或 D1 审计表 —— 当前不建表, 避免过度设计)。
  */
-export function auditLog(action, { username, request, ...extra } = {}) {
+export function auditLog(action, { username, user, request, ...extra } = {}) {
   const headers = (request && request.headers) || null;
   emit('info', 'admin.audit', {
     action,
-    username: username || '-',
+    // user 是后台调用点的历史写法(两者都收): 只认 username 时, 所有审计行里的操作人都会是 '-'
+    username: username || user || '-',
     ip: request && typeof request.headers?.get === 'function'
       ? (headers.get('cf-connecting-ip') || headers.get('x-forwarded-for') || '-')
       : '-',

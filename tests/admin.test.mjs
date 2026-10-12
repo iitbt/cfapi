@@ -35,6 +35,10 @@ function makeEnv(options = {}) {
             if (/FROM admin_users WHERE username=/i.test(sql)) {
               return api.args[0] === row.username ? row : null;
             }
+            // 会话回查(见 lib/session.js 的 readSession): 按 Cookie 里的 id 取当前管理员
+            if (/FROM admin_users WHERE id\s*=\s*\?/i.test(sql)) {
+              return Number(api.args[0]) === Number(row.id) ? row : null;
+            }
             if (/FROM rate_limit_counters/i.test(sql)) {
               const key = api.args.join('|');
               return counters.has(key) ? { count: counters.get(key) } : null;
@@ -67,7 +71,8 @@ function makeEnv(options = {}) {
     }
   };
   if (options.noSecret) delete env.ADMIN_SESSION_SECRET;
-  return { env, counters, statements };
+  // row 也交出去: 会话回查的用例要"在登录之后改库里的口令/角色", 看旧 Cookie 是否立即失效
+  return { env, row, counters, statements };
 }
 
 function call(path, { env, method = 'GET', body, headers = {}, origin } = {}) {
@@ -248,23 +253,84 @@ test('后台: 静态样式走白名单, 未知 key 404, 且无需登录', async 
   assert.equal(missing.status, 404);
 });
 
-test('后台: 富文本编辑器资源自托管且无需登录(不走 CDN)', async () => {
+test('后台: 静态资源——生成物里的直出, vendor 大件改从 R2 取(地址不变)', async () => {
   const { env } = makeEnv();
-  // 编辑器本体与样式都打进生成物里: 部署即生效, 不依赖 CDN 可达性
-  const css = await call('/admin/static/vendor/wangeditor/style.css', { env });
-  assert.equal(css.status, 200);
-  assert.match(css.headers.get('content-type'), /text\/css/);
-  assert.match(css.headers.get('cache-control'), /max-age=86400/);
-  assert.ok((await css.text()).includes('w-e-'), '应是 wangEditor 的样式');
+  // vendor(编辑器/字体)不内联了: 没上传到 R2 时就是 404, 编辑器页面会退回普通文本域
+  const missing = await call('/admin/static/vendor/wangeditor/style.css', { env });
+  assert.equal(missing.status, 404);
 
-  const js = await call('/admin/static/vendor/wangeditor/index.js', { env });
-  assert.equal(js.status, 200);
-  assert.match(js.headers.get('content-type'), /application\/javascript/);
-  assert.ok((await js.text()).includes('createEditor'), '应是 wangEditor 本体');
+  const withR2 = makeEnv();
+  const asked = [];
+  withR2.env.STORAGE = {
+    get: async (key) => {
+      asked.push(key);
+      if (key !== 'admin/vendor/wangeditor/style.css') return null;
+      return { body: 'w-e-', size: 4, writeHttpMetadata() {} };
+    }
+  };
+  const served = await call('/admin/static/vendor/wangeditor/style.css', { env: withR2.env });
+  assert.equal(served.status, 200);
+  assert.match(served.headers.get('content-type'), /text\/css/, '按扩展名给类型');
+  assert.match(served.headers.get('cache-control'), /max-age=86400/);
+  assert.ok((await served.text()).includes('w-e-'));
+  assert.deepEqual(asked, ['admin/vendor/wangeditor/style.css'], 'R2 键 = admin/ + 静态路径');
 
+  // 生成物里有的资源照旧直出, 不查 R2
+  const inlineCss = await call('/admin/static/css/admin.css', { env });
+  assert.equal(inlineCss.status, 200);
+  assert.ok((await inlineCss.text()).length > 100);
   const init = await call('/admin/static/js/news_editor.js', { env });
   assert.equal(init.status, 200);
   assert.ok((await init.text()).includes('MediaInsertFromLibrary'), '编辑页的插入落点');
+});
+
+test('后台: 写请求的来源校验——跨站 Origin 拒绝, 不带 Origin 的脚本调用放行', async () => {
+  const { env } = makeEnv();
+  const cookie = await login(env);
+
+  const cross = await call('/admin/banner_delete', {
+    env, method: 'POST', headers: { cookie }, body: { id: '1' }, origin: 'https://evil.example'
+  });
+  assert.equal(cross.status, 403);
+  assert.ok((await cross.text()).includes('来源校验失败'));
+
+  const script = await call('/admin/banner_delete', {
+    env, method: 'POST', headers: { cookie }, body: { id: '1' }, origin: null
+  });
+  assert.notEqual(script.status, 403, '没有 Origin(脚本/联动工具)的调用仍要能用');
+});
+
+test('后台: 写请求统一留审计(操作人 + 来源 IP + 路径), 各页的审计行也带上操作人', async () => {
+  const { env } = makeEnv();
+  const cookie = await login(env);
+  const lines = [];
+  const original = console.log;
+  console.log = (line) => lines.push(String(line));
+  try {
+    await call('/admin/settings', {
+      env,
+      method: 'POST',
+      headers: { cookie, 'cf-connecting-ip': '203.0.113.9' },
+      body: { update_profile: '1', nickname: '新名字', email: 'ops@example.com' }
+    });
+  } finally {
+    console.log = original;
+  }
+  const audits = lines
+    .map((line) => { try { return JSON.parse(line); } catch (error) { return null; } })
+    .filter((item) => item && item.event === 'admin.audit');
+
+  const write = audits.find((item) => item.action === 'admin.write');
+  assert.ok(write, '每笔写请求都要有一条 admin.write');
+  assert.equal(write.username, 'admin');
+  assert.equal(write.ip, '203.0.113.9');
+  assert.equal(write.method, 'POST');
+  assert.equal(write.path, '/admin/settings');
+
+  // 各页自己的审计行用的是 user 键: 不认这个别名时 username 会恒为 '-'
+  const action = audits.find((item) => item.action === 'admin.profile.update');
+  assert.ok(action, '改资料要有业务审计行');
+  assert.equal(action.username, 'admin');
 });
 
 test('后台: 不在菜单里的路径给 404(后台已全量迁移, 没有"待迁"入口了)', async () => {
@@ -294,4 +360,37 @@ test('后台: 连续输错口令达到上限后锁定', async () => {
   assert.equal(res.status, 200, '被锁定时不再校验口令, 仍是登录页');
   assert.ok((await res.text()).includes('尝试次数过多'));
   assert.ok(counters.size > 0);
+});
+
+test('后台: 库里口令被改掉后, 旧会话 Cookie 立即失效(不用等 24 小时)', async () => {
+  const { env, row } = makeEnv();
+  const cookie = await login(env);
+  const before = await call('/admin/dashboard', { env, headers: { cookie } });
+  assert.equal(before.status, 200, '改密前会话有效');
+
+  // 模拟"别处改了口令"(设置页/管理员页重置都会写这一列)
+  row.password = await hashPassword('another-password-1');
+  const after = await call('/admin/dashboard', { env, headers: { cookie } });
+  assert.equal(after.status, 302, '会话应被作废并跳登录页');
+  assert.match(after.headers.get('location'), /^\/admin\/login\?next=/);
+});
+
+test('后台: 账号被降权后, 旧会话也立刻按库里的角色判定', async () => {
+  const { env, row } = makeEnv();
+  const cookie = await login(env);
+  const allowed = await call('/admin/banner_delete', { env, method: 'POST', headers: { cookie }, body: { id: '1' } });
+  assert.notEqual(allowed.status, 403, '改权前超管专属写入口可用');
+
+  row.role = 'normal';
+  const denied = await call('/admin/banner_delete', { env, method: 'POST', headers: { cookie }, body: { id: '1' } });
+  assert.equal(denied.status, 403, '降权后同一个 Cookie 立刻被拒');
+  assert.ok((await denied.text()).includes('仅超级管理员可执行'));
+});
+
+test('后台: 账号被删掉后, 旧会话同样失效', async () => {
+  const { env, row } = makeEnv();
+  const cookie = await login(env);
+  row.id = 999;   // 桩按 id 回行: 换个 id 就等于"这个账号查不到了"
+  const res = await call('/admin/dashboard', { env, headers: { cookie } });
+  assert.equal(res.status, 302);
 });

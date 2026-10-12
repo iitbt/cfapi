@@ -8,11 +8,12 @@ import {
   addButton, editShell, emptyRow, hiddenField, listShell, numberField, pagerScript, searchBar, searchInput,
   searchSelect, selectField, switchField, textareaField, textField
 } from '../lib/partials.js';
-import { statusActions, statusBadgeClass, statusKind, statusLabel } from '../lib/status.js';
+import { statusButtons, statusCell } from '../lib/status.js';
 import {
   PER_PAGE, auditLog, buildListUrl, clampPage, firstScreenLimit, intOr,
-  invalidateEntityCache, strOf, textOf
+  invalidateEntityCache, normalizeDatetime, positiveId, strOf, textOf
 } from '../lib/utils.js';
+import { json, redirect } from '../lib/http.js';
 
 const MANAGE_URL = '/admin/notice_manage';
 const LEVELS = [['info', '公告'], ['warning', '提醒'], ['important', '重要']];
@@ -40,37 +41,27 @@ function noticeWhere(keyword, status) {
   return { sql: clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '', args };
 }
 
-// datetime-local 提交带 "T": SQLite 里该列是 TEXT 且按字符串比较,
-// 'T'(0x54) > ' '(0x20) 会让"设了开始时间的公告"永不展示(旧站踩过), 这里统一成 "YYYY-MM-DD HH:MM:SS"
-function normalizeDatetime(value) {
-  const text = strOf(value);
-  if (!text) return '';
-  const normalized = text.replace('T', ' ');
-  return normalized.length === 16 ? `${normalized}:00` : normalized.slice(0, 19);
-}
-
+// 时间归一化走 lib/utils.js 的唯一实现(normalizeDatetime): 本页以前自己又抄了一份,
+// 两份口径一旦不一致, "设了开始时间的公告永不展示"这个老坑就会以另一种形式回来
 function fmtTime(value) {
   const text = strOf(value);
   return text ? text.slice(0, 16) : '不限';
 }
 
-function statusCell(ctx, row) {
-  const kind = statusKind('app_notice');
+// 公告的状态单元格比别处多一层"生效时间"提示: 徽章走共用实现, 提示文案是本页特有
+function statusCellWithNotes(ctx, row) {
   const notes = [];
   const now = beijingNow();
   if (intOr(row.status, 0) !== 1) notes.push('<span class="text-danger">已停用，小程序不显示</span>');
   else if (strOf(row.start_at) && strOf(row.start_at) > now) notes.push('<span class="text-muted">未到生效时间</span>');
   else if (strOf(row.end_at) && strOf(row.end_at) < now) notes.push('<span class="text-muted">已过生效时间</span>');
-  const badge = `<span class="badge text-bg-${statusBadgeClass(kind, row.status)}" data-status-badge>${escapeHtml(statusLabel(kind, row.status))}</span>`;
+  const badge = statusCell('app_notice', row);
   return badge + (notes.length ? '<div class="small mt-1">' + notes.join('<br>') + '</div>' : '');
 }
 
 function actionsCell(ctx, row) {
-  const kind = statusKind('app_notice');
   const page = clampPage(ctx.query.page, null);
-  const buttons = statusActions(kind, row.status).map((action) => `<button type="button" class="btn btn-sm btn-${action.btnClass}"`
-    + ` data-status-kind="${kind.key}" data-status-id="${row.id}" data-status-action="${escapeHtml(action.value)}"`
-    + `${action.visible ? '' : ' hidden'}>${escapeHtml(action.label)}</button>`).join('');
+  const buttons = statusButtons('app_notice', row);
   return `<div class="action-cell justify-content-center">
     <a class="btn btn-sm btn-outline-primary" href="/admin/notice_edit?id=${row.id}"><i class="bi bi-pencil" aria-hidden="true"></i> 编辑</a>
     ${buttons}
@@ -94,7 +85,7 @@ export function renderRows(ctx, rows) {
   <td class="text-nowrap"><span class="badge text-bg-${LEVEL_BADGES[level]}">${escapeHtml(LEVEL_LABELS[level])}</span></td>
   <td class="text-nowrap small">${escapeHtml(fmtTime(row.start_at))} ~ ${escapeHtml(fmtTime(row.end_at))}</td>
   <td class="text-nowrap">${row.sort_order}</td>
-  <td class="text-nowrap">${statusCell(ctx, row)}</td>
+  <td class="text-nowrap">${statusCellWithNotes(ctx, row)}</td>
   <td class="text-nowrap">${actionsCell(ctx, row)}</td>
 </tr>`;
   }).join('');
@@ -173,10 +164,6 @@ async function rowsFragment(ctx) {
   rows = rows.slice(0, PER_PAGE);
   if (!rows.length) return json({ success: true, rows: '', has_more: false });
   return json({ success: true, rows: renderRows(ctx, rows), has_more: hasMore });
-}
-
-function json(body) {
-  return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json; charset=utf-8' } });
 }
 
 async function editPage(ctx) {
@@ -281,7 +268,7 @@ function editView(ctx, { isNew, row, error, errorField }) {
 
 async function deleteSubmit(ctx) {
   const rawId = ctx.form.id;
-  if (!rawId || !/^\d+$/.test(String(rawId).replace('-', ''))) {
+  if (!positiveId(rawId)) {
     return redirect(buildListUrl(MANAGE_URL, { error: '参数错误' }));
   }
   let message = '';
@@ -297,10 +284,6 @@ async function deleteSubmit(ctx) {
     return redirect(buildListUrl(MANAGE_URL, { error: '删除失败，请稍后重试' }));
   }
   return redirect(buildListUrl(MANAGE_URL, { message }));
-}
-
-function redirect(location) {
-  return new Response(null, { status: 302, headers: { location } });
 }
 
 export const routes = [

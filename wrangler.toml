@@ -39,10 +39,12 @@ UPLOAD_MAX_BYTES = "20971520"
 ENABLE_PUBLIC_PROBE = "1"
 # 1 = 开放 /metrics(最小 Prometheus 文本), 0 = 404
 OBSERVABILITY_ENABLED = "0"
-# CORS 白名单(逗号分隔): "*" = 放开(默认, 与迁移前一致); 填域名后只回白名单内的 Origin
-ALLOWED_ORIGINS = "*"
-# 1 = 开放"数据库工具 / 数据库管理"页(默认关, 与旧站 ENABLE_SQL_TOOL 同口径)
-ENABLE_SQL_TOOL = "1"
+# CORS 白名单(逗号分隔): 留空或 "*" = 放开(迁移前的兼容缺省); 这里填实际域名, 只有白名单内的 Origin 才回 CORS 头
+# (同源访问本来就不需要 CORS 头, 所以收窄不影响后台与状态页; 小程序不带 Origin 也不受影响)
+ALLOWED_ORIGINS = "https://lyjx.250036.xyz"
+# 1 = 开放"数据库工具 / 数据库管理"页(**出厂 0**, 与旧站 ENABLE_SQL_TOOL 同口径: 能看全库数据、能执行 SQL 的页不长期暴露)
+# 要用时临时改成 "1" 重新部署, 用完改回 "0" —— 别把这个开关长期留在 1
+ENABLE_SQL_TOOL = "0"
 # 管理后台(/admin): 管理员账号在 D1 的 admin_users 表(建表见 app/sql/0004_admin.sql),
 # 登录态是 HMAC 签名的 Cookie(与旧站"签名 Cookie 会话"同一套, 无服务端状态)。
 # 会话密钥 ADMIN_SESSION_SECRET 属于密文, 不写在这个文件里 —— 到 Cloudflare 控制台的

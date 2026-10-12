@@ -2,12 +2,7 @@
 //   POST /admin/image_upload(旧地址 /admin/news_image_upload) —— 与静态脚本 image_upload.js 对接
 //   GET  /admin/media_library(旧地址 /admin/media_videos)     —— 与静态脚本 media_library.js 对接
 import { listMedia, saveUpload } from '../lib/mediaUpload.js';
-
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status, headers: { 'content-type': 'application/json; charset=utf-8' }
-  });
-}
+import { json } from '../lib/http.js';
 
 // multipart 只解析一次: 字段名 file 或 image 都收(旧站两种都认)
 async function uploadHandler(ctx) {

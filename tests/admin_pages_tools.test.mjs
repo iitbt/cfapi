@@ -118,7 +118,17 @@ test('数据库工具: 数据页可排序/按字段筛选/跨列搜索, 参数�
   assert.ok(/"title" LIKE \?/i.test(filtered.sql), '字段筛选要进 SQL');
   assert.ok(filtered.args.includes('%户外%'), '字段筛选是子串匹配');
   assert.ok(filtered.args.includes('%雨崩%'), '关键字搜索也是子串');
-  assert.equal((filtered.sql.match(/LIKE \?/g) || []).length, 3, '字段筛选 1 个 + 两列的关键字搜索 2 个');
+  // 关键字只搜"文本列"(桩里 news 只有 title 是 TEXT): 全表扫描下搜数字列纯属多花 rows_read
+  assert.equal((filtered.sql.match(/LIKE \?/g) || []).length, 2, '字段筛选 1 个 + 文本列 title 的 1 个');
+  assert.ok(!/"id" LIKE \?/i.test(filtered.sql), '整数列不参与关键字搜索');
+
+  // 前缀匹配选项: 参数换成 `kw%`, 能用上索引(页面上的复选框就是它)
+  state.calls.length = 0;
+  const prefixed = await (await get('/admin/db_manage?table=news&q=雨崩&prefix=1', env, cookie)).text();
+  const prefixCall = findCall(state, /SELECT rowid AS __rowid, \* FROM "news"/i);
+  assert.ok(prefixCall.args.includes('雨崩%'), 'prefix=1 时按前缀匹配');
+  assert.ok(!prefixCall.args.includes('%雨崩%'), '不能再退化成包含匹配');
+  assert.ok(prefixed.includes('name="prefix"'), '页面上要有前缀匹配开关');
 
   // 2.3.4: 这一页的筛选/搜索条也走全站共用结构(searchBar), 不再 width:auto / max-width / 漏斗图标
   const page = await (await get('/admin/db_manage?table=news&col=title&val=户外&q=雨崩', env, cookie)).text();
@@ -390,8 +400,10 @@ test('数据库管理: 成本与额度卡 + 本屏用量留给页尾脚本累计
   const cookie = await loginCookie(env);
   const html = await (await get('/admin/db_manage?table=news', env, cookie)).text();
   assert.ok(html.includes('成本与额度'), '成本卡要在页面上');
-  assert.ok(html.includes('28.98k') && html.includes('5M'), '带上账号用量参考值');
-  assert.ok(html.includes('参考快照'), '说明是快照而不是实时值');
+  // 2.4.9: 不再写死"某天记录"的用量数字(必然过期), 改成额度口径 + 去哪看实时值
+  assert.ok(html.includes('实时用量只看 Cloudflare 控制台'), '要说清实时值去哪看');
+  assert.ok(html.includes('500 万行'), '带上免费套餐的额度口径');
+  assert.ok(!/\d+\.\d+k/.test(html), '不写死会过期的用量数字');
   assert.ok(html.includes('data-cost-session') && html.includes('data-cost-reset'), '本机会话累计与清零');
   assert.ok(html.includes('data-page-cost='), '这一屏的用量要交给页尾脚本累计');
   assert.ok(html.includes('省额度的做法'), '把省额度的做法写在页面上');
@@ -770,9 +782,20 @@ test('素材库治理: 有引用时拒绝删除(确认页说明 + POST 复查)',
   const confirm = await (await get('/admin/media_manage_delete?path=news_uploads/a.png', env, cookie)).text();
   assert.match(confirm, /不能删除/);
 
-  const res = await post('/admin/media_manage_delete', { path: 'news_uploads/a.png', back: '/admin/media_manage' }, env, cookie);
+  const res = await post('/admin/media_manage_delete',
+    { path: 'news_uploads/a.png', back: '/admin/media_manage', confirm: '1' }, env, cookie);
   assert.equal(res.status, 302);
   assert.match(String(res.headers.get('location')), /error=/);
+});
+
+test('素材库治理: 缺少服务端确认标记时直接拒绝(只靠页面按钮拦不住构造的 POST)', async () => {
+  const { env, state } = makeAdminEnv({ role: 'super', mediaObjects: MEDIA_OBJECTS, rows: mediaRows });
+  const cookie = await loginCookie(env);
+  // 确认页会带 confirm=1; 这里故意不带(等价于直接构造 POST)
+  const res = await post('/admin/media_manage_delete', { path: 'news_uploads/b.mp4', back: '/admin/media_manage' }, env, cookie);
+  assert.equal(res.status, 302);
+  assert.ok(decodeURIComponent(String(res.headers.get('location')).replace(/\+/g, ' ')).includes('缺少确认标记'));
+  assert.deepEqual(state.deletes, [], '没带确认标记时不能动 R2');
 });
 
 test('素材库治理: 无引用时删除并回列表带 message', async () => {
@@ -783,7 +806,8 @@ test('素材库治理: 无引用时删除并回列表带 message', async () => {
   assert.match(confirm, /删除对象/);
   assert.ok(!confirm.includes('不能删除'));
 
-  const res = await post('/admin/media_manage_delete', { path: 'news_uploads/b.mp4', back: '/admin/media_manage' }, env, cookie);
+  const res = await post('/admin/media_manage_delete',
+    { path: 'news_uploads/b.mp4', back: '/admin/media_manage', confirm: '1' }, env, cookie);
   assert.equal(res.status, 302);
   assert.match(String(res.headers.get('location')), /message=/);
   assert.deepEqual(state.deletes, ['news_uploads/b.mp4']);
@@ -792,12 +816,55 @@ test('素材库治理: 无引用时删除并回列表带 message', async () => {
   assert.ok(scan, '删除前必须复查引用');
 });
 
+test('素材库治理: 引用扫描没扫全时一律拒绝(fail-closed, 不能当成"没被引用")', async () => {
+  const { env, state } = makeAdminEnv({
+    role: 'super',
+    mediaObjects: MEDIA_OBJECTS,
+    rows: mediaRows,
+    // 让引用扫描里那条笔记粗筛查询直接失败: 以前它被 catch 成"零引用", 于是素材照删(2026-10-07 线上事故的成因)
+    db: (sql, args, kind) => {
+      if (kind === 'all' && /FROM news\s+WHERE/i.test(sql)) throw new Error('d1 down');
+      return undefined;
+    }
+  });
+  const cookie = await loginCookie(env);
+
+  const confirm = await get('/admin/media_manage_delete?path=news_uploads/b.mp4', env, cookie);
+  assert.equal(confirm.status, 302, '拿不到引用结果时连确认页都不给');
+
+  const res = await post('/admin/media_manage_delete',
+    { path: 'news_uploads/b.mp4', back: '/admin/media_manage', confirm: '1' }, env, cookie);
+  assert.equal(res.status, 302);
+  assert.ok(
+    decodeURIComponent(String(res.headers.get('location')).replace(/\+/g, ' ')).includes('引用扫描未完成'),
+    '要明确说"没扫全", 而不是照常删'
+  );
+  assert.deepEqual(state.deletes, [], '扫描没扫全时一个对象都不能动');
+});
+
+test('素材库治理: 对象键里带逗号也删得对(批量参数是 JSON 数组, 不是逗号分隔)', async () => {
+  const commaKey = 'image/a,b.png';
+  const { env, state } = makeAdminEnv({
+    role: 'super',
+    mediaObjects: [{ key: commaKey, size: 10, uploaded: '2026-10-09T00:00:00Z' }, { key: 'image/a', size: 1, uploaded: '2026-10-09T00:00:00Z' }],
+    rows: { news: [] }
+  });
+  const cookie = await loginCookie(env);
+  const paths = JSON.stringify([commaKey]);
+  const confirm = await (await get(`/admin/media_manage_delete?paths=${encodeURIComponent(paths)}`, env, cookie)).text();
+  assert.ok(confirm.includes('image/a,b.png'), '确认页要原样列出带逗号的键');
+
+  const res = await post('/admin/media_manage_delete', { paths, back: '/admin/media_manage', confirm: '1' }, env, cookie);
+  assert.equal(res.status, 302);
+  assert.deepEqual(state.deletes, [commaKey], '只删这一个键, 不能拆成 image/a 与 b.png');
+});
+
 test('素材库治理: 返回地址收敛, 不接受站外跳转', async () => {
   const { env } = makeAdminEnv({ role: 'super', mediaObjects: MEDIA_OBJECTS, rows: mediaRows });
   const cookie = await loginCookie(env);
   const res = await post(
     '/admin/media_manage_delete',
-    { path: 'news_uploads/b.mp4', back: '//evil.example/x' },
+    { path: 'news_uploads/b.mp4', back: '//evil.example/x', confirm: '1' },
     env,
     cookie
   );
@@ -1035,7 +1102,7 @@ test('存储桶(2.4.6)目录级操作: 移动(≤10)/删除(≤20)都先确认, 
 
   // ② 执行移动: 结构原样保留, 一次只动 10 个
   const moved = await post('/admin/media_manage_dir',
-    { action: 'move', prefix: '素材/', dir: 'image/归档/', back: '/admin/media_manage' }, env, cookie);
+    { action: 'move', prefix: '素材/', dir: 'image/归档/', back: '/admin/media_manage', confirm: '1' }, env, cookie);
   assert.equal(moved.status, 302);
   assert.match(String(moved.headers.get('location')), /message=/);
   assert.equal(state.objects.has('image/归档/批0.png'), true, '目标键 = 目标前缀 + 原键去掉前缀');
@@ -1047,7 +1114,7 @@ test('存储桶(2.4.6)目录级操作: 移动(≤10)/删除(≤20)都先确认, 
   assert.ok(delPage.includes('即将删除') && delPage.includes('二次确认') === false, '删除确认页');
   state.deleteCalls = 0;   // 上面的移动每个对象各带一次 delete, 这里只统计"批量删除"这一次
   const deleted = await post('/admin/media_manage_dir',
-    { action: 'delete', prefix: '素材/', back: '/admin/media_manage' }, env, cookie);
+    { action: 'delete', prefix: '素材/', back: '/admin/media_manage', confirm: '1' }, env, cookie);
   assert.equal(deleted.status, 302);
   assert.equal(state.objects.has('素材/批10.png'), false, '删除生效');
   assert.equal(state.deleteCalls, 1, '一批只花 1 次 R2 delete');
@@ -1062,7 +1129,7 @@ test('存储桶(2.4.6)目录级操作: 移动(≤10)/删除(≤20)都先确认, 
   const refPage = await (await get(`/admin/media_manage_dir?action=delete&prefix=${encodeURIComponent('素材/')}`, refEnv.env, refCookie)).text();
   assert.ok(refPage.includes('整批拒绝'), '确认页直接说明整批拒绝');
   const refused = await post('/admin/media_manage_dir',
-    { action: 'delete', prefix: '素材/', back: '/admin/media_manage' }, refEnv.env, refCookie);
+    { action: 'delete', prefix: '素材/', back: '/admin/media_manage', confirm: '1' }, refEnv.env, refCookie);
   assert.ok(String(refused.headers.get('location')).includes(encodeURIComponent('已整批拒绝')));
   assert.deepEqual(refEnv.state.deletes, [], '整批拒绝时一个都不动');
 
@@ -1215,11 +1282,12 @@ test('素材库(2.3.9): 批量删除一次 R2 调用, 超上限或被引用整�
   const cookie = await loginCookie(env);
 
   // ① 两个未引用的素材: 确认页列出两条, 提交后一次 R2 delete 删掉两个
-  const confirm = await (await get('/admin/media_manage_delete?paths=news_uploads/b.mp4,image/free.png', env, cookie)).text();
+  const twoKeys = JSON.stringify(['news_uploads/b.mp4', 'image/free.png']);
+  const confirm = await (await get(`/admin/media_manage_delete?paths=${encodeURIComponent(twoKeys)}`, env, cookie)).text();
   assert.ok(confirm.includes('即将删除 2 个对象'));
   assert.ok(confirm.includes('待删除对象'));
   const res = await post('/admin/media_manage_delete',
-    { paths: 'news_uploads/b.mp4,image/free.png', back: '/admin/media_manage' }, env, cookie);
+    { paths: twoKeys, back: '/admin/media_manage', confirm: '1' }, env, cookie);
   assert.equal(res.status, 302);
   assert.match(String(res.headers.get('location')), /message=/);
   assert.deepEqual(state.deletes.sort(), ['image/free.png', 'news_uploads/b.mp4']);
@@ -1228,16 +1296,17 @@ test('素材库(2.3.9): 批量删除一次 R2 调用, 超上限或被引用整�
   // ② 其中一个被引用 → 整批拒绝, 一个都不删
   state.deletes.length = 0;
   state.deleteCalls = 0;
+  const mixedKeys = JSON.stringify(['news_uploads/b.mp4', 'news_uploads/a.png']);
   const mixed = await post('/admin/media_manage_delete',
-    { paths: 'news_uploads/b.mp4,news_uploads/a.png', back: '/admin/media_manage' }, env, cookie);
+    { paths: mixedKeys, back: '/admin/media_manage', confirm: '1' }, env, cookie);
   assert.ok(String(mixed.headers.get('location')).includes(encodeURIComponent('已整批拒绝')));
   assert.deepEqual(state.deletes, [], '整批拒绝时一个都不能删');
-  const mixedConfirm = await (await get('/admin/media_manage_delete?paths=news_uploads/b.mp4,news_uploads/a.png', env, cookie)).text();
+  const mixedConfirm = await (await get(`/admin/media_manage_delete?paths=${encodeURIComponent(mixedKeys)}`, env, cookie)).text();
   assert.ok(mixedConfirm.includes('整批拒绝'));
 
   // ③ 超过一次上限(21 个) → 直接拒绝
-  const many = Array.from({ length: 21 }, (item, index) => `image/p${index}.png`).join(',');
-  const tooMany = await post('/admin/media_manage_delete', { paths: many, back: '/admin/media_manage' }, env, cookie);
+  const many = JSON.stringify(Array.from({ length: 21 }, (item, index) => `image/p${index}.png`));
+  const tooMany = await post('/admin/media_manage_delete', { paths: many, back: '/admin/media_manage', confirm: '1' }, env, cookie);
   // URLSearchParams 把空格编成 `+`, 所以先解码再比文案
   assert.ok(decodeURIComponent(String(tooMany.headers.get('location')).replace(/\+/g, ' ')).includes('一次最多删除 20 个'));
 });

@@ -12,8 +12,8 @@
 //   CLOUDFLARE_ACCOUNT_ID 可选: 账号里有多个时指定
 //
 // 说明: 本工具**只做查询与新建**, 不删除任何资源; 数据迁移见 DEPLOY.md「区域(Location)与资源重建」。
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const API = 'https://api.cloudflare.com/client/v4';
 const DEFAULT_LOCATION = 'apac';   // 亚太(就近中国大陆), 与 DEPLOY.md 的口径一致
@@ -25,21 +25,29 @@ function argOf(name, fallback = '') {
   return value && !value.startsWith('--') ? value : fallback;
 }
 
+//: wrangler 登录态可能落在哪几个位置(不同版本/平台各一份): 只是"顺手找一下", 找不到就要求配环境变量
+function wranglerConfigPaths() {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  const appData = process.env.APPDATA || '';
+  return [
+    join(appData, '.wrangler', 'config', 'default.toml'),          // Windows 上的 wrangler v3+
+    join(home, '.config', '.wrangler', 'config', 'default.toml'),  // macOS / Linux
+    join(appData, 'xdg.config', '.wrangler', 'config', 'default.toml') // 早期版本在 Windows 上落这里
+  ].filter((item) => item && !item.startsWith('config'));
+}
+
 function tokenOf() {
   if (process.env.CLOUDFLARE_API_TOKEN) return process.env.CLOUDFLARE_API_TOKEN;
-  // 没配 token 时试着从 wrangler 的登录态读(非交互环境下 wrangler 自己会拒绝, 这只是一次尝试)
-  try {
-    const raw = execFileSync('node', ['-e', `
-      const fs=require('fs'),path=require('path');
-      const file=path.join(process.env.APPDATA||'', 'xdg.config', '.wrangler', 'config', 'default.toml');
-      const text=fs.readFileSync(file,'utf8');
-      const hit=/^oauth_token\\s*=\\s*"([^"]+)"/m.exec(text);
-      process.stdout.write(hit?hit[1]:'');
-    `], { encoding: 'utf8' });
-    return String(raw || '').trim();
-  } catch (error) {
-    return '';
+  // 没配 token 时按上面几个已知位置找一次 wrangler 的登录态(只读进内存, 不落盘、不外传)
+  for (const file of wranglerConfigPaths()) {
+    try {
+      const hit = /^oauth_token\s*=\s*"([^"]+)"/m.exec(readFileSync(file, 'utf8'));
+      if (hit) return hit[1];
+    } catch (error) {
+      // 文件不存在/读不到: 继续试下一个位置
+    }
   }
+  return '';
 }
 
 async function api(token, path, init = {}) {

@@ -148,6 +148,7 @@ export const SUPER_ONLY_WRITE_PATHS = [
   '/admin/news_delete',       // 删除官方笔记(软删除进回收站)
   '/admin/news_restore',      // 回收站恢复
   '/admin/news_purge',        // 回收站彻底删除(不可恢复)
+  '/admin/news_purge_expired', // 回收站到期批量清理(不可恢复; 2.4.9 从回收站的 GET 挪到这个 POST 入口)
   '/admin/news_copy',         // 复制笔记(会新增内容)
   '/admin/banner_delete',     // 删除轮播图
   '/admin/banner_copy',       // 复制轮播图
@@ -197,9 +198,10 @@ export const NORMAL_WRITE_PATHS = [
 
 // ④ 不纳入权限口径的写方法路由(原因写清楚, 避免"看起来像漏登记")
 export const EXEMPT_WRITE_PATHS = [
-  '/admin/login',   // 登录本身(此时还没有登录态)
-  '/admin/logout',  // 登出(任何已登录管理员都应能退出)
-  '/admin/index'    // 旧登录入口, 仅 302 到 /admin/login
+  '/admin/login',      // 登录本身(此时还没有登录态)
+  '/admin/logout',     // 登出(任何已登录管理员都应能退出)
+  '/admin/index',      // 旧登录入口, 仅 302 到 /admin/login
+  '/admin/bootstrap'   // 首次初始化: 库为空时公开可用, 建完即失效; 页面里已校验过"没有管理员 + 配了会话密钥"
 ];
 
 const BUCKETS = [

@@ -19,7 +19,8 @@ import {
   addButton, editShell, emptyRow, filterButtons, imageUploadField, imageUploadModal, listMeta, listToolbar,
   mediaLibraryModal, numberField, selectField, switchField, textField
 } from '../lib/partials.js';
-import { auditLog, buildListUrl, intOr, invalidateEntityCache, strOf } from '../lib/utils.js';
+import { auditLog, buildListUrl, intOr, invalidateEntityCache, positiveId, strOf } from '../lib/utils.js';
+import { redirect } from '../lib/http.js';
 
 const EDIT_URL = '/admin/app_home_edit';
 const DELETE_URL = '/admin/app_home_delete';
@@ -106,9 +107,6 @@ async function managePage(ctx) {
   });
 }
 
-function redirect(location) {
-  return new Response(null, { status: 302, headers: { location } });
-}
 
 /**
  * 老地址(?id=N 不带 section)也要能编辑: 先在板块表里找, 找不到再去精选表找一次。
@@ -326,7 +324,7 @@ function editView(ctx, { isNew, kind, row, error, errorField, options }) {
 async function deleteSubmit(ctx) {
   const rawId = ctx.form.id;
   const section = sectionOf(ctx.form.section);
-  if (!rawId || !/^\d+$/.test(String(rawId).replace('-', ''))) {
+  if (!positiveId(rawId)) {
     return redirect(buildListUrl(MANAGE_URL, { error: '参数错误', filters: { section } }));
   }
   let message = '';
@@ -353,7 +351,7 @@ async function deleteSubmit(ctx) {
 // 精选项目的删除(2.3.8 从 pages/appFeatured.js 搬进来: 那个模块的编辑页已合并, 只剩删除这一个入口)
 async function deleteFeaturedSubmit(ctx) {
   const rawId = ctx.form.id;
-  if (!rawId || !/^\d+$/.test(String(rawId).replace('-', ''))) {
+  if (!positiveId(rawId)) {
     return redirect(buildListUrl(MANAGE_URL, { error: '参数错误', filters: { section: 'featured' } }));
   }
   let message = '';

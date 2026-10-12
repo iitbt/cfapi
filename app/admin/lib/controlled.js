@@ -10,8 +10,9 @@ import { one, run } from '../../core/db.js';
 import { sanitizeHtml } from '../../core/sanitize.js';
 import { auditAction } from './entities.js';
 import {
-  auditLog, buildListUrl, idemKey, intOr, invalidateEntityCache, isDuplicateSubmit, strOf, textOf
+  auditLog, buildListUrl, idemKey, intOr, invalidateEntityCache, isDuplicateSubmit, positiveId, strOf, textOf
 } from './utils.js';
+import { redirect } from './http.js';
 
 // 新增表单一次性 nonce 的有效期(秒): 够用户慢慢填一张表单, 又不至于很久以后还能再用一次
 export const FORM_NONCE_TTL = 600;
@@ -68,12 +69,10 @@ function readCol(field, form) {
   return strOf(raw);
 }
 
-function redirect(location) {
-  return new Response(null, { status: 302, headers: { location } });
-}
 
 function isIdLike(value) {
-  return Boolean(value) && /^\d+$/.test(String(value).replace('-', ''));
+  // 统一走 utils 的 positiveId: 只认纯数字, 不再容忍 '12-3' 这类写法
+  return positiveId(value) > 0;
 }
 
 async function save(specDef, env, session, values, form, isNew, rowId, oldItem) {
@@ -140,9 +139,13 @@ export async function runEdit(specDef, ctx) {
     }
     // 没带 nonce 的请求一律放行: 脚本、自动化、旧表单不该因此被拒; 真机表单一定带(由渲染注入)
     const submitted = strOf(form.form_nonce);
-    if (!error && isNew && submitted
-      && await isDuplicateSubmit(env, idemKey(`${specDef.key}_create`, String(session.id || '-'), submitted), FORM_NONCE_TTL)) {
-      error = '该操作刚刚已执行，请勿重复提交';
+    if (!error && submitted) {
+      // 新增与更新都要防重: 更新虽然内容幂等, 但双击/重放会多写一次审计与 update_time(运营看到"改了两次")
+      const parts = [String(session.id || '-'), submitted];
+      if (!isNew) parts.push(String(rowId));
+      if (await isDuplicateSubmit(env, idemKey(`${specDef.key}_${isNew ? 'create' : 'update'}`, ...parts), FORM_NONCE_TTL)) {
+        error = '该操作刚刚已执行，请勿重复提交';
+      }
     }
     if (!error) {
       try {

@@ -7,9 +7,9 @@
 // 2.3.8: 三个编辑页也合并了 —— 三块的 addUrl/editUrl 都指向 /admin/app_home_edit, 由 ?section= 区分
 // (精选那边原来的 /admin/app_featured_edit 已删除)。
 import { escapeHtml } from '../../core/html.js';
+import { statusButtons, statusCell } from './status.js';
 import { assetUrl } from '../../core/media_scheme.js';
 import { nameFor } from './categorySource.js';
-import { statusActions, statusBadgeClass, statusKind, statusLabel } from './status.js';
 
 /** 三个板块的键(顺序即页面上的标签条与卡片顺序)。 */
 export const SECTION_KEYS = ['main', 'ext', 'featured'];
@@ -45,18 +45,9 @@ function previewCell(env, image) {
     : '-';
 }
 
-/** 状态徽章(与 status-toggle.js 约定一致, 行内启停按钮更新它)。 */
-function statusCell(kindKey, row) {
-  const kind = statusKind(kindKey);
-  return `<span class="badge text-bg-${statusBadgeClass(kind, row.status)}" data-status-badge>${escapeHtml(statusLabel(kind, row.status))}</span>`;
-}
-
 /** 操作列: 编辑 + 行内启停 + 删除(删除一律走服务端确认页, 前端 confirm 可被绕过)。 */
 function actionsCell(spec, row, sectionKey) {
-  const kind = statusKind(spec.kind);
-  const buttons = statusActions(kind, row.status).map((action) => `<button type="button" class="btn btn-sm btn-${action.btnClass}"`
-    + ` data-status-kind="${kind.key}" data-status-id="${row.id}" data-status-action="${escapeHtml(action.value)}"`
-    + `${action.visible ? '' : ' hidden'}>${escapeHtml(action.label)}</button>`).join('');
+  const buttons = statusButtons(spec.kind, row);
   // 回跳带上"这一行所属的板块": 在拓展项目里删的, 不该退回主题项目的视图
   const back = `${MANAGE_URL}?section=${encodeURIComponent(sectionKey || spec.key)}`;
   const homeExtra = spec.table === 'app_home_sections' ? `&amp;section=${encodeURIComponent(spec.key)}` : '';

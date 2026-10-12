@@ -2,7 +2,9 @@
 // 关键差异: Workers 没有 Pillow, 上传时**不生成缩略图** —— 列表按"有则用、无则回退原图"的口径自动降级
 // 白名单与大小上限照旧站 core/storage.py: 图片 8MB / 视频 64MB, 并且**不看扩展名只看内容**(前端 accept 可绕过)
 import { settings } from '../../core/config.js';
-import { CACHE_CONTROL_MEDIA, IMAGE_PREFIX, VIDEO_PREFIX, listNewsMedia, safeRelPath } from '../../core/storage.js';
+import {
+  CACHE_CONTROL_MEDIA, IMAGE_PREFIX, VIDEO_PREFIX, listNewsMedia, mediaContentType, safeRelPath
+} from '../../core/storage.js';
 
 export const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
 export const VIDEO_EXTS = ['mp4', 'mov', 'm4v', 'webm'];
@@ -196,7 +198,9 @@ export async function saveUpload(env, options) {
     await bucket.put(key, bytes, {
       // cacheControl: 新对象不覆盖写 → 长缓存安全(2.3.9/2.4.0, 口径见 core/storage.js)
       httpMetadata: {
-        contentType: file.type || (kind === 'video' ? 'video/mp4' : 'image/jpeg'),
+        // Content-Type 按"嗅探出来的类型 + 扩展名"定, 不采信客户端声明的 file.type
+        // (公开域会照 Content-Type 下发, 采信客户端等于把 MIME 交给上传者)
+        contentType: mediaContentType(ext, kind),
         cacheControl: CACHE_CONTROL_MEDIA
       }
     });

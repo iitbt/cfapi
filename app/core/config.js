@@ -43,6 +43,9 @@ export function settings(env) {
     observabilityEnabled: str(e.OBSERVABILITY_ENABLED || '0') === '1',
     // 后台会话签名密钥(密文): 空 = 后台未就绪, 登录页明确提示, 不用默认值放行
     adminSessionSecret: str(e.ADMIN_SESSION_SECRET),
+    // 口令 pepper(密文, 可选): 配了就与口令拼在一起派生, 拿到库也爆不动; **配了之后不能删** ——
+    // 删掉之后所有已升级成带 pepper 哈希的账号都验不过, 只能到 D1 控制台重置口令
+    adminPasswordPepper: str(e.ADMIN_PASSWORD_PEPPER),
     // 1 = 开放"数据库工具 / 数据库管理"页(默认关) —— 与旧站 ENABLE_SQL_TOOL 同口径:
     // 能浏览全表数据、能执行 SQL 的入口不长期暴露
     enableSqlTool: str(e.ENABLE_SQL_TOOL || '0') === '1',

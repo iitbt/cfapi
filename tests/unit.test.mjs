@@ -6,9 +6,11 @@ import { routeTable } from '../main.js';
 import { md5Hex } from '../app/core/md5.js';
 import { beijingNow, datePart, nowEpoch, toEpoch, windowStart } from '../app/core/timeutil.js';
 import { assetUrl, iconAssetUrl } from '../app/core/media_scheme.js';
-import { checkObjectKey, isRootTreePath, listNewsMedia, listUnder, normRel, relPathsIn } from '../app/core/storage.js';
+import { checkObjectKey, isRootTreePath, listNewsMedia, listUnder, mediaContentType, normRel, relPathsIn } from '../app/core/storage.js';
 import { safeRelPath, safeTargetDir, saveUpload } from '../app/admin/lib/mediaUpload.js';
 import { absolutizeMedia, sanitizeHtml } from '../app/core/sanitize.js';
+import { hashPassword, needsRehash, verifyDummy, verifyPassword } from '../app/admin/lib/password.js';
+import { IN_CHUNK_SIZE, chunkIds, marksOf } from '../app/core/db.js';
 import { QUOTAS } from '../app/core/ratelimit.js';
 import { redactText } from '../app/core/logging.js';
 import { makeAdminEnv } from './admin_stub.mjs';
@@ -325,6 +327,16 @@ test('上传落目录(2.4.0): purpose=auto 按内容分流, 图片进 image/、�
   assert.equal(state.puts.length, 3, '只有三次成功写入');
 });
 
+test('上传: 写入 R2 的 Content-Type 按扩展名定, 不采信客户端声明的 file.type', async () => {
+  const { env, state } = makeAdminEnv({ role: 'super' });
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  // 浏览器可以把 type 报成任意值; 公开域会照 Content-Type 下发, 所以只能信嗅探 + 扩展名
+  const saved = await saveUpload(env, { file: new File([png], 'a.png', { type: 'text/html' }), purpose: 'auto' });
+  assert.equal(state.objects.get(saved.url).httpMetadata.contentType, 'image/png');
+  assert.equal(mediaContentType('mp4'), 'video/mp4');
+  assert.equal(mediaContentType('bin'), '', '认不出的扩展名不给类型(别乱猜)');
+});
+
 test('上传重名(2.4.0): 同名自动加 _1/_2, 绝不覆盖已有对象', async () => {
   const { env, state } = makeAdminEnv({ role: 'super', mediaHead: (key) => (state.objects.has(String(key)) ? { key } : null) });
   const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -356,6 +368,45 @@ test('正文媒体改绝对地址: 图片 src 与视频封面 poster 都要拼�
   assert.ok(out.includes('poster="https://storage.250036.xyz/news_uploads/cover.jpg"'), out);
   // 视频自身的 src 与之前一样保持原样下发(小程序侧统一走 normalizeRemoteUrl), 这里顺带钉住, 免得以后误改口径
   assert.ok(out.includes('src="video/v.mp4"'), out);
+});
+
+test('口令: pepper 参与派生、老哈希照旧能验并需要升级、假哈希恒 false', async () => {
+  const plainEnv = {};
+  const pepperEnv = { ADMIN_PASSWORD_PEPPER: 'pepper-secret' };
+
+  // 不带 pepper(老形态): 前缀无 p, 验得过, 参数一致时不需要重哈希
+  const legacy = await hashPassword('password-12345', plainEnv);
+  assert.match(legacy, /^pbkdf2_sha256\$\d+\$/);
+  assert.equal(await verifyPassword('password-12345', legacy, plainEnv), true);
+  assert.equal(await verifyPassword('wrong-password', legacy, plainEnv), false);
+  assert.equal(needsRehash(legacy, plainEnv), false);
+
+  // 带 pepper: 前缀区分形态, 口令对但 pepper 不对就验不过(证明 pepper 真的参与了派生)
+  const peppered = await hashPassword('password-12345', pepperEnv);
+  assert.match(peppered, /^pbkdf2_sha256p\$/);
+  assert.equal(await verifyPassword('password-12345', peppered, pepperEnv), true);
+  assert.equal(await verifyPassword('password-12345', peppered, plainEnv), false, '没配 pepper 时不能降级去验');
+  assert.equal(await verifyPassword('password-12345', peppered, { ADMIN_PASSWORD_PEPPER: 'other' }), false);
+
+  // 配了 pepper 之后: 老哈希照旧能验, 但要升级(登录时会重写成带 pepper 的)
+  assert.equal(await verifyPassword('password-12345', legacy, pepperEnv), true);
+  assert.equal(needsRehash(legacy, pepperEnv), true);
+
+  // 假哈希: 与真校验同一开销, 永远 false(账号不存在时用它抹掉时间差)
+  assert.equal(await verifyDummy('whatever', plainEnv), false);
+  assert.equal(await verifyDummy('whatever', pepperEnv), false);
+  assert.equal(needsRehash('garbage', plainEnv), true, '认不出的形态一律重写');
+});
+
+test('IN 分片: 按 D1 的 100 个绑定参数上限切批, 顺带去重与过滤', () => {
+  assert.equal(IN_CHUNK_SIZE, 90);
+  assert.deepEqual(chunkIds([1, 2, 3]), [[1, 2, 3]]);
+  assert.deepEqual(chunkIds([1, 1, 2, 0, -3, 'x', 4]), [[1, 2, 4]], '去重 + 只留正整数');
+  assert.deepEqual(chunkIds([]), []);
+  assert.deepEqual(chunkIds(null), []);
+  const chunks = chunkIds(Array.from({ length: 200 }, (item, index) => index + 1));
+  assert.deepEqual(chunks.map((chunk) => chunk.length), [90, 90, 20]);
+  chunks.forEach((chunk) => assert.equal(marksOf(chunk), chunk.map(() => '?').join(',')));
 });
 
 test('路由表就是计划里的 33 条对外接口(静态页不计入)', () => {

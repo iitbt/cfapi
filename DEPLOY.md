@@ -60,7 +60,7 @@
 
    ```powershell
    cd <本项目目录>
-   python tools\split_sql.py out\schema app\sql\0001_schema.sql app\sql\0002_rate_limit.sql app\sql\0003_wechat_token.sql app\sql\0004_admin.sql
+   python tools\split_sql.py out\schema app\sql\0001_schema.sql app\sql\0002_rate_limit.sql app\sql\0003_wechat_token.sql app\sql\0004_admin.sql app\sql\0005_drop_redundant_indexes.sql
    ```
 
 2. 打开 D1 里的 `lyjxxapp-d1` → **Console / Query**，按文件名前面的序号从小到大，逐块粘贴 → **Run**：
@@ -72,8 +72,15 @@
    | 3 | `out/schema/03_0002_rate_limit.sql` | 限流计数表 |
    | 4 | `out/schema/04_0003_wechat_token.sql` | 微信 token 缓存表 |
    | 5 | `out/schema/05_0004_admin.sql` | 管理员账号表（后台登录要用） |
+   | 6 | `out/schema/06_0005_drop_redundant_indexes.sql` | 冗余索引清理（幂等，重复跑也没事） |
 
 3. 每一块都要"无报错"才算过。建表块只在第一次成功，重跑会提示 `table ... already exists`，这是正常的。
+
+4. **老库才需要**：`app/sql/0006_news_notnull_rebuild.sql` 会把 news 与三张关联表收紧成 `NOT NULL`（口径与新建库一致）。
+
+   > ⚠️ 这个脚本**会重建表**：`wrangler d1 execute lyjxxapp-d1 --file=app/sql/0006_news_notnull_rebuild.sql --remote`（或把整个文件**一次性**粘进控制台）。
+   > 执行前**必须先备份**：`wrangler d1 export lyjxxapp-d1 --remote --output backup-<日期>.sql`（控制台的 Time Travel 也能回滚到 7 天内的任意时间点）。
+   > **不执行也不影响功能** —— 只是老库这几列还允许 NULL，写入漏传时可能让筛选悄悄漏行。
 
 ## 第 5 步 把旧数据导进去（全新部署可跳过）
 
@@ -144,7 +151,8 @@ $b = New-Object byte[] 32
 | --- | --- | --- |
 | `MEDIA_BASE` | `https://storage.250036.xyz` | 图片、视频对外用的地址 |
 | `DEV_WECHAT_MOCK` | 先验收填 `"1"`，正式上线改 `"0"` | `"1"` = 随便一个登录码都能进（方便先跑通），`"0"` = 真去问微信 |
-| `ENABLE_SQL_TOOL` | 要用"数据库管理 / 素材库治理"页填 `"1"`，用完改回 `"0"` | 开这两个后台页面（**默认关**，看全库数据、执行 SQL 的页面） |
+| `ENABLE_SQL_TOOL` | 要用"数据库管理 / 素材库治理"页临时填 `"1"`，用完改回 `"0"` | 开这两个后台页面。**仓库里出厂就是 `"0"`**（2.4.9 起）：能看全库数据、能执行 SQL 的页面不长期暴露 |
+| `ALLOWED_ORIGINS` | `https://lyjx.250036.xyz` | CORS 白名单（逗号分隔）。同源访问不需要 CORS 头，收窄它不影响后台/状态页，只让别的站点读不到接口响应 |
 | `ENABLE_PUBLIC_PROBE` | `"1"` | 开放 `/apitest` 连通性探测（小程序"检测线路"要用） |
 | `OBSERVABILITY_ENABLED` | `"0"` | `"1"` 才开放 `/metrics` 用量页，平时关着 |
 
@@ -177,6 +185,29 @@ npm run deploy     # 正式部署
 
 > 部署成功后，**改了后台的样式、脚本或页面的话，要先把 `main.js` 顶部的 `API_VERSION` 加一位再部署**，否则浏览器会一直用旧文件。
 
+## 第 7.5 步 上传后台大件静态资源（2.4.9 起要做一次）
+
+后台的第三方大件（wangEditor 与图标字体）不再内联进 Worker 包体，改从 R2 直出（页面地址不变，仍是 `/admin/static/...?v=<版本号>`）。
+把这两个目录按同样的相对路径传上去，**R2 键前缀是 `admin/`**：
+
+| 本机文件 | R2 对象键 |
+| --- | --- |
+| `app/admin/static/vendor/wangeditor/*` | `admin/vendor/wangeditor/*` |
+| `app/admin/static/vendor/fonts/*` | `admin/vendor/fonts/*` |
+
+用 rclone（已按 `tools/media_to_r2.md` 配好桶的 S3 凭据）直接照搬目录结构：
+
+```powershell
+rclone copy app\admin\static\vendor\wangeditor lyjxxapp-r2:lyjxxapp-r2/admin/vendor/wangeditor
+rclone copy app\admin\static\vendor\fonts      lyjxxapp-r2:lyjxxapp-r2/admin/vendor/fonts
+```
+
+**没上传时的表现**（不影响后台还能不能用，只影响这两处）：
+- 笔记编辑页的富文本编辑器退回**普通文本域**（页面顶部有提示，粘贴 HTML 照样能保存、前台显示不受影响）；
+- 图标字体缺字形，图标会显示成方块。
+
+上传后刷新页面就行 —— 地址带 `?v=<API_VERSION>`，浏览器不会拿旧的缓存。
+
 ## 第 8 步 绑域名、加微信白名单
 
 1. Worker → **Settings → Domains & Routes → Add → Custom domain** → `lyjx.250036.xyz`。
@@ -198,7 +229,12 @@ npm run deploy     # 正式部署
    | 口令 | 至少 10 位 |
 
 4. 这个初始化地址只在"还没有任何管理员"时能用，建完自动失效。
-5. **忘了口令**：在 D1 控制台执行 `DELETE FROM admin_users;`，再打开 `/admin/bootstrap` 重建一次。
+5. **忘了口令**：先 `wrangler d1 export lyjxxapp-d1 --remote --output backup-<日期>.sql` 备份，再在 D1 控制台执行
+   `UPDATE admin_users SET password=NULL WHERE username='<你的账号>';`（只想重置自己）或
+   `DELETE FROM admin_users;`（**会清空全部管理员**，含其它超管），然后打开 `/admin/bootstrap` 重建一次。
+6. **可选加固（口令 pepper）**：把 `ADMIN_PASSWORD_PEPPER` 加成一个密文变量（32+ 位随机字符）后再部署 ——
+   配了之后新口令与"登录时自动升级的老口令"都会带上它，**拿到库也爆不动**。
+   ⚠️ 配了就不能删：删掉之后所有带 pepper 的账号都验不过，只能按第 5 步重置口令。
 
 ## 第 10 步 上传素材
 

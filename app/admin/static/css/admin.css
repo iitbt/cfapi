@@ -313,8 +313,9 @@
 .mp-video video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
 
 /* ---- 正文排版: 预览内容(.news-content) 与 编辑区内容(wangEditor 的可编辑区) 同源 ----
-   编辑区选择器带 #contentEditor(ID) 前缀: 页面里 wangEditor 的 CSS 来自 CDN, 引入顺序在
-   admin.css **之后**, 同权重它会赢 —— 用 ID 提高权重才能稳定覆盖它的段落间距等默认值。 */
+   编辑区选择器带 #contentEditor(ID) 前缀: 页面里 wangEditor 的 CSS 是**自托管**的
+   (/admin/static/vendor/wangeditor/style.css, 由编辑页在 admin.css 之后引入), 同权重它会赢 ——
+   用 ID 提高权重才能稳定覆盖它的段落间距等默认值。 */
 .news-content,
 #contentEditor .w-e-text-container [data-slate-editor] {
   font-size: calc(15px * var(--mp-scale)); line-height: 1.7; color: #333;

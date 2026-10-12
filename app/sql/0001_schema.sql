@@ -3,6 +3,9 @@
 -- 差异一: 剔除 admin_users(管理后台专用)、schema_migrations(旧库自愈台账)、app_api_routes(代码已无引用的遗留表)
 -- 差异二: datetime('now','localtime') 改为 datetime('now','+8 hours'), 固定东八区且不依赖时区表
 -- 保留说明: news.type 的默认值 'admin_users' 属业务取值, 原样保留
+-- 2.4.9 收紧(只影响**新建**的库): 热点列补 NOT NULL 默认值 —— 旧库这几列允许 NULL,
+-- 写入漏传时会留下 NULL, 让 `WHERE status=?` / `COUNT` 这类筛选悄悄漏行;
+-- 老库要同样收紧请执行 0006_news_notnull_rebuild.sql(重建表, 见该文件头部的风险说明)
 -- 用法: wrangler d1 execute <DB_NAME> --file=app/api-cf/schema/0001_schema.sql --remote
 CREATE TABLE app_categories (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,14 +125,14 @@ CREATE TABLE "news" (
   "category" TEXT NOT NULL DEFAULT '',
   "image" TEXT,
   "video_url" TEXT,
-  "publish_time" TEXT DEFAULT (datetime('now','+8 hours')),
+  "publish_time" TEXT NOT NULL DEFAULT (datetime('now','+8 hours')),
   "activity_time" TEXT,
   "view_count" INTEGER NOT NULL DEFAULT 0,
-  "shares" INTEGER DEFAULT 0,
-  "likes" INTEGER DEFAULT 0,
-  "favorites" INTEGER DEFAULT 0,
+  "shares" INTEGER NOT NULL DEFAULT 0,
+  "likes" INTEGER NOT NULL DEFAULT 0,
+  "favorites" INTEGER NOT NULL DEFAULT 0,
   "type" TEXT DEFAULT 'admin_users',
-  "status" TEXT DEFAULT 'approved'
+  "status" TEXT NOT NULL DEFAULT 'approved'
 , deleted_at TEXT);
 CREATE TABLE "news_comments" (
   "id" INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -143,13 +146,13 @@ CREATE TABLE "news_favorites" (
   "id" INTEGER PRIMARY KEY AUTOINCREMENT,
   "news_id" INTEGER NOT NULL DEFAULT 0,
   "user_id" INTEGER NOT NULL DEFAULT 0,
-  "created_at" TEXT NOT NULL DEFAULT ''
+  "created_at" TEXT NOT NULL DEFAULT (datetime('now','+8 hours'))
 );
 CREATE TABLE "news_likes" (
   "id" INTEGER PRIMARY KEY AUTOINCREMENT,
   "news_id" INTEGER NOT NULL DEFAULT 0,
   "user_id" INTEGER NOT NULL DEFAULT 0,
-  "created_at" TEXT NOT NULL DEFAULT ''
+  "created_at" TEXT NOT NULL DEFAULT (datetime('now','+8 hours'))
 );
 CREATE TABLE "news_shares" (
   "id" INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -161,7 +164,7 @@ CREATE TABLE "news_view_history" (
   "id" INTEGER PRIMARY KEY AUTOINCREMENT,
   "news_id" INTEGER NOT NULL DEFAULT 0,
   "user_id" INTEGER NOT NULL DEFAULT 0,
-  "created_at" TEXT NOT NULL DEFAULT ''
+  "created_at" TEXT NOT NULL DEFAULT (datetime('now','+8 hours'))
 );
 CREATE TABLE "outdoor_activities" (
   "id" INTEGER PRIMARY KEY AUTOINCREMENT,

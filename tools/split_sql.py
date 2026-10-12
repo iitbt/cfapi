@@ -67,17 +67,22 @@ def summarize(block):
 
 
 def clear_output(out_dir):
-    """只删符合本脚本命名规则的旧产物, 防止换了块大小后旧的块还混在目录里。"""
+    """只删符合本脚本命名规则的旧产物, 防止换了块大小后旧的块还混在目录里。
+
+    删除前**先把清单打出来**: 以前是静默删, 用户把同名规则的自己文件放进来就一起没了。
+    """
     try:
-        names = os.listdir(out_dir)
+        names = sorted(os.listdir(out_dir))
     except OSError:
         return
-    for name in names:
-        if _SPLIT_NAME.match(name):
-            try:
-                os.remove(os.path.join(out_dir, name))
-            except OSError:
-                pass
+    doomed = [name for name in names if _SPLIT_NAME.match(name)]
+    if doomed:
+        print(f'清理上一次的产物 {len(doomed)} 个: {", ".join(doomed)}')
+    for name in doomed:
+        try:
+            os.remove(os.path.join(out_dir, name))
+        except OSError:
+            pass
 
 
 def main(paths, out_dir, max_bytes):

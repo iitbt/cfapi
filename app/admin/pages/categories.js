@@ -7,11 +7,12 @@ import { getNameMap, nameFor } from '../lib/categorySource.js';
 import {
   addButton, checkboxField, editShell, emptyRow, listMeta, listToolbar, numberField, selectField, switchField, textField
 } from '../lib/partials.js';
-import { statusActions, statusBadgeClass, statusKind, statusLabel } from '../lib/status.js';
+import { statusButtons, statusCell } from '../lib/status.js';
 import {
   CONTROLLED_LIST_LIMIT, auditLog, buildListUrl, idemKey, intOr, invalidateEntityCache,
-  isDuplicateSubmit, strOf
+  isDuplicateSubmit, positiveId, strOf
 } from '../lib/utils.js';
+import { redirect } from '../lib/http.js';
 
 const MANAGE_URL = '/admin/app_category_manage';
 const DELETE_CONFIRM_URL = '/admin/app_category_delete_confirm';
@@ -19,16 +20,8 @@ const COLUMNS = ['ID', '分类标识', '名称', '笔记数', '首页引用', '�
 // 标识格式: 小写字母开头 + 小写字母/数字/下划线, 最长 40(与旧站 CATEGORY_KEY_PATTERN 一致)
 const KEY_PATTERN = /^[a-z][a-z0-9_]{0,39}$/;
 
-function statusCell(row) {
-  const kind = statusKind('app_category');
-  return `<span class="badge text-bg-${statusBadgeClass(kind, row.status)}" data-status-badge>${escapeHtml(statusLabel(kind, row.status))}</span>`;
-}
-
 function actionsCell(row) {
-  const kind = statusKind('app_category');
-  const buttons = statusActions(kind, row.status).map((action) => `<button type="button" class="btn btn-sm btn-${action.btnClass}"`
-    + ` data-status-kind="${kind.key}" data-status-id="${row.id}" data-status-action="${escapeHtml(action.value)}"`
-    + `${action.visible ? '' : ' hidden'}>${escapeHtml(action.label)}</button>`).join('');
+  const buttons = statusButtons('app_category', row);
   return `<div class="action-cell justify-content-center">
     <a class="btn btn-sm btn-outline-primary" href="/admin/app_category_edit?id=${row.id}"><i class="bi bi-pencil" aria-hidden="true"></i> 编辑</a>
     ${buttons}
@@ -48,7 +41,7 @@ function renderRows(rows) {
     ? `<span class="badge text-bg-warning">${intOr(row.home_ref_count, 0)}</span>`
     : '0'}</td>
   <td class="text-nowrap">${row.sort_order}</td>
-  <td class="text-nowrap">${statusCell(row)}</td>
+  <td class="text-nowrap">${statusCell('app_category', row)}</td>
   <td class="text-nowrap">${actionsCell(row)}</td>
 </tr>`).join('');
 }
@@ -68,13 +61,24 @@ async function managePage(ctx) {
   let error = '';
   let unknown = [];
   try {
-    total = intOr((await one(ctx.env, 'SELECT COUNT(*) AS c FROM app_categories')).c, 0);
-    rows = await all(ctx.env,
-      'SELECT c.*, '
-      + '(SELECT COUNT(*) FROM news n WHERE n.category=c.category_key AND n.deleted_at IS NULL) AS news_count, '
-      + '(SELECT COUNT(*) FROM app_home_sections h WHERE h.item_id=c.category_key) AS home_ref_count '
-      + 'FROM app_categories c ORDER BY c.sort_order ASC, c.id ASC LIMIT ?', CONTROLLED_LIST_LIMIT);
-    unknown = await unknownCategories(ctx.env);
+    // 四条互不依赖 → 一起发。
+    // 两个"关联计数"从**逐行子查询**改成一次 GROUP BY 再在 JS 里合并: 逐行子查询是"2 × 分类数"次扫描,
+    // 分类一多(上限 200)就是几百次子查询, 而这里只要两条 GROUP BY。
+    const [counted, categories, newsCounts, homeCounts, unknownRows] = await Promise.all([
+      one(ctx.env, 'SELECT COUNT(*) AS c FROM app_categories'),
+      all(ctx.env, 'SELECT * FROM app_categories ORDER BY sort_order ASC, id ASC LIMIT ?', CONTROLLED_LIST_LIMIT),
+      all(ctx.env, 'SELECT category, COUNT(*) AS total FROM news WHERE deleted_at IS NULL GROUP BY category'),
+      all(ctx.env, 'SELECT item_id, COUNT(*) AS total FROM app_home_sections GROUP BY item_id'),
+      unknownCategories(ctx.env)
+    ]);
+    total = intOr(counted && counted.c, 0);
+    const newsMap = new Map(newsCounts.map((item) => [strOf(item.category), intOr(item.total, 0)]));
+    const homeMap = new Map(homeCounts.map((item) => [strOf(item.item_id), intOr(item.total, 0)]));
+    rows = categories.map((row) => Object.assign({}, row, {
+      news_count: newsMap.get(strOf(row.category_key)) || 0,
+      home_ref_count: homeMap.get(strOf(row.category_key)) || 0
+    }));
+    unknown = unknownRows;
   } catch (err) {
     console.error('获取分类列表失败', err && err.message);
     rows = [];
@@ -110,9 +114,6 @@ async function managePage(ctx) {
   });
 }
 
-function redirect(location) {
-  return new Response(null, { status: 302, headers: { location } });
-}
 
 async function noteCountOf(env, categoryKey) {
   const row = await one(env, 'SELECT COUNT(*) AS c FROM news WHERE category=? AND deleted_at IS NULL', categoryKey)
@@ -299,7 +300,7 @@ async function deleteConfirmPage(ctx) {
 
 async function deleteSubmit(ctx) {
   const rawId = ctx.form.id;
-  if (!rawId || !/^\d+$/.test(String(rawId).replace('-', ''))) {
+  if (!positiveId(rawId)) {
     return redirect(buildListUrl(MANAGE_URL, { error: '参数错误' }));
   }
   if (await isDuplicateSubmit(ctx.env, idemKey('category_delete', String(ctx.session.id || '-'), String(rawId)))) {

@@ -28,6 +28,7 @@ import { settings } from '../../core/config.js';
 import { adminLayout } from '../lib/layout.js';
 import { filterButtons, pageHeader, searchBar, searchInput, searchSelect } from '../lib/partials.js';
 import { auditLog, buildListUrl, intOr, strOf } from '../lib/utils.js';
+import { json } from '../lib/http.js';
 import {
   MAX_EXEC_ROWS, MAX_PAGE_SIZE, PAGE_SIZES, SAFE_TABLES, SENSITIVE_COLUMN_NAMES,
   allColumns, classifyStatement, runStatement, tableList, tableMeta, tablePage, tableRow, tableRows
@@ -49,13 +50,6 @@ const viewOf = (raw) => {
 //: 可写范围 = 与执行 SQL 同一份白名单业务表。不在清单里的表(admin_users / app_* 等)只能看,
 //  页面会把编辑与批量按钮藏起来(不信前端也白搭: 服务端 exec 会再拦一次)
 const isWritable = (name) => SAFE_TABLES.includes(name);
-
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json; charset=utf-8' }
-  });
-}
 
 // 页面级闸门: 非超管回控制面板; 开关关闭时给明确说明而不是空白页
 function gate(ctx, env) {
@@ -274,7 +268,8 @@ async function renderData(ctx, name, query) {
   const size = Math.min(Math.max(1, intOr(query.size, PAGE_SIZES[0])), MAX_PAGE_SIZE);
   const view = {
     sort: strOf(query.sort), dir: strOf(query.dir),
-    column: strOf(query.col), value: strOf(query.val), q: strOf(query.q)
+    column: strOf(query.col), value: strOf(query.val), q: strOf(query.q),
+    prefix: strOf(query.prefix) === '1'
   };
   const data = await tablePage(ctx.env, name, strOf(query.page) || 1, size, view);
   if (!data.ok) {
@@ -282,7 +277,7 @@ async function renderData(ctx, name, query) {
   }
   const baseFilters = {
     table: name, view: 'data', sort: data.sort, dir: data.sort ? data.dir : '',
-    col: data.column, val: data.value, q: data.q,
+    col: data.column, val: data.value, q: data.q, prefix: data.prefix ? '1' : '',
     size: size === PAGE_SIZES[0] ? '' : size
   };
   // 可勾选批量 = 可写表 + 有 rowid(按 rowid 定位最省: 一条 `DELETE ... WHERE rowid IN (…)`)
@@ -323,6 +318,7 @@ async function renderData(ctx, name, query) {
     ${data.sort ? `<input type="hidden" name="sort" value="${escapeHtml(data.sort)}"><input type="hidden" name="dir" value="${escapeHtml(data.dir.toLowerCase())}">` : ''}
     ${data.column && data.value ? `<input type="hidden" name="col" value="${escapeHtml(data.column)}"><input type="hidden" name="val" value="${escapeHtml(data.value)}">` : ''}
     ${data.q ? `<input type="hidden" name="q" value="${escapeHtml(data.q)}">` : ''}
+    ${data.prefix ? '<input type="hidden" name="prefix" value="1">' : ''}
     <select class="form-select form-select-sm" name="size" style="width:auto" onchange="this.form.submit()">
       ${PAGE_SIZES.map((value) => `<option value="${value}"${value === size ? ' selected' : ''}>每页 ${value} 行</option>`).join('')}
     </select>
@@ -339,12 +335,19 @@ async function renderData(ctx, name, query) {
       items: [['', '按字段筛选…']].concat(data.columns.map((column) => [column, column]))
     })
       + searchInput({ name: 'val', value: data.value, placeholder: '包含该内容' })
-      + searchInput({ name: 'q', value: data.q, placeholder: '全列关键字搜索' }),
+      + searchInput({ name: 'q', value: data.q, placeholder: '全列关键字搜索' })
+      // 前缀匹配: `kw%` 能用上索引, 是全表扫描下最省的一种写法(默认仍是包含匹配, 与旧站一致)
+      + `<label class="d-flex align-items-center gap-1 small text-muted mb-0" title="只匹配开头: 能用上索引, 少读很多行">
+          <input class="form-check-input mt-0" type="checkbox" name="prefix" value="1"${data.prefix ? ' checked' : ''}> 前缀匹配
+        </label>`,
     extra: data.filtered ? link(buildListUrl(PAGE_URL, { filters: { table: name, view: 'data', size: size === PAGE_SIZES[0] ? '' : size } }), '清空筛选') : ''
   });
+  // 关键字搜索是全表扫描(每行都过一次 LIKE), 把代价与"怎么搜更省"直接写在搜索条下面
+  const searchHint = '<div class="small text-muted mb-2">关键字搜索是整表包含匹配（只搜文本列）；勾「前缀匹配」能让 D1 用上索引、少读很多行。</div>';
   const tips = [
     data.sort ? `按 <code>${escapeHtml(data.sort)}</code> ${data.dir === 'ASC' ? '升序' : '降序'}` : '',
     data.column && data.value ? `字段 <code>${escapeHtml(data.column)}</code> 含「${escapeHtml(data.value)}」` : '',
+    data.q ? `关键字「${escapeHtml(data.q)}」${data.prefix ? '（前缀匹配）' : ''}` : '',
     data.q ? `关键字「${escapeHtml(data.q)}」` : ''
   ].filter(Boolean).join(' · ');
   return `<div class="card"><div class="card-body">
@@ -354,6 +357,7 @@ async function renderData(ctx, name, query) {
       <span class="ms-auto d-flex gap-2">${prev}${next}</span>
     </div>
     <div class="mb-2">${filterForm}</div>
+    ${searchHint}
     ${tips ? `<div class="small text-muted mb-2">当前：${tips}（点列头可改排序，再点一次换方向）</div>` : '<div class="small text-muted mb-2">点列头可排序；行尾按钮依次是「复制 JSON / 复制 INSERT / 生成 UPDATE / 编辑 / 取完整行」。</div>'}
     ${selectable ? `<div class="d-flex flex-wrap align-items-center gap-2 mb-2" data-selection-bar>
       <span class="small text-muted" data-selection-count>已选 0 行</span>
@@ -421,26 +425,18 @@ function sqlConsole() {
 }
 
 /**
- * 成本与额度卡片(2.2.9): 账号的用量参考值 + 本机会话累计 + "这一页怎么省额度"。
- * 用量数字是**手工记录的快照**, 只做参考(实时值以 Cloudflare 控制台为准) —— 不假装能查到实时配额:
- * 查账户用量要额外的 API 凭据, 这一页没有也不该有(它只拿得到 D1 自身的 meta)。
+ * 成本与额度卡片(2.2.9): 额度口径说明 + 本机会话累计 + "这一页怎么省额度"。
+ * 为什么不再写死用量数字: 手工快照必然过期(写进去当天就开始不准), 反而误导排障 ——
+ * 实时值只有 Cloudflare 控制台看得到(查账户用量要额外 API 凭据, 这一页没有也不该有)。
  * 本机累计由页尾脚本从每次响应的 meta 里累加, 只存在这台浏览器的 localStorage 里, 不上传。
  */
 function costCard() {
   return `<details class="card mb-3"><summary class="card-body py-2" style="cursor:pointer">
-    成本与额度（参考用量快照 · 本机会话累计 · 这一页怎么省额度）
+    成本与额度（本机会话累计 · 去哪看实时用量 · 这一页怎么省额度）
   </summary><div class="card-body pt-0">
-    <div class="table-responsive"><table class="table table-sm mb-2" style="max-width:40rem">
-      <thead><tr><th>项目</th><th>用量（2026-10-07 记录）</th><th>套餐上限</th></tr></thead>
-      <tbody>
-        <tr><td>已读取行</td><td>28.98k</td><td>5M</td></tr>
-        <tr><td>已写入行</td><td>69</td><td>100k</td></tr>
-        <tr><td>总储存</td><td>1.66 MB</td><td>5 GB</td></tr>
-        <tr><td>计量存储</td><td>25.34 kB-mo</td><td>—</td></tr>
-      </tbody>
-    </table></div>
     <div class="small text-muted mb-2">
-      上面是手工记录的**参考快照**，不是实时值；实时用量看 Cloudflare 控制台的 D1 页面。
+      <b>实时用量只看 Cloudflare 控制台</b>：Dashboard → Workers &amp; Pages → D1 → 选库，能看行读写与存储；
+      免费套餐的行读取额度是 <b>每天 500 万行</b>、写入 <b>10 万行/天</b>。
       <b>读取行是这一页最该盯的指标</b>：一次全表扫描就能吃掉一大截。
     </div>
     <div class="d-flex flex-wrap align-items-center gap-2 mb-2">

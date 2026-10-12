@@ -89,7 +89,8 @@ test('系统信息: 展示 Worker 口径的信息, 不编进程数据', async ()
     }
   });
   const cookie = await loginCookie(env);
-  const html = await (await get('/admin/system_info', env, cookie)).text();
+  // 行数与素材占用默认不统计(要 ?counts=1), 这里显式要统计
+  const html = await (await get('/admin/system_info?counts=1', env, cookie)).text();
   assert.ok(html.includes('Cloudflare Workers'), '运行环境要照实说是 Serverless');
   assert.ok(html.includes('不适用 —— 每次请求由边缘按需拉起'), '不编 PID/运行时长');
   assert.ok(html.includes('4 张'), '业务表数量');
@@ -100,6 +101,29 @@ test('系统信息: 展示 Worker 口径的信息, 不编进程数据', async ()
   assert.ok(html.includes('data-live="clock"'), '服务器时间给 live_time.js 走动');
   assert.ok(html.includes('data-live-anchor='));
   assert.ok(!html.includes('Python'), '不该出现旧站的 Python 版本行');
+});
+
+test('系统信息: 默认不跑全库 COUNT 与全桶列举(要 ?counts=1 才跑)', async () => {
+  const { env, state } = makeAdminEnv({
+    mediaObjects: [{ key: 'news_uploads/a.png', size: 2048, uploaded: '2026-10-01T00:00:00Z' }],
+    counts: { users: 4, news: 69, admin_users: 1, news_comments: 12 },
+    db: (sql, args, kind) => {
+      if (kind === 'all' && /FROM sqlite_master/i.test(sql)) {
+        return [{ name: 'users' }, { name: 'news' }];
+      }
+      if (kind === 'first' && /AS visible_news/i.test(sql)) {
+        return { visible_news: 67, recycled_news: 2, users: 4, comments: 12 };
+      }
+      return undefined;
+    }
+  });
+  const cookie = await loginCookie(env);
+  const html = await (await get('/admin/system_info', env, cookie)).text();
+  assert.ok(html.includes('2 张'), '表清单这类便宜信息照常显示');
+  assert.ok(html.includes('统计行数与素材占用'), '要给一个按需统计的入口');
+  assert.ok(html.includes('未统计'), '行数与占用默认显示"未统计"');
+  assert.equal(findCall(state, /AS visible_news/i), null, '默认不跑那 4 个 COUNT 子查询');
+  assert.equal(findCall(state, /SELECT COUNT\(\*\) AS c FROM/i), null, '默认不做逐表 COUNT');
 });
 
 test('控制面板: 13 张卡 + 7 日趋势 + 最新列表', async () => {
@@ -142,7 +166,7 @@ test('系统信息: 统计失败时不伪装成"0 张表", 并把原因显示在
     }
   });
   const cookie = await loginCookie(env);
-  const html = await (await get('/admin/system_info', env, cookie)).text();
+  const html = await (await get('/admin/system_info?counts=1', env, cookie)).text();
   assert.ok(html.includes('统计失败，无法判定'), '失败时不能照常显示数字(2026-10-06 线上就被这个误导过)');
   assert.ok(html.includes('读取表清单失败'), '要在页面上说明是哪一步失败');
   assert.ok(html.includes('D1_ERROR'), '原因原文(截断)要可见, 否则只能翻 Workers Logs');

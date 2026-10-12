@@ -5,6 +5,7 @@ import { all } from '../../core/db.js';
 import { adminLayout } from '../lib/layout.js';
 import { deleteConfirmCard } from '../lib/partials.js';
 import { intOr, strOf } from '../lib/utils.js';
+import { redirect } from '../lib/http.js';
 
 // fixed: 提交时必须一起带上的固定字段(与旧站按钮的 name 对齐)
 // passthrough: 从地址栏透传的筛选/页码(回列表时保留)
@@ -55,9 +56,6 @@ const CONFIG_TIP = '提示：只删除这条配置记录，磁盘上的图片/�
   + '如果只是想暂时不展示，请返回列表改用「停用」。';
 const NEWS_TIP = '提示：如果只是想下架而不是彻底清除，请返回回收站保留该笔记（超过保留期会自动清理）。';
 
-function redirect(location) {
-  return new Response(null, { status: 302, headers: { location } });
-}
 
 // 用户彻底删除的影响面(与对外接口/后台删除同一份口径, 只统计未删笔记)
 async function userImpact(env, userId) {

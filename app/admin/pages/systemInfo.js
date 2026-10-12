@@ -6,10 +6,10 @@
 //   ④ 素材占用列 R2(与旧站同一套"扫描上限"口径)。
 import { escapeHtml } from '../../core/html.js';
 import { settings } from '../../core/config.js';
-import { EXPECTED_TABLES, countTables, coreCounts, fmtBytes } from '../../core/overview.js';
+import { EXPECTED_TABLES, countTables, coreCounts, fmtBytes, tableNames } from '../../core/overview.js';
 import { mediaUsage } from '../../core/storage.js';
 import { adminLayout } from '../lib/layout.js';
-import { auditLog } from '../lib/utils.js';
+import { auditLog, strOf } from '../lib/utils.js';
 
 const PAGE_URL = '/admin/system_info';
 
@@ -36,19 +36,51 @@ function group(title, icon, rows, footer = '') {
 </div></div>`;
 }
 
+//: "行数与占用"默认不统计: 一次全库 COUNT + 一次全桶列举都不便宜, 需要时点按钮才跑(见 systemInfoPage)
+const STATS_HINT = '未统计 —— 点上面的「统计行数与素材占用」再看';
+
 async function systemInfoPage(ctx) {
-  const counts = await coreCounts(ctx.env);
-  const tables = await countTables(ctx.env);
-  const media = await mediaUsage(ctx.env);
-  const missing = EXPECTED_TABLES.filter((name) => !tables.rows.some(([table]) => table === name));
+  const wantsCounts = strOf(ctx.query.counts) === '1';
+  // 表清单只要一条语句, 任何时候都取; 行数/占用才是贵的
+  let names = [];
+  let namesFailed = '';
+  try {
+    names = await tableNames(ctx.env);
+  } catch (error) {
+    namesFailed = String((error && error.message) || error || '未知错误');
+    console.error('读取表清单失败', namesFailed);
+  }
+  let counts = null;
+  let tables = null;
+  let media = null;
+  if (wantsCounts) {
+    // 三条互不依赖 → 一起发; 顺序 await 等于把三次往返串起来(与其它页面同一条纪律)
+    [counts, tables, media] = await Promise.all([
+      coreCounts(ctx.env),
+      countTables(ctx.env),
+      mediaUsage(ctx.env)
+    ]);
+  }
+  const missing = tables && !tables.failed
+    ? EXPECTED_TABLES.filter((name) => !tables.rows.some(([table]) => table === name))
+    : [];
   const anchorMs = Date.now();
   const serverTime = new Date(anchorMs + 8 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ');
 
+  const tableCountText = namesFailed
+    ? '<span class="text-danger">读取失败</span>'
+    : `${names.length} 张`;
   const cards = [
-    statCard('业务表数量', `${tables.rows.length} 张`, 'bi-table', 'primary'),
-    statCard('记录总数', String(tables.total), 'bi-database', 'secondary'),
-    statCard('对外可见笔记', String(counts.visibleNews), 'bi-file-earmark-richtext', 'success'),
-    statCard('回收站笔记', String(counts.recycledNews), 'bi-trash3', 'warning')
+    statCard('业务表数量', tableCountText, 'bi-table', 'primary'),
+    counts
+      ? statCard('记录总数', String(tables.total), 'bi-database', 'secondary')
+      : statCard('记录总数', '<span class="small text-muted">未统计</span>', 'bi-database', 'secondary'),
+    counts
+      ? statCard('对外可见笔记', String(counts.visibleNews), 'bi-file-earmark-richtext', 'success')
+      : statCard('对外可见笔记', '<span class="small text-muted">未统计</span>', 'bi-file-earmark-richtext', 'success'),
+    counts
+      ? statCard('回收站笔记', String(counts.recycledNews), 'bi-trash3', 'warning')
+      : statCard('回收站笔记', '<span class="small text-muted">未统计</span>', 'bi-trash3', 'warning')
   ].join('');
 
   const runtime = group('服务与运行环境', 'bi-hdd', [
@@ -60,34 +92,47 @@ async function systemInfoPage(ctx) {
     ['请求时间', escapeHtml(new Date(anchorMs).toISOString())]
   ]);
 
+  // 统计失败**不要**照常显示 "0 张 / 缺失 N 张" —— 那看起来像"表全丢了",
+  // 实际只是这一条统计失败(2026-10-06 线上就被这个误导过)。这里一律标"无法判定"并给出原因。
+  const failText = '<span class="text-danger">统计失败，无法判定</span>';
   const database = group('数据库', 'bi-database', [
     ['数据库驱动', 'Cloudflare D1（SQLite 兼容）'],
-    // 统计没跑通时**不要**照常显示 "0 张 / 缺失 N 张" —— 那看起来像"表全丢了",
-    // 实际只是这一条统计失败(2026-10-06 线上就被这个误导过)。这里一律标"无法判定"并给出原因。
-    ['业务表数量', tables.failed
-      ? '<span class="text-danger">统计失败，无法判定</span>'
-      : (tables.empty ? '0 张（库里确实没有业务表）' : `${tables.rows.length} 张`)],
-    ['记录总数', tables.failed
-      ? '<span class="text-danger">统计失败，无法判定</span>'
-      : `${tables.total.toLocaleString('en-US')}<div class="small text-muted">含回收站与配置表</div>`],
-    ['其中：对外可见笔记', `${counts.visibleNews.toLocaleString('en-US')}<div class="small text-muted">不含回收站，与控制面板「笔记总数」是同一个数</div>`],
-    ['其中：回收站笔记', `${counts.recycledNews.toLocaleString('en-US')}<div class="small text-muted">已删除待清理，计入上面的记录总数</div>`],
-    ['表行数明细', tables.failed
-      ? `<span class="text-danger">统计失败：${escapeHtml(tables.reason || '详见 Workers 日志')}</span>`
-      : (tables.empty
-        ? '<span class="text-muted">库里没有业务表（还没建表？见 DEPLOY 的 A4）</span>'
-        : `<details><summary class="small">展开 ${tables.rows.length} 张表</summary><div class="small">${tables.rows.map(([name, count]) => `<code>${escapeHtml(name)}</code> ${count}`).join('　')}</div></details>`)],
-    ['应有数据表缺失', tables.failed
-      ? '<span class="text-muted">无法判定（上面的行数统计失败）</span>'
-      : (missing.length ? `<span class="text-danger">${missing.length} 张：${missing.map((name) => escapeHtml(name)).join(', ')}</span>` : '无')]
+    ['业务表数量', namesFailed
+      ? `<span class="text-danger">读取失败：${escapeHtml(namesFailed).slice(0, 160)}</span>`
+      : `${names.length} 张`],
+    ['记录总数', !counts
+      ? `<span class="text-muted">${STATS_HINT}</span>`
+      : (tables.failed
+        ? failText
+        : `${tables.total.toLocaleString('en-US')}<div class="small text-muted">含回收站与配置表</div>`)],
+    ['其中：对外可见笔记', !counts
+      ? `<span class="text-muted">${STATS_HINT}</span>`
+      : `${counts.visibleNews.toLocaleString('en-US')}<div class="small text-muted">不含回收站，与控制面板「笔记总数」是同一个数</div>`],
+    ['其中：回收站笔记', !counts
+      ? `<span class="text-muted">${STATS_HINT}</span>`
+      : `${counts.recycledNews.toLocaleString('en-US')}<div class="small text-muted">已删除待清理，计入上面的记录总数</div>`],
+    ['表行数明细', !counts
+      ? `<span class="text-muted">${STATS_HINT}</span>`
+      : (tables.failed
+        ? `<span class="text-danger">统计失败：${escapeHtml(tables.reason || '详见 Workers 日志')}</span>`
+        : (tables.empty
+          ? '<span class="text-muted">库里没有业务表（还没建表？见 DEPLOY 的 A4）</span>'
+          : `<details><summary class="small">展开 ${tables.rows.length} 张表</summary><div class="small">${tables.rows.map(([name, count]) => `<code>${escapeHtml(name)}</code> ${count}`).join('　')}</div></details>`))],
+    ['应有数据表缺失', !counts
+      ? `<span class="text-muted">${STATS_HINT}</span>`
+      : (tables.failed
+        ? '<span class="text-muted">无法判定（上面的行数统计失败）</span>'
+        : (missing.length ? `<span class="text-danger">${missing.length} 张：${missing.map((name) => escapeHtml(name)).join(', ')}</span>` : '无'))]
   ]);
 
   const storage = group('缓存与存储', 'bi-hdd-stack', [
     ['接口缓存', '<span class="text-muted">未启用 —— Workers 无进程内缓存，接口层当前不缓存</span>'],
     ['素材存储', 'Cloudflare R2（桶随部署绑定，公开域由 MEDIA_BASE 决定）'],
-    ['素材占用', media.failed
-      ? '<span class="text-danger">读取失败，请稍后重试</span>'
-      : `${fmtBytes(media.bytes)}（${media.count} 个文件${media.truncated ? '，已达扫描上限，实际可能更多' : ''}）`],
+    ['素材占用', !media
+      ? `<span class="text-muted">${STATS_HINT}</span>`
+      : (media.failed
+        ? '<span class="text-danger">读取失败，请稍后重试</span>'
+        : `${fmtBytes(media.bytes)}（${media.count} 个文件${media.truncated ? '，已达扫描上限，实际可能更多' : ''}）`)],
     ['媒体域', escapeHtml(settings(ctx.env).mediaBase || '未配置')]
   ]);
 
@@ -103,11 +148,16 @@ async function systemInfoPage(ctx) {
   const content = `<div class="row g-3">${cards}</div>
   <span hidden data-live-anchor="${anchorMs}"></span>
   ${runtime}${database}${storage}${toggles}
-  <div class="card mt-3"><div class="card-body d-flex flex-wrap gap-2">
-    <a class="btn btn-outline-secondary" href="/admin/static/js/live_time.js?v=${encodeURIComponent(String(ctx.version || ''))}" target="_blank" rel="noopener">查看实时时钟脚本</a>
+  <div class="card mt-3"><div class="card-body d-flex flex-wrap gap-2 align-items-center">
+    ${wantsCounts
+      ? `<a class="btn btn-outline-secondary btn-sm" href="${PAGE_URL}">收起行数统计</a>
+         <span class="small text-muted">这次统计跑了一次全库 COUNT 与一次全桶列举；下次打开默认不再跑。</span>`
+      : `<a class="btn btn-primary btn-sm" href="${PAGE_URL}?counts=1">统计行数与素材占用</a>
+         <span class="small text-muted">会跑全库逐表 COUNT 与全桶列举（各占 D1 / R2 额度），需要时再点。</span>`}
+    <a class="btn btn-outline-secondary btn-sm" href="/admin/static/js/live_time.js?v=${encodeURIComponent(String(ctx.version || ''))}" target="_blank" rel="noopener">查看实时时钟脚本</a>
   </div></div>
   <script src="/admin/static/js/live_time.js?v=${encodeURIComponent(String(ctx.version || ''))}" defer></script>`;
-  auditLog('admin.system_info.view', { user: ctx.session.username });
+  auditLog('admin.system_info.view', { user: ctx.session.username, counts: wantsCounts });
   return adminLayout({
     title: '系统信息', currentPage: 'system_info', admin: ctx.session.username,
     isSuper: ctx.session.isSuper, version: ctx.version, content

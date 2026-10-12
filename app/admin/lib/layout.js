@@ -3,6 +3,7 @@
 // ② 侧栏标记之后 inline 调 restore; ③ body 末尾同步引 admin-shell.js(DOM 已就绪, 抽屉才绑得上);
 // ④ 上传与素材库脚本也在本文件统一引(defer) —— 见 MODAL_SCRIPTS 的说明
 import { FAVICON_LINK, escapeHtml } from '../../core/html.js';
+import { settings } from '../../core/config.js';
 import { NAV_GROUPS } from './nav.js';
 
 //: 弹窗类脚本: partials.js 只渲染弹窗的 HTML, **不带 script 标签**(旧站是 _image_upload_field.html /
@@ -55,6 +56,9 @@ function alerts(message, error) {
 
 export function adminLayout(options = {}) {
   const title = options.title || '控制面板';
+  // 站点名从配置取(唯一来源 core/config.js 的 siteName/siteShort), 页面把 ctx 摊进来时带着 env;
+  // 没带 env 的调用退回同一份默认值(settings 的默认值与这里一致, 不会漂)
+  const brand = options.env ? settings(options.env) : { siteName: '狼牙极限运动笔记', siteShort: '狼牙极限' };
   // 版本号只有一个来源(main.js 的 API_VERSION, 由入口注入到 ctx); 万一没注入, 也**不要**渲染出空的"v"
   const rawVersion = String(options.version || '');
   const version = encodeURIComponent(rawVersion);
@@ -68,7 +72,7 @@ export function adminLayout(options = {}) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escapeHtml(title)} - 狼牙极限运动笔记</title>
+<title>${escapeHtml(title)} - ${escapeHtml(brand.siteName)}</title>
 ${FAVICON_LINK}
 <link href="/admin/static/vendor/bootstrap.min.css?v=${version}" rel="stylesheet">
 <link href="/admin/static/vendor/bootstrap-icons.min.css?v=${version}" rel="stylesheet">
@@ -83,7 +87,7 @@ ${FAVICON_LINK}
     <div class="sidebar-inner">
       <a class="brand" href="/admin/dashboard">
         <i aria-hidden="true" class="bi bi-shield-check"></i>
-        <span class="brand-text">狼牙笔记</span>
+        <span class="brand-text">${escapeHtml(brand.siteShort)}</span>
         ${rawVersion ? `<span class="ver">v${escapeHtml(rawVersion)}</span>` : ''}
       </a>
       <nav class="sidebar-nav" aria-label="后台功能菜单">${renderSidebar(options.currentPage, isSuper)}</nav>

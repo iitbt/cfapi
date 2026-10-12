@@ -8,11 +8,12 @@ import {
   addButton, editShell, emptyRow, filterButtons, imageUploadField, imageUploadModal, listShell, mediaLibraryModal,
   pagerScript, searchBar, searchInput, selectField, textareaField, textField
 } from '../lib/partials.js';
-import { statusActions, statusBadgeClass, statusKind, statusLabel } from '../lib/status.js';
+import { statusButtons, statusCell, statusKind } from '../lib/status.js';
 import {
   PER_PAGE, auditLog, buildListUrl, clampPage, firstScreenLimit, idemKey,
-  invalidateEntityCache, isDuplicateSubmit, intOr, strOf
+  invalidateEntityCache, isDuplicateSubmit, intOr, positiveId, strOf
 } from '../lib/utils.js';
+import { json, redirect } from '../lib/http.js';
 
 // 两份配置: 表 / 状态 kind / 文案 / 路径 / 额外字段 —— 页面结构由它驱动, 不再各写一套
 const CONFIGS = {
@@ -80,17 +81,9 @@ function topicWhere(config, keyword) {
   };
 }
 
-function statusCell(config, row) {
-  const kind = statusKind(config.kind);
-  return `<span class="badge text-bg-${statusBadgeClass(kind, row.status)}" data-status-badge>${escapeHtml(statusLabel(kind, row.status))}</span>`;
-}
-
 function actionsCell(ctx, config, row) {
-  const kind = statusKind(config.kind);
   const page = clampPage(ctx.query.page, null);
-  const buttons = statusActions(kind, row.status).map((action) => `<button type="button" class="btn btn-sm btn-${action.btnClass}"`
-    + ` data-status-kind="${kind.key}" data-status-id="${row.id}" data-status-action="${escapeHtml(action.value)}"`
-    + `${action.visible ? '' : ' hidden'}>${escapeHtml(action.label)}</button>`).join('');
+  const buttons = statusButtons(config.kind, row);
   return `<div class="action-cell justify-content-center">
     <a class="btn btn-sm btn-outline-primary" href="${config.edit}?id=${row.id}"><i class="bi bi-pencil" aria-hidden="true"></i> 编辑</a>
     <a class="btn btn-sm btn-outline-secondary" href="${config.preview}?id=${row.id}" target="_blank" rel="noopener"><i class="bi bi-eye" aria-hidden="true"></i> 预览</a>
@@ -111,7 +104,7 @@ function cellOf(ctx, config, row, column) {
   if (column === 'description') {
     return `<div class="desc-cell text-truncate clamp-lg" title="${escapeHtml(strOf(value))}">${escapeHtml(strOf(value) || '-')}</div>`;
   }
-  if (column === 'status') return statusCell(config, row);
+  if (column === 'status') return statusCell(config.kind, row);
   if (column === 'videoUrl') {
     const video = strOf(value);
     if (!video) return '-';
@@ -206,10 +199,6 @@ function legacyRedirect(kind) {
   };
 }
 
-function json(body) {
-  return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json; charset=utf-8' } });
-}
-
 async function rowsFragment(ctx) {
   // 行片段地址是 /admin/motorcycle_rows 与 /admin/outdoor_rows, 靠路径区分配置
   const config = configOf(ctx.query.topic || ctx.path);
@@ -235,12 +224,11 @@ async function rowsFragment(ctx) {
 const VIDEO_HINT = '填站内相对路径（如 video/video_xxx.mp4），或点右侧「本地上传」传新视频、「视频素材库」从服务器已有视频里选。';
 const POSTER_HINT = '封面建议使用 16:9 横版图片（如 1280×720），后台统一按 16:9 居中裁剪显示。';
 
-function redirect(location) {
-  return new Response(null, { status: 302, headers: { location } });
-}
 
-async function editPage(ctx) {
-  const config = configOf(ctx.query.topic || ctx.path);
+// 路由传入的配置是这一页唯一依据(见文件末尾 routes): 以前这里按 ?topic= 反推,
+// 于是 POST /admin/motorcycle_delete?topic=outdoor 会去写户外那张表 —— 路由名与操作对象对不上。
+async function editPage(ctx, routeConfig) {
+  const config = routeConfig || configOf(ctx.path);
   const rowId = intOr(ctx.query.id, 0);
   const isNew = rowId <= 0;
   let error = ctx.error || '';
@@ -338,8 +326,8 @@ function editView(ctx, config, { isNew, row, error, errorField }) {
   });
 }
 
-async function previewPage(ctx) {
-  const config = configOf(ctx.query.topic || ctx.path);
+async function previewPage(ctx, routeConfig) {
+  const config = routeConfig || configOf(ctx.path);
   const rowId = intOr(ctx.query.id, 0);
   if (rowId <= 0) {
     return adminLayout({
@@ -356,7 +344,6 @@ async function previewPage(ctx) {
       content: '<div class="card"><div class="card-body">找不到该记录。</div></div>'
     });
   }
-  const kind = statusKind(config.kind);
   const poster = strOf(row.poster);
   const video = strOf(row.videoUrl);
   const extraRows = config.extraFields
@@ -364,7 +351,7 @@ async function previewPage(ctx) {
     .map((field) => `<tr><th scope="row">${escapeHtml(config.labels[field] || field)}</th><td>${escapeHtml(strOf(row[field]))}</td></tr>`)
     .join('');
   const content = `<div class="card"><div class="card-body">
-  <span class="badge text-bg-${statusBadgeClass(kind, row.status)}">${escapeHtml(statusLabel(kind, row.status))}</span>
+  ${statusCell(config.kind, row)}
   <h4 class="mt-2">${escapeHtml(strOf(row.title))}</h4>
   ${poster ? `<img src="${escapeHtml(assetUrl(ctx.env, poster, ''))}" class="img-fluid cover-detail mb-3" alt="" onerror="this.style.display='none'">` : ''}
   <p>${escapeHtml(strOf(row.description))}</p>
@@ -381,12 +368,12 @@ async function previewPage(ctx) {
   });
 }
 
-async function deleteSubmit(ctx) {
-  const config = configOf(ctx.query.topic || ctx.path);
+async function deleteSubmit(ctx, routeConfig) {
+  const config = routeConfig || configOf(ctx.path);
   const rawId = ctx.form.id;
   const page = ctx.form.page;
   const back = buildListUrl(TOPIC_MANAGE_URL, { filters: { topic: config.kind }, page });
-  if (!rawId || !/^\d+$/.test(String(rawId).replace('-', ''))) {
+  if (!positiveId(rawId)) {
     return redirect(buildListUrl(TOPIC_MANAGE_URL, { error: '参数错误', filters: { topic: config.kind }, page }));
   }
   if (await isDuplicateSubmit(ctx.env, idemKey('topic_delete', String(ctx.session.id || '-'), config.kind, String(rawId)))) {
@@ -408,11 +395,6 @@ async function deleteSubmit(ctx) {
   return redirect(buildListUrl(TOPIC_MANAGE_URL, { message, filters: { topic: config.kind }, page }));
 }
 
-// 编辑/预览/删除 都需要知道"当前是哪一份配置": 旧站靠路径里的 motorcycle/outdoor 判定
-function configFromPath(path) {
-  return path.includes('outdoor') ? CONFIGS.outdoor : CONFIGS.motorcycle;
-}
-
 export const routes = [
   { methods: ['GET', 'HEAD'], path: TOPIC_MANAGE_URL, handler: managePage },
   { methods: ['GET', 'HEAD'], path: '/admin/motorcycle_manage', handler: legacyRedirect('motorcycle') },
@@ -426,5 +408,3 @@ export const routes = [
   { methods: ['POST'], path: '/admin/motorcycle_delete', handler: (ctx) => deleteSubmit(ctx, CONFIGS.motorcycle) },
   { methods: ['POST'], path: '/admin/outdoor_delete', handler: (ctx) => deleteSubmit(ctx, CONFIGS.outdoor) }
 ];
-
-export { configFromPath };

@@ -4,10 +4,11 @@
 //   ① 昵称与头像**直接读数据库字段**, 展示层不做任何派生/拼接(否则会出现"后台显示的名字和数据库不一样");
 //   ② 账号状态徽章按**真实状态**判断(status / deleted_at), 与昵称里有没有后缀是两件事。
 import { escapeHtml } from '../../core/html.js';
-import { all, one, run } from '../../core/db.js';
+import { all, chunkIds, marksOf, one, run } from '../../core/db.js';
 import { assetUrl } from '../../core/media_scheme.js';
 import { adminLayout } from '../lib/layout.js';
 import { backButton, emptyRow, listShell, pagerScript, searchBar, searchInput, searchSelect } from '../lib/partials.js';
+import { json, redirect } from '../lib/http.js';
 import {
   PER_PAGE, auditLog, buildListUrl, clampPage, firstScreenLimit, fmtDatetime, idemKey,
   intOr, isDuplicateSubmit, strOf
@@ -157,14 +158,6 @@ async function rowsFragment(ctx) {
   return json({ success: true, rows: renderRows(ctx, users), has_more: hasMore });
 }
 
-function json(body) {
-  return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json; charset=utf-8' } });
-}
-
-function redirect(location) {
-  return new Response(null, { status: 302, headers: { location } });
-}
-
 async function detailPage(ctx) {
   const userId = intOr(ctx.query.id, 0);
   const fail = (message) => adminLayout({
@@ -236,17 +229,17 @@ async function restoreUser(env, row) {
 async function purgeUser(env, row) {
   const notes = await all(env, 'SELECT id FROM news WHERE user_id=?', row.id).catch(() => []);
   const newsIds = notes.map((item) => intOr(item.id, 0)).filter((id) => id > 0);
+  // 每条 IN 都按 D1 的 100 个绑定参数上限切片(一篇笔记数过百的用户, 单条语句塞不下会整条被拒)
+  const chunks = chunkIds(newsIds);
   const statements = [];
   for (const table of ['news_likes', 'news_favorites', 'news_view_history', 'news_shares', 'news_comments']) {
-    if (newsIds.length) {
-      const marks = newsIds.map(() => '?').join(',');
-      statements.push(env.DB.prepare(`DELETE FROM ${table} WHERE news_id IN (${marks})`).bind(...newsIds));
+    for (const chunk of chunks) {
+      statements.push(env.DB.prepare(`DELETE FROM ${table} WHERE news_id IN (${marksOf(chunk)})`).bind(...chunk));
     }
     statements.push(env.DB.prepare(`DELETE FROM ${table} WHERE user_id=?`).bind(row.id));
   }
-  if (newsIds.length) {
-    const marks = newsIds.map(() => '?').join(',');
-    statements.push(env.DB.prepare(`DELETE FROM news WHERE id IN (${marks})`).bind(...newsIds));
+  for (const chunk of chunks) {
+    statements.push(env.DB.prepare(`DELETE FROM news WHERE id IN (${marksOf(chunk)})`).bind(...chunk));
   }
   statements.push(env.DB.prepare('DELETE FROM app_notice_reads WHERE user_id=?').bind(row.id));
   statements.push(env.DB.prepare('DELETE FROM users WHERE id=?').bind(row.id));

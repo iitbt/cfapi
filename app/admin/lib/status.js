@@ -2,9 +2,10 @@
 // 文案/配色/按钮全在这里声明: 行片段只用 statusKind() 取渲染口径, 前端 status-toggle.js 只按响应更新 DOM
 // 新增一个"可切换状态"的实体 = 这里加一条注册(并在 entities.js 的 statusKinds 里声明, 自检会核对两边)
 import { run } from '../../core/db.js';
+import { escapeHtml } from '../../core/html.js';
 import { beijingNow } from '../../core/timeutil.js';
 import { STATUS_KIND_ENTITY } from './entities.js';
-import { auditLog, invalidateEntityCache, intOr } from './utils.js';
+import { auditLog, invalidateEntityCache, intOr, positiveId } from './utils.js';
 
 // 笔记类实体共用的动作(通过 / 待审核), 与旧站 NEWS_LIKE_ACTIONS 一致
 const NEWS_LIKE_ACTIONS = [
@@ -132,6 +133,29 @@ export function statusActions(kind, value) {
   }));
 }
 
+/**
+ * 行内状态徽章(唯一实现): 各页面以前各拼一份, 结构与 `data-status-badge` 约定必须一致
+ * (status-toggle.js 拿到响应后按这个属性就地更新徽章)。
+ */
+export function statusCell(kindOrKey, row) {
+  const kind = typeof kindOrKey === 'string' ? statusKind(kindOrKey) : kindOrKey;
+  if (!kind) return '';
+  return `<span class="badge text-bg-${statusBadgeClass(kind, row.status)}" data-status-badge>`
+    + `${escapeHtml(statusLabel(kind, row.status))}</span>`;
+}
+
+/**
+ * 行内启停按钮(唯一实现): 不可见的按钮加 hidden, 由前端按响应显隐; 动作字段一律走 data-* 属性。
+ * 各页面以前各拼一份, 属性顺序/露出的动作口径都要靠人记。
+ */
+export function statusButtons(kindOrKey, row) {
+  const kind = typeof kindOrKey === 'string' ? statusKind(kindOrKey) : kindOrKey;
+  if (!kind) return '';
+  return statusActions(kind, row.status).map((action) => `<button type="button" class="btn btn-sm btn-${action.btnClass}"`
+    + ` data-status-kind="${kind.key}" data-status-id="${row.id}" data-status-action="${escapeHtml(action.value)}"`
+    + `${action.visible ? '' : ' hidden'}>${escapeHtml(action.label)}</button>`).join('');
+}
+
 // 成功响应体: 前端只依赖这里返回的文案/配色/可用按钮, 不硬编码任何模块口径
 export function statusPayload(kind, target, message = '') {
   return {
@@ -154,10 +178,9 @@ export async function applyStatus(env, session, kind, recordId, target) {
   if (!kind.actions.some((action) => action.value === wanted)) {
     return { success: false, message: '无效的状态值' };
   }
-  const rawId = String(recordId === undefined || recordId === null ? '' : recordId);
-  if (!/^\d+$/.test(rawId.replace('-', ''))) return { success: false, message: '参数错误' };
+  const id = positiveId(recordId);
+  if (!id) return { success: false, message: '参数错误' };
 
-  const id = intOr(rawId, 0);
   const statusCol = kind.statusCol || 'status';
   const idCol = kind.idCol || 'id';
   let sql = `UPDATE ${kind.table} SET ${statusCol} = ?`;

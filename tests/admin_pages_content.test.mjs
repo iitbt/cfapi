@@ -81,11 +81,18 @@ test('公告编辑: 保存成功时 link_type 由跳转地址派生, 时间归�
 
 test('分类列表: 显示笔记数与首页引用, 并对未登记分类给黄框', async () => {
   const { env } = makeAdminEnv({
-    rows: { app_categories: CATEGORY_ROWS, news: [{ total: 2 }] },
+    rows: { app_categories: CATEGORY_ROWS },
+    // 关联计数是一次 GROUP BY 取回后在页面里合并(不再逐行子查询), 所以桩按新形状喂数
     db: (sql, args, kind) => {
       if (kind === 'first' && /COUNT\(\*\) AS c FROM app_categories/i.test(sql)) return { c: 2 };
-      if (kind === 'all' && /FROM app_categories c/i.test(sql)) return CATEGORY_ROWS;
-      if (kind === 'all' && /GROUP BY category/i.test(sql)) return [{ category: 'legacy_x', total: 2 }, { category: '', total: 1 }];
+      if (kind === 'all' && /FROM app_categories ORDER BY/i.test(sql)) return CATEGORY_ROWS;
+      if (kind === 'all' && /NOT IN \(SELECT category_key/i.test(sql)) {
+        return [{ category: 'legacy_x', total: 2 }, { category: '', total: 1 }];
+      }
+      if (kind === 'all' && /GROUP BY category/i.test(sql)) {
+        return [{ category: 'outdoor', total: 12 }, { category: 'legacy_x', total: 2 }];
+      }
+      if (kind === 'all' && /GROUP BY item_id/i.test(sql)) return [{ item_id: 'outdoor', total: 1 }];
       return undefined;
     }
   });

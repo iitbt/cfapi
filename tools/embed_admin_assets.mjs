@@ -11,9 +11,15 @@ const TARGET = resolve(root, 'app/admin/assets/static-assets.js');
 //: 二进制资源按扩展名识别, 打包成 data: URL
 const BINARY = { woff: 'font/woff', woff2: 'font/woff2' };
 
+//: 不打进模块的路径前缀(2.4.9): 第三方大件与字体走 R2 直出 ——
+// wangeditor(1.3MB) + 图标字体几乎占了整个模块的 2/3, 而它们只在少数页面用得上,
+// 全量内联意味着每个 isolate 冷启动都要解析这坨字符串。上传与缓存口径见 DEPLOY.md。
+const EXCLUDE_PREFIXES = ['vendor/wangeditor/', 'vendor/fonts/'];
+
 const HEADER = [
-  '// 生成物: admin/static/** 下的全部资源(css/js/vendor/字体)转成 JS 文本模块, Worker 与 Node 都能直接 import',
+  '// 生成物: admin/static/** 下的资源转成 JS 文本模块, Worker 与 Node 都能直接 import',
   '// 字体是二进制, 生成阶段用 base64 包成 data: URL(serveStatic 解码后按二进制返回)',
+  '// 2.4.9 起 vendor/wangeditor/ 与 vendor/fonts/ 不打进来: 那几个大件由 R2 直出(EXCLUDE_PREFIXES + DEPLOY.md)',
   '// 重新生成: node tools/embed_admin_assets.mjs(改了 static/** 必须重跑, 并升 main.js 的 API_VERSION)'
 ];
 
@@ -22,8 +28,13 @@ async function walk(dir, prefix = '') {
   const entries = await readdir(dir, { withFileTypes: true });
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     const key = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (entry.isDirectory()) out.push(...await walk(join(dir, entry.name), key));
-    else out.push(key);
+    if (entry.isDirectory()) {
+      if (EXCLUDE_PREFIXES.some((prefix) => `${key}/`.startsWith(prefix))) continue;
+      out.push(...await walk(join(dir, entry.name), key));
+    } else {
+      if (EXCLUDE_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
+      out.push(key);
+    }
   }
   return out;
 }

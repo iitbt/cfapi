@@ -28,6 +28,10 @@ function makeEnv(options = {}) {
           async first() {
             if (/COUNT\(\*\) AS c FROM admin_users/i.test(sql)) return { c: 1 };
             if (/FROM admin_users WHERE username=/i.test(sql)) return row;
+            // 会话回查(见 lib/session.js 的 readSession): 按 Cookie 里的 id 取当前管理员
+            if (/FROM admin_users WHERE id\s*=\s*\?/i.test(sql)) {
+              return Number(api.args[0]) === Number(row.id) ? row : null;
+            }
             return null;
           },
           async all() { return { results: [] }; },

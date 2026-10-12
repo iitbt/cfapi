@@ -163,6 +163,26 @@ export function kindOfExt(ext) {
   return '';
 }
 
+//: 扩展名 → Content-Type(**唯一一份**: Worker 直出与后台上传共用, 免得两边各写一套还写不一样)
+export const MEDIA_CONTENT_TYPES = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp',
+  bmp: 'image/bmp', ico: 'image/x-icon', svg: 'image/svg+xml',
+  mp4: 'video/mp4', mov: 'video/quicktime', m4v: 'video/x-m4v', webm: 'video/webm', mkv: 'video/x-matroska',
+  avi: 'video/x-msvideo', flv: 'video/x-flv', wmv: 'video/x-ms-wmv', ts: 'video/mp2t', '3gp': 'video/3gpp'
+};
+
+/**
+ * 取媒体对象的 Content-Type: 先认扩展名, 认不出再按 kind 兜底(上传时知道这是图片还是视频)。
+ * kind 为空时**不给类型**(直出路径就是这种: 别把未知扩展名乱猜成图片, 浏览器有 nosniff)。
+ */
+export function mediaContentType(ext, kind = '') {
+  const found = MEDIA_CONTENT_TYPES[String(ext || '').toLowerCase()];
+  if (found) return found;
+  if (kind === 'video') return 'video/mp4';
+  if (kind === 'image') return 'image/jpeg';
+  return '';
+}
+
 /** 枚举 kind 对应的扩展名白名单(素材库弹窗的 accept 用)。 */
 export function listableExts(kind) {
   return kind === 'video' ? LISTABLE_VIDEO_EXTS : LISTABLE_IMAGE_EXTS;

@@ -102,13 +102,15 @@ export function makeAdminEnv(options = {}) {
             }
             // 唯一性检查(WHERE xxx=? AND id<>?): 默认"没被占用" —— 否则桩会拿表里第一行当重复
             if (/AND id\s*<>\s*\?/i.test(sql)) return null;
-            // 设置页/详情页会按 id 取当前管理员: 默认回一条, 免得每个用例都要塞 rows.admin_users
+            // 设置页/详情页/**会话回查**都会按 id 取管理员: 命中 rows.admin_users 里同 id 的那行,
+            // 缺的列(password/role —— 会话回查要用)按内置管理员补齐, 真实库里这两列一定有值
             if (/FROM admin_users WHERE id\s*=\s*\?/i.test(sql)) {
-              const list = rows.admin_users || [];
-              return list.length ? list[0] : {
+              const hit = (rows.admin_users || []).find((item) => Number(item.id) === Number(entry.args[0]));
+              return Object.assign({
                 id: 1, username: 'admin', nickname: '管理员', email: '',
-                password: ADMIN_HASH, create_time: '2026-09-01 10:00:00', last_login_time: '2026-10-01 08:00:00'
-              };
+                password: ADMIN_HASH, role: state.role,
+                create_time: '2026-09-01 10:00:00', last_login_time: '2026-10-01 08:00:00'
+              }, hit || {});
             }
             const table = tableOf(sql);
             if (/COUNT\(\*\)/i.test(sql)) {

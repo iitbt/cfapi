@@ -1,6 +1,6 @@
 // 笔记相关 9 条: list / detail / like / favorite / share / add_comment / get_comments / check_user_action / check_user_like_batch
 import { fail, failList, json, ok } from '../core/response.js';
-import { all, idList, intOf, one, run, str } from '../core/db.js';
+import { all, chunkIds, idList, intOf, marksOf, one, run, str } from '../core/db.js';
 import { assetUrl } from '../core/media_scheme.js';
 import { AUTH_MESSAGES, currentUser, identity, tokenOf } from './helpers.js';
 import { MAX_BATCH_NEWS_IDS, MAX_COMMENT_LENGTH, PAGE_MAX, clampPage } from './schemas.js';
@@ -332,11 +332,15 @@ export function registerNewsRoutes(router) {
     const auth = await identity(request, env, body, true);
     if (!auth.ok) return fail(auth.code, auth.message);
     try {
-      const marks = ids.map(() => '?').join(',');
-      const rows = await all(env,
-        `SELECT news_id FROM news_likes WHERE user_id=? AND news_id IN (${marks})`,
-        auth.userId, ...ids);
-      return ok({ liked_news_ids: rows.map((row) => Number(row.news_id)) });
+      // 一次最多 200 个 id, 但 D1 单条语句只能绑 100 个参数 → 必须分批(否则整条语句报错, 接口直接 500)
+      const liked = [];
+      for (const chunk of chunkIds(ids)) {
+        const rows = await all(env,
+          `SELECT news_id FROM news_likes WHERE user_id=? AND news_id IN (${marksOf(chunk)})`,
+          auth.userId, ...chunk);
+        liked.push(...rows);
+      }
+      return ok({ liked_news_ids: liked.map((row) => Number(row.news_id)) });
     } catch (error) {
       return fail(500, '服务器错误，请稍后重试');
     }
@@ -346,10 +350,14 @@ export function registerNewsRoutes(router) {
 async function likedIds(env, viewer, rows) {
   if (!viewer || !rows.length) return new Set();
   try {
-    const marks = rows.map(() => '?').join(',');
-    const found = await all(env,
-      `SELECT news_id FROM news_likes WHERE user_id=? AND news_id IN (${marks})`,
-      viewer.id, ...rows.map((row) => row.id));
+    // 不分页的那次列表最多回 200 条(MAX_BATCH_NEWS_IDS), 超过 D1 的 100 个绑定参数上限 → 分批查
+    const found = [];
+    for (const chunk of chunkIds(rows.map((row) => row.id))) {
+      const part = await all(env,
+        `SELECT news_id FROM news_likes WHERE user_id=? AND news_id IN (${marksOf(chunk)})`,
+        viewer.id, ...chunk);
+      found.push(...part);
+    }
     return new Set(found.map((row) => Number(row.news_id)));
   } catch (error) {
     return new Set();

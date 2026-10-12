@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { USER_ROW } from './stub.mjs';
-import { get, loginCookie, makeAdminEnv } from './admin_stub.mjs';
+import { findCall, get, loginCookie, makeAdminEnv, post } from './admin_stub.mjs';
 
 const shellSource = await readFile(new URL('../app/admin/static/js/admin-shell.js', import.meta.url), 'utf8');
 // 注释里会解释这条纪律(含"btn.disabled = true"字样), 断言只看真实代码
@@ -191,4 +191,68 @@ test('管理员页: 重置口令 / 删除 也用隐藏域(同类问题一并修)
   const html = await (await get('/admin/admin_users', env, cookie)).text();
   assert.ok(html.includes('<input type="hidden" name="reset_admin_password" value="1">'));
   assert.ok(html.includes('<input type="hidden" name="delete_admin" value="1">'));
+});
+
+test('专题: 写操作只认路径对应的表(?topic= 不能把摩托罗拉的删除指到户外表)', async () => {
+  const { env, state } = makeAdminEnv({ rows: { motorcycle_trips: [{ id: 3, title: '摩旅', poster: '' }] } });
+  const cookie = await loginCookie(env);
+  const res = await post('/admin/motorcycle_delete', { id: '3', topic: 'outdoor' }, env, cookie);
+  assert.equal(res.status, 302);
+  const del = findCall(state, /^DELETE FROM (motorcycle_trips|outdoor_activities)/i);
+  assert.ok(del, '要发出删除语句');
+  assert.match(del.sql, /DELETE FROM motorcycle_trips/i, '路由是 motorcycle_delete 就只动 motorcycle_trips');
+});
+
+test('初始化: 没配 ADMIN_SESSION_SECRET 时 POST 也不能建超管(与 GET 同一口径)', async () => {
+  const { env } = makeAdminEnv({ counts: { admin_users: 0 } });
+  delete env.ADMIN_SESSION_SECRET;
+  const res = await post('/admin/bootstrap', { username: 'boss', password: 'password-12345' }, env);
+  assert.equal(res.status, 403);
+  assert.ok((await res.text()).includes('后台未就绪'));
+});
+
+test('新增管理员: 角色按提交值写入(只认 super/normal, 默认普通)', async () => {
+  const { env, state } = makeAdminEnv({ counts: { admin_users: 1 } });
+  const cookie = await loginCookie(env);
+  await post('/admin/admin_users', {
+    add_admin: '1', username: 'ops2', password: 'password-12345', confirm_password: 'password-12345', role: 'super'
+  }, env, cookie);
+  const insert = findCall(state, /INSERT INTO admin_users/i);
+  assert.ok(insert, '要发出 INSERT');
+  assert.match(insert.sql, /role/i, 'INSERT 必须显式写角色列');
+  assert.equal(insert.args[4], 'super');
+
+  const plain = makeAdminEnv({ counts: { admin_users: 1 } });
+  const plainCookie = await loginCookie(plain.env);
+  await post('/admin/admin_users', {
+    add_admin: '1', username: 'ops3', password: 'password-12345', confirm_password: 'password-12345', role: 'root'
+  }, plain.env, plainCookie);
+  assert.equal(findCall(plain.state, /INSERT INTO admin_users/i).args[4], 'normal', '非法角色回落普通管理员');
+});
+
+test('管理员列表: 角色列按库里的 role 渲染(内置账号恒为超管)', async () => {
+  const other = { id: 2, username: 'ops', nickname: '运维', email: '', role: 'normal' };
+  const { env } = makeAdminEnv({ rows: { admin_users: [other] }, counts: { admin_users: 2 } });
+  const cookie = await loginCookie(env);
+  const html = await (await get('/admin/admin_users', env, cookie)).text();
+  assert.ok(html.includes('>角色</th>'), '列表要有角色列');
+  assert.ok(/<span class="badge text-bg-secondary">普通<\/span>/.test(html), '普通管理员显示"普通"');
+});
+
+test('分页回显: 行内表单带的是"首屏实际渲染到的那一页", 不是 URL 里的 page', async () => {
+  const other = { id: 2, username: 'ops', nickname: '运维', email: '', role: 'normal' };
+  const { env } = makeAdminEnv({ rows: { admin_users: [other] }, counts: { admin_users: 50 } });
+  const cookie = await loginCookie(env);
+  const html = await (await get('/admin/admin_users?page=5', env, cookie)).text();
+  // 首屏最多渲染 3 页(MAX_FIRST_SCREEN_PAGES), 所以回跳页码必须是 3 —— 用 5 会落在一页空白上
+  assert.ok(html.includes('<input type="hidden" name="page" value="3">'), '回显页码要被首屏上限夹到 3');
+  assert.ok(!html.includes('<input type="hidden" name="page" value="5">'));
+});
+
+test('id 参数: 只认纯数字("12-3" 这类写法一律拒绝)', async () => {
+  const { env } = makeAdminEnv();
+  const cookie = await loginCookie(env);
+  const res = await post('/admin/news_restore', { id: '12-3' }, env, cookie);
+  assert.equal(res.status, 302);
+  assert.ok(String(res.headers.get('location')).includes(encodeURIComponent('参数错误')));
 });

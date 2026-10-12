@@ -6,10 +6,11 @@ import {
   LOGIN_LIMIT, checkQuota, loginClearStatement, loginFailStatement, loginLockState, quotaStatement
 } from '../../core/ratelimit.js';
 import { nowEpoch, windowStart } from '../../core/timeutil.js';
-import { adminCount, createAdmin, findAdmin, touchLogin } from '../lib/auth-store.js';
+import { adminCount, createAdmin, findAdmin, touchLogin, updatePassword } from '../lib/auth-store.js';
 import { BOOTSTRAP_PATH, DASHBOARD_PATH, LOGIN_PATH, sameOrigin } from '../lib/guard.js';
-import { MIN_PASSWORD_LENGTH, hashPassword, verifyPassword } from '../lib/password.js';
+import { MIN_PASSWORD_LENGTH, hashPassword, needsRehash, verifyDummy, verifyPassword } from '../lib/password.js';
 import { clearSessionCookie, createSessionCookie, secureFlagOf, sessionSecret } from '../lib/session.js';
+import { redirect } from '../lib/http.js';
 
 // 同一账号 15 分钟内最多 10 次(IP 级锁定沿用 app/core/ratelimit.js 的 login 那套)
 const ACCOUNT_QUOTA = { limit: 10, windowSec: 900 };
@@ -32,11 +33,6 @@ const LOGIN_STYLE = [
   '@media (max-width:575.98px){body{padding:16px}.login-card .card-body{padding:1.25rem}}'
 ].join('');
 
-function redirect(location, cookie) {
-  const headers = { location };
-  if (cookie) headers['set-cookie'] = cookie;
-  return new Response(null, { status: 302, headers });
-}
 
 function alertBox(kind, text, icon) {
   if (!text) return '';
@@ -219,13 +215,26 @@ export async function loginSubmit(request, env, body, view = {}) {
   }
 
   const admin = await findAdmin(env, username).catch(() => null);
-  const passOk = admin ? await verifyPassword(password, admin.password) : false;
+  // 账号不存在时也跑一次等价开销的校验: 否则响应耗时能区分账号是否存在, 等于给人枚举管理员用户名
+  let passOk = false;
+  if (admin) passOk = await verifyPassword(password, admin.password, env);
+  else await verifyDummy(password, env);
   if (!admin || !passOk) {
     await bumpFailures(env, request, username);
     return loginForm(Object.assign({}, failed, { error: BAD_CREDENTIALS }));
   }
 
-  const cookie = await createSessionCookie(env, admin, secureFlagOf(request));
+  // 登录成功顺手按当前参数重哈希(旧的迭代数 / 没加 pepper 的哈希在这里自动升级), 会话指纹跟着新哈希走
+  let signedWith = admin.password;
+  if (needsRehash(admin.password, env)) {
+    signedWith = await hashPassword(password, env);
+    await updatePassword(env, admin.id, signedWith).catch((error) => {
+      console.error('口令重哈希写回失败(不拦本次登录):', error && error.message);
+      signedWith = admin.password;
+    });
+  }
+
+  const cookie = await createSessionCookie(env, Object.assign({}, admin, { password: signedWith }), secureFlagOf(request));
   await env.DB.batch([loginClearStatement(env, request)]).catch(() => null);
   await touchLogin(env, admin.id).catch(() => null);
   return redirect(safeTarget(body.redirect || body.next), cookie);
@@ -250,6 +259,9 @@ export async function bootstrapPage(view = {}) {
 
 export async function bootstrapSubmit(request, env, body, view = {}) {
   if (!sameOrigin(request)) return new Response('来源校验失败', { status: 403 });
+  // 与 GET 分支同一口径: 没配 ADMIN_SESSION_SECRET 时后台整体"未就绪", POST 也不能建账号 ——
+  // 否则会出现"页面提示未就绪、直接 POST 却能建出首个超管"的初始化接管路径
+  if (!sessionSecret(env)) return new Response('后台未就绪（缺少 ADMIN_SESSION_SECRET）', { status: 403 });
   const count = await adminCount(env).catch(() => 1);
   if (count > 0) return new Response('管理员账号已存在', { status: 403 });
   const username = String(body.username || '').trim();
@@ -261,7 +273,7 @@ export async function bootstrapSubmit(request, env, body, view = {}) {
   if (password.length < MIN_PASSWORD_LENGTH) {
     return bootstrapForm(Object.assign({}, view, { username, error: `口令至少 ${MIN_PASSWORD_LENGTH} 位。` }));
   }
-  await createAdmin(env, { username, nickname, password: await hashPassword(password), role: 'super' });
+  await createAdmin(env, { username, nickname, password: await hashPassword(password, env), role: 'super' });
   return redirect(`${LOGIN_PATH}?message=${encodeURIComponent('管理员已创建，请登录')}`);
 }
 

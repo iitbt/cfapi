@@ -461,6 +461,7 @@ export async function tablePage(env, name, page = 1, pageSize = 20, view = {}) {
   const column = columnNames.includes(wantedColumn) ? wantedColumn : '';
   const value = String(view.value === undefined || view.value === null ? '' : view.value).trim();
   const keyword = String(view.q === undefined || view.q === null ? '' : view.q).trim();
+  const prefix = view.prefix === true || String(view.prefix || '') === '1';
 
   const clauses = [];
   const args = [];
@@ -469,10 +470,17 @@ export async function tablePage(env, name, page = 1, pageSize = 20, view = {}) {
     args.push(`%${value}%`);
   }
   if (keyword) {
-    const searchable = columnNames.slice(0, MAX_SEARCH_COLUMNS);
+    // 关键字搜索本身就是**全表扫描**(每行都要过一次 LIKE), 所以只搜"可读文本"的列:
+    // 数字/时间列里不存在可读文本, 搜它们纯属多花 rows_read
+    const searchable = (meta.ok ? meta.columns : [])
+      .filter((item) => /CHAR|CLOB|TEXT|^$/i.test(String(item.type || '')))
+      .map((item) => item.name)
+      .slice(0, MAX_SEARCH_COLUMNS);
     if (searchable.length) {
+      // prefix=1 时改成前缀匹配: `kw%` 能用上索引, 少读很多行(默认仍是包含匹配, 与旧站一致)
+      const pattern = prefix ? `${keyword}%` : `%${keyword}%`;
       clauses.push(`(${searchable.map((item) => `"${item}" LIKE ?`).join(' OR ')})`);
-      for (let index = 0; index < searchable.length; index += 1) args.push(`%${keyword}%`);
+      for (let index = 0; index < searchable.length; index += 1) args.push(pattern);
     }
   }
   const whereSql = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
@@ -511,6 +519,7 @@ export async function tablePage(env, name, page = 1, pageSize = 20, view = {}) {
     column,
     value,
     q: keyword,
+    prefix,
     filtered: Boolean(whereSql),
     stats: combineStats(counted.stats, picked.stats)
   };

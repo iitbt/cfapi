@@ -7,15 +7,11 @@ import { one, run } from '../../core/db.js';
 import { adminLayout } from '../lib/layout.js';
 import { MIN_PASSWORD_LENGTH, hashPassword, verifyPassword } from '../lib/password.js';
 import { clearSessionCookie } from '../lib/session.js';
+import { redirect } from '../lib/http.js';
 import { auditLog, fmtDatetime, strOf } from '../lib/utils.js';
 
 const PAGE_URL = '/admin/settings';
 
-function redirect(location, cookie) {
-  const headers = { location };
-  if (cookie) headers['set-cookie'] = cookie;
-  return new Response(null, { status: 302, headers });
-}
 
 function field(name, label, options = {}) {
   const invalid = options.errorField === name;
@@ -95,7 +91,7 @@ async function settingsPage(ctx) {
       else if (next.length < MIN_PASSWORD_LENGTH) error = `新密码长度不能少于 ${MIN_PASSWORD_LENGTH} 个字符`;
 
       if (!error) {
-        const ok = await verifyPassword(current, row.password);
+        const ok = await verifyPassword(current, row.password, ctx.env);
         if (!ok) {
           error = '当前密码不正确';
           // 失败的改密尝试同样留痕(安全审计关心的是"谁在试")
@@ -105,7 +101,7 @@ async function settingsPage(ctx) {
       if (!error) {
         try {
           // 只生成**一次**哈希: 重算会因加盐不同与库内值不一致(旧站曾被误判成"口令已变更")
-          await run(ctx.env, 'UPDATE admin_users SET password = ? WHERE id = ?', await hashPassword(next), row.id);
+          await run(ctx.env, 'UPDATE admin_users SET password = ? WHERE id = ?', await hashPassword(next, ctx.env), row.id);
           auditLog('admin.password.change', { user: ctx.session.username, admin_id: row.id });
           // 改密后强制重新登录: 清会话 Cookie, 顺手让其它会话里的旧口令彻底失效
           return redirect('/admin/login?message=' + encodeURIComponent('密码已更新，请使用新密码重新登录'),

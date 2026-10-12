@@ -63,5 +63,6 @@ def dump(db_path, out_path):
 
 if __name__ == '__main__':
     source = sys.argv[1] if len(sys.argv) > 1 else 'fastapi/data/lyjx.db'
-    target = sys.argv[2] if len(sys.argv) > 2 else 'app/api-cf/out/seed.sql'
+    # 默认输出到本工程的 out/(迁移前的旧目录名 app/api-cf/ 已废弃, 照旧名会导出到不存在的路径)
+    target = sys.argv[2] if len(sys.argv) > 2 else 'out/seed.sql'
     dump(source, target)

@@ -4,6 +4,7 @@ import { one, run } from '../../core/db.js';
 import { adminLayout } from '../lib/layout.js';
 import { editShell, textField, textareaField } from '../lib/partials.js';
 import { auditLog, buildListUrl, invalidateEntityCache, strOf } from '../lib/utils.js';
+import { redirect } from '../lib/http.js';
 
 const PAGE_URL = '/admin/app_version_edit';
 // 默认值: 表里还没有这一行时用它渲染(不到保存那一刻不写库)
@@ -37,9 +38,6 @@ async function loadRow(env) {
   return Object.assign({}, row, { persisted: true });
 }
 
-function redirect(location) {
-  return new Response(null, { status: 302, headers: { location } });
-}
 
 async function editPage(ctx) {
   let row = await loadRow(ctx.env);

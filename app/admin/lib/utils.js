@@ -16,7 +16,9 @@ export const CONTROLLED_LIST_LIMIT = 200;
 // 页码硬上界: 与对外接口 app/api/helpers.py 的 PAGE_MAX 取同一个数
 export const PAGE_MAX = 1000;
 
-// 宽松取整数(非法/空值回退默认)
+// 宽松取整数(非法/空值回退默认)。
+// 与 app/core/db.js 的 intOf 有意不同: 后台页面用 parseInt(截断, 不认 '1e3'/'3.7' 这类写法),
+// 对外接口用 Number + 夹到 ±2^31(与旧站 intval 同口径)。两边要改口径时请一起看这两处。
 export function intOr(value, fallback = 0) {
   const parsed = parseInt(String(value === undefined || value === null ? '' : value), 10);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -31,9 +33,18 @@ export function strOf(value) {
   return String(value === undefined || value === null ? '' : value).trim();
 }
 
+// id 参数校验: 只认纯数字(以前写成"先去掉一个减号再判数字", 于是 '12-3' 这类也能通过)
+// 返回 0 表示不合法(id 从 1 开始, 0 本来就不是有效主键)
+export function positiveId(value) {
+  const text = strOf(value);
+  if (!/^\d+$/.test(text)) return 0;
+  const id = intOr(text, 0);
+  return id > 0 ? id : 0;
+}
+
 // page 参数防呆: 非法回 1; 传了 totalPages 时越界夹到最后一页; 无论如何不超过 PAGE_MAX
 export function clampPage(value, totalPages) {
-  let page = Number.isFinite(intOr(value, 0)) ? Math.max(intOr(value, 1), 1) : 1;
+  let page = Math.max(intOr(value, 1), 1);
   page = Math.min(page, PAGE_MAX);
   if (totalPages === undefined || totalPages === null) return page;
   return Math.min(page, Math.max(intOr(totalPages, 1), 1));
@@ -68,6 +79,7 @@ export function fmtDatetime(value, empty = '') {
   return text.slice(0, 16);
 }
 
+// 时间格式化只保留"展示截断"这一类: 窗口/epoch/日期换算一律走 core/timeutil.js(唯一实现), 别在这里再写一份
 // datetime-local 提交带 "T": 库里该列是 TEXT 且按**字符串**比较, 而 'T'(0x54) > ' '(0x20),
 // 于是"设了开始时间的公告/带时间的笔记"在 `<= now` 判断里永远不成立 —— 旧站踩过这个坑。
 // 统一归一化: "2026-10-05T10:30" → "2026-10-05 10:30:00"
@@ -100,8 +112,8 @@ export function buildListUrl(base, options = {}) {
     if (raw && raw !== 'all') params.push(`${urlenc(key)}=${urlenc(raw)}`);
   }
   const page = options.page;
-  if (page !== undefined && page !== null && String(page).replace('-', '').match(/^\d+$/) && intOr(page, 0) > 1) {
-    params.push(`page=${intOr(page, 1)}`);
+  if (positiveId(page) > 1) {
+    params.push(`page=${positiveId(page)}`);
   }
   if (!params.length) return base;
   return base + (base.includes('?') ? '&' : '?') + params.join('&');
@@ -140,5 +152,7 @@ export function invalidateEntityCache(entityKey) {
 }
 
 // 审计: 旧站写日志文件(audit_log), 这边进 Workers Logs(控制台可见)
-// 统一走 core/logging.js 的实现(那里有键名与文本双重脱敏); 这里只保留后台侧的历史入口
+// 统一走 core/logging.js 的实现(那里有键名与文本双重脱敏); 这里只保留后台侧的历史入口。
+// 口径: 各页的审计行只记业务细节(用户名用 user 或 username 都认); 来源 IP/UA 由分发层
+// 统一记一条 admin.write(见 admin/index.js) —— 那样连被 403/404 拦下的写请求也留得下来。
 export { auditLog } from '../../core/logging.js';

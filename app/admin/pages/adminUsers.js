@@ -4,6 +4,7 @@ import { escapeHtml } from '../../core/html.js';
 import { all, one, run } from '../../core/db.js';
 import { adminLayout } from '../lib/layout.js';
 import { emptyRow, listShell, pagerScript } from '../lib/partials.js';
+import { json, redirect } from '../lib/http.js';
 import { MIN_PASSWORD_LENGTH, hashPassword } from '../lib/password.js';
 import {
   PER_PAGE, auditLog, buildListUrl, clampPage, firstScreenLimit, fmtDatetime, idemKey,
@@ -11,28 +12,34 @@ import {
 } from '../lib/utils.js';
 
 const MANAGE_URL = '/admin/admin_users';
-const COLUMNS = ['ID', '管理员', '昵称', '邮箱', '最近登录', '操作'];
+const COLUMNS = ['ID', '管理员', '角色', '昵称', '邮箱', '最近登录', '操作'];
+//: 角色展示口径(唯一维护点): 库里的 role 值 → 徽章文案与配色
+const ROLE_LABELS = { super: ['超管', 'danger'], normal: ['普通', 'secondary'] };
 const BUILTIN_USERNAME = 'admin';
 
 function renderRows(ctx, admins) {
   if (!admins || !admins.length) return emptyRow(COLUMNS, '暂无管理员');
+  // 回显"首屏实际渲染到第几页": 用 URL 里的 page 会把操作后的回跳带到一页空白上
+  const page = intOr(ctx.listPage, 1) || 1;
   return admins.map((row) => {
     const builtin = strOf(row.username) === BUILTIN_USERNAME;
-    const badge = builtin ? ' <span class="badge text-bg-danger">超管</span>' : '';
+    // 内置那个账号一定是超管(哪怕库里的 role 是空的), 与"能不能删它"同一套判定
+    const isSuperRow = builtin || strOf(row.role) === 'super';
+    const [roleText, roleClass] = ROLE_LABELS[isSuperRow ? 'super' : 'normal'];
     const actions = builtin
       ? '<span class="text-muted small">内置账户</span>'
       // 动作字段一律走隐藏域(与上面的 add_admin 同一写法): 按钮的 name/value 会被"提交时禁用按钮"的脚本丢掉
       : `<div class="action-cell justify-content-center">
         <form method="post" class="d-inline">
           <input type="hidden" name="admin_id" value="${row.id}">
-          <input type="hidden" name="page" value="${Number(ctx.query.page) || 1}">
+          <input type="hidden" name="page" value="${page}">
           <input type="hidden" name="reset_admin_password" value="1">
           <button class="btn btn-sm btn-outline-secondary" type="submit"
                   onclick="return confirm('重置该管理员的登录口令？新口令仅本次显示。')"><i class="bi bi-key" aria-hidden="true"></i> 重置口令</button>
         </form>
         <form method="post" class="d-inline">
           <input type="hidden" name="admin_id" value="${row.id}">
-          <input type="hidden" name="page" value="${Number(ctx.query.page) || 1}">
+          <input type="hidden" name="page" value="${page}">
           <input type="hidden" name="delete_admin" value="1">
           <button class="btn btn-sm btn-outline-danger" type="submit"
                   onclick="return confirm('确定删除该管理员？')"><i class="bi bi-trash" aria-hidden="true"></i> 删除</button>
@@ -40,7 +47,8 @@ function renderRows(ctx, admins) {
       </div>`;
     return `<tr>
   <td class="text-nowrap">${row.id}</td>
-  <td class="text-nowrap">${escapeHtml(strOf(row.username))}${badge}</td>
+  <td class="text-nowrap">${escapeHtml(strOf(row.username))}</td>
+  <td class="text-nowrap"><span class="badge text-bg-${roleClass}">${roleText}</span></td>
   <td class="text-nowrap">${escapeHtml(strOf(row.nickname) || '-')}</td>
   <td class="text-nowrap">${escapeHtml(strOf(row.email) || '-')}</td>
   <td class="text-nowrap small">${escapeHtml(fmtDatetime(row.last_login_time) || '从未登录')}</td>
@@ -63,8 +71,13 @@ function addForm() {
     <input class="form-control" id="newAdminNickname" name="nickname"></div>
   <div class="col-md-2"><label class="form-label" for="newAdminEmail">邮箱</label>
     <input class="form-control" id="newAdminEmail" name="email" type="email"></div>
+  <div class="col-md-2"><label class="form-label" for="newAdminRole">角色</label>
+    <select class="form-select" id="newAdminRole" name="role">
+      <option value="normal" selected>普通管理员</option>
+      <option value="super">超级管理员</option>
+    </select></div>
   <div class="col-12"><button class="btn btn-primary" type="submit"><i class="bi bi-plus-lg" aria-hidden="true"></i> 新增管理员</button>
-    <span class="text-muted small ms-2">口令至少 ${MIN_PASSWORD_LENGTH} 位。</span></div>
+    <span class="text-muted small ms-2">口令至少 ${MIN_PASSWORD_LENGTH} 位。角色决定能否进"数据库管理 / 素材库 / 管理员账号"这些超管页面。</span></div>
 </form>`;
 }
 
@@ -83,6 +96,8 @@ async function managePage(ctx) {
   const totalPages = Math.max(Math.ceil(total / PER_PAGE), 1);
   const limited = firstScreenLimit(page, PER_PAGE, totalPages);
   const current = limited[0];
+  // 行里的回跳页码要用"实际渲染到的那一页"(见 renderRows), 所以摊进 ctx 传下去
+  ctx.listPage = current;
   let admins = [];
   let error = '';
   try {
@@ -120,6 +135,7 @@ async function managePage(ctx) {
 
 async function rowsFragment(ctx) {
   const page = clampPage(ctx.query.page, null);
+  ctx.listPage = page;
   let admins = [];
   try {
     admins = await all(ctx.env,
@@ -135,13 +151,6 @@ async function rowsFragment(ctx) {
   return json({ success: true, rows: renderRows(ctx, admins), has_more: hasMore });
 }
 
-function json(body) {
-  return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json; charset=utf-8' } });
-}
-
-function redirect(location) {
-  return new Response(null, { status: 302, headers: { location } });
-}
 
 // 写操作: 新增 / 删除 / 重置口令。重置口令成功**不能 302**(新口令会进 URL 与访问日志), 就地渲染
 async function writeSubmit(ctx) {
@@ -167,10 +176,12 @@ async function writeSubmit(ctx) {
       error = '用户名已存在，请选择其他用户名';
     } else {
       try {
+        // 角色只认 super/normal 两个值(其它一律当普通管理员), 与 isSuperRole 的判定对齐
+        const role = strOf(form.role) === 'super' ? 'super' : 'normal';
         await run(ctx.env,
-          "INSERT INTO admin_users (username, password, nickname, email, login_type) VALUES (?,?,?,?,'account')",
-          username, await hashPassword(password), nickname, email);
-        auditLog('admin.account.create', { user: ctx.session.username, target: username });
+          "INSERT INTO admin_users (username, password, nickname, email, login_type, role) VALUES (?,?,?,?,'account',?)",
+          username, await hashPassword(password, ctx.env), nickname, email, role);
+        auditLog('admin.account.create', { user: ctx.session.username, target: username, role });
         message = '管理员账户创建成功';
       } catch (err) {
         console.error('创建管理员失败', err && err.message);
@@ -210,7 +221,7 @@ async function writeSubmit(ctx) {
         else {
           const newPassword = randomPassword();
           await run(ctx.env, 'UPDATE admin_users SET password = ? WHERE id = ?',
-            await hashPassword(newPassword), intOr(adminId, 0));
+            await hashPassword(newPassword, ctx.env), intOr(adminId, 0));
           auditLog('admin.account.reset_password', { user: ctx.session.username, target: target.username, admin_id: intOr(adminId, 0) });
           message = `管理员 '${strOf(target.username)}' 的密码已重置, 新密码仅本次显示: ${newPassword}。`
             + '请尽快使用新密码登录并在「系统设置」中修改';

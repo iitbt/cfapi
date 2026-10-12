@@ -1,7 +1,7 @@
 // 用户相关 9 条: login / get_user_info / update_profile / upload_avatar / delete_account /
 // deleted_account_action / user_favorites / user_likes / user_view_history
 import { fail, ok } from '../core/response.js';
-import { all, idList, intOf, one, run, str } from '../core/db.js';
+import { all, chunkIds, idList, intOf, marksOf, one, run, str } from '../core/db.js';
 import { assetUrl, mediaBase, putObject } from '../core/media_scheme.js';
 import { AVATAR_PREFIX } from '../core/storage.js';
 import { settings } from '../core/config.js';
@@ -163,17 +163,17 @@ async function purgeUser(env, row) {
   const stats = {};
   const notes = await all(env, 'SELECT id FROM news WHERE user_id=?', row.id);
   const newsIds = notes.map((item) => Number(item.id));
+  // 每条 IN 都按 D1 的 100 个绑定参数上限切片: 发过几百篇笔记的用户, 单条语句塞不下(整条会被拒)
+  const chunks = chunkIds(newsIds);
   const statements = [];
   for (const table of ['news_likes', 'news_favorites', 'news_view_history', 'news_shares', 'news_comments']) {
-    if (newsIds.length) {
-      const marks = newsIds.map(() => '?').join(',');
-      statements.push(env.DB.prepare(`DELETE FROM ${table} WHERE news_id IN (${marks})`).bind(...newsIds));
+    for (const chunk of chunks) {
+      statements.push(env.DB.prepare(`DELETE FROM ${table} WHERE news_id IN (${marksOf(chunk)})`).bind(...chunk));
     }
     statements.push(env.DB.prepare(`DELETE FROM ${table} WHERE user_id=?`).bind(row.id));
   }
-  if (newsIds.length) {
-    const marks = newsIds.map(() => '?').join(',');
-    statements.push(env.DB.prepare(`DELETE FROM news WHERE id IN (${marks})`).bind(...newsIds));
+  for (const chunk of chunks) {
+    statements.push(env.DB.prepare(`DELETE FROM news WHERE id IN (${marksOf(chunk)})`).bind(...chunk));
   }
   statements.push(env.DB.prepare('DELETE FROM app_notice_reads WHERE user_id=?').bind(row.id));
   statements.push(env.DB.prepare('DELETE FROM users WHERE id=?').bind(row.id));

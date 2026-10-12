@@ -178,13 +178,12 @@ test('笔记列表: 三条查询并发发出(依赖链 3 次 D1 往返 → 1 次
   const cookie = await loginCookie(env);
   const stats = withDelay(env);
   state.calls.length = 0;
-  const started = Date.now();
   const html = await (await get('/admin/news_manage', env, cookie)).text();
-  const cost = Date.now() - started;
 
   assert.ok(state.calls.length >= 3, `列表页要发 3 条查询(总数/列表/分类), 实际 ${state.calls.length}`);
+  // 只看"同时在飞的峰值": 顺序实现峰值恒为 1, 并发才会 >1 —— 这是与机器负载无关的判据。
+  // (原来还断言了 wall-clock 耗时, 但整套测试并发跑时 setTimeout 会被拖长, 会偶发误报, 已去掉)
   assert.ok(stats.peak >= 2, `查询要并发发出(依赖链只留 1 次往返), 实际峰值 ${stats.peak}`);
-  assert.ok(cost < stats.calls * 15, `并发后耗时 ${cost}ms 应低于顺序下限 ${stats.calls * 15}ms`);
 
   // 标题列: 固定宽度容器 + 单行省略号, 整串标题放进 title 便于悬停查看
   const long = '很长很长的标题'.repeat(12);
@@ -496,6 +495,39 @@ test('素材库: 新目录与历史目录一起列, 头像/异类不混进来(2.
   const videos = await (await get('/admin/media_videos', env, cookie)).json();
   assert.deepEqual(videos.items.map((item) => item.name), ['new.mp4', 'moto.mp4']);
   assert.deepEqual(videos.items.map((item) => item.dir), ['video', 'news_uploads']);
+});
+
+const RECYCLE_ROW = {
+  id: 5, title: '老笔记', category: 'outdoor', image: '', status: 'approved', type: 'admin_users',
+  publish_time: '2026-01-01 09:00:00', deleted_at: '2026-01-01 09:00:00'
+};
+
+test('回收站: 打开页面不再删任何东西(到期清理已从 GET 挪走)', async () => {
+  const { env, state } = makeAdminEnv({ role: 'super', rows: { news: [RECYCLE_ROW] }, counts: { news: 1 } });
+  const cookie = await loginCookie(env);
+  const html = await (await get('/admin/news_recycle', env, cookie)).text();
+  assert.ok(html.includes('清理到期记录'), '超管在回收站能看到手工清理入口');
+  // 子表 DELETE 只有 cleanupNews 会发: GET 页面出现它就说明"打开页面就删数据"又回来了
+  assert.equal(findCall(state, /DELETE FROM news_likes/i), null, 'GET 回收站不许有物理删除');
+});
+
+test('回收站: 到期清理只认超管 POST + 确认标记, 并写审计', async () => {
+  const normal = makeAdminEnv({ role: 'normal', rows: { news: [RECYCLE_ROW] }, counts: { news: 1 } });
+  const normalCookie = await loginCookie(normal.env);
+  const denied = await post('/admin/news_purge_expired', { confirm: '1' }, normal.env, normalCookie);
+  assert.equal(denied.status, 403, '普通管理员不能批量删数据');
+
+  const { env, state } = makeAdminEnv({ role: 'super', rows: { news: [RECYCLE_ROW] }, counts: { news: 1 } });
+  const cookie = await loginCookie(env);
+  const noConfirm = await post('/admin/news_purge_expired', {}, env, cookie);
+  assert.ok(decodeURIComponent(String(noConfirm.headers.get('location')).replace(/\+/g, ' ')).includes('缺少确认标记'));
+  assert.equal(findCall(state, /DELETE FROM news_likes/i), null, '没确认就不许删');
+
+  const done = await post('/admin/news_purge_expired', { confirm: '1' }, env, cookie);
+  assert.equal(done.status, 302);
+  assert.ok(String(done.headers.get('location')).includes(encodeURIComponent('已清理 1 条')), '回报清理条数');
+  assert.ok(findCall(state, /DELETE FROM news_likes/i), '确认后才真正连带子表删除');
+  assert.ok(findCall(state, /SELECT id FROM news WHERE deleted_at IS NOT NULL/i), '先挑出超过保留期的记录');
 });
 
 test('删除确认页: 用户 kind 摊开级联影响面', async () => {
