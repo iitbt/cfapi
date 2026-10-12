@@ -1,6 +1,6 @@
 # 狼牙极限运动笔记 · 主后端（cfapi / Cloudflare Workers）
 
-> **版本**：`v2.4.7` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
+> **版本**：`v2.4.8` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
 > **主域名**：**https://lyjx.250036.xyz**（对外 API + `/admin` 管理后台同一域名）。
 > **素材域名**：**https://storage.250036.xyz**（R2 公开域，与接口域名分离）。
 > **定位**：微信小程序「狼牙极限运动笔记」的**主要后端**。今后小程序的开发、接口变更、联调、发版均以本工程为准；FastAPI 工程（`../fastapi/`）为**备用后端**。
@@ -102,6 +102,7 @@ cfapi/
 | `wrangler.toml` | Worker 绑定（D1 `DB` / R2 `STORAGE` / Cron）、`[vars]` 明文变量、`compatibility_date`、本地 `8787` |
 | `package.json` | `scripts`：`dev`/`deploy`/`test`/`schema:local`/`schema:remote`/`secrets:put` |
 | `DEPLOY.md` | 部署手册（建 D1/R2 必须亚太、建表导数据、3 个密钥、自定义域、bootstrap 超管） |
+| `建议.md` | 全量源码检查的问题清单与建议（专题文档：一次检查的结论，**以代码为准**，不逐条维护"是否已修"） |
 | `.dev.vars.example` / `.secrets.json.example` | 本地变量 / 密文样例（不入库） |
 
 ### 6.2 `app/api/`（对外接口）
@@ -334,7 +335,7 @@ cfapi/
 | --- | --- | --- |
 | 技术栈 | Cloudflare Workers + D1 + R2，零运行时依赖 | Python + FastAPI + SQLite/MySQL（双驱动） |
 | 域名 | `lyjx.250036.xyz` | `api0.250036.xyz`、`api.250036.xyz` |
-| 版本号 | `API_VERSION=2.4.7` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.4.0`） |
+| 版本号 | `API_VERSION=2.4.8` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.4.0`） |
 | 接口 | 33 条业务接口已全量实现并自测 | 历史「唯一后端」，接口同构可互切 |
 | 后台 | 17 页面（字符串拼 HTML） | 同样 17+ 模块（Jinja2 服务端渲染） |
 | 口令哈希 | PBKDF2-SHA256（Workers CPU 限制，不用 bcrypt） | bcrypt |
