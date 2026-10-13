@@ -81,6 +81,9 @@ test('批量点赞态: 缺参 400, 正常返回 liked_news_ids', async () => {
   assert.equal((await postJson('/news/check_user_like_batch', { user_id: 7 }, env)).msg, '缺少必要参数');
   const body = await postJson('/news/check_user_like_batch', { user_id: 7, news_ids: '5,6,5', token: 'tok-1' }, env);
   assert.deepEqual(body.data.liked_news_ids, [5]);
+  // user_id 不再是必填: 身份由 token 反查(旧客户端继续传 user_id 也照旧可用)
+  const withoutUserId = await postJson('/news/check_user_like_batch', { news_ids: '5,6,5', token: 'tok-1' }, env);
+  assert.deepEqual(withoutUserId.data.liked_news_ids, [5]);
 });
 
 test('批量点赞态: 200 个 id 必须分片(单条语句绑定参数不能超过 D1 的 100 上限)', async () => {

@@ -21,7 +21,7 @@ const CASES = [
   ['GET', `/news/list?page=1&page_size=2${TOKEN ? `&token=${TOKEN}` : ''}`],
   ['GET', `/news/detail?id=${NOTE_ID}`],
   ['GET', `/news/get_comments?news_id=${NOTE_ID}`],
-  ['GET', `/news/check_user_action?news_id=${NOTE_ID}&user_id=1`],
+  ['GET', `/news/check_user_action?news_id=${NOTE_ID}${TOKEN ? `&token=${TOKEN}` : ''}`],
   ['GET', '/content/get_banners'],
   ['GET', '/content/get_outdoor'],
   ['GET', '/content/get_motorcycle'],

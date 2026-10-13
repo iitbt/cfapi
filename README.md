@@ -330,8 +330,8 @@ cfapi/
 | POST | `/news/share` | 分享计数（可游客） |
 | POST | `/news/add_comment` | 留言（≤500 字，内部测试免审） |
 | GET | `/news/get_comments` | 评论列表（分页） |
-| ANY | `/news/check_user_action` | 行为状态（4 个 bool + 计数） |
-| POST | `/news/check_user_like_batch` | 批量点赞态（≤200 个） |
+| ANY | `/news/check_user_action` | 行为状态（4 个 bool + 计数）。**身份只认 token**：游客 / 失效 token 一律返回全 `false`，`body.user_id` 被忽略（不再拿客户端传来的 id 查库） |
+| POST | `/news/check_user_like_batch` | 批量点赞态（≤200 个）。必带 token（身份由它反查），只需 `news_ids`；旧客户端多传 `user_id` 仍兼容（与 token 用户不一致才 403） |
 
 **内容类（ANY）**：`/content/get_banners`、`/content/get_outdoor`、`/content/get_motorcycle`（户外/摩旅专题分页）、`/content/get_notices`（公告分页，带 `is_read`）、`/content/get_notice_unread`（未读数）、`/content/notice_read`（标记已读）。
 

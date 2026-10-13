@@ -298,16 +298,21 @@ export function registerNewsRoutes(router) {
   });
 
   // ---------------- 行为状态 ----------------
+  // 身份只认 token(与 /news/like、/news/check_user_like_batch 同一口径): 不接受 body.user_id ——
+  // 客户端本地缓存的 user_id 可被篡改, 拿它查库等于让调用方指定"查谁的点赞态"; 游客/失效 token 一律按"全 false"处理
   router.any('/news/check_user_action', async (request, env, ctx, args) => {
     const body = args.body || {};
     const newsId = intOf(body.news_id);
-    const userId = intOf(body.user_id);
-    if (!newsId || !userId) return fail(400, '参数错误');
+    if (!newsId) return fail(400, '参数错误');
+    const auth = await identity(request, env, body, false);
+    const userId = auth && auth.ok ? Number(auth.userId) : 0;
     try {
       const note = await one(env, 'SELECT likes,favorites,shares,view_count FROM news WHERE id=?', newsId);
       // 文案与旧站逐字一致(旧站此分支是"笔记不存在", 不带"或已删除")
       if (!note) return fail(404, '笔记不存在');
-      const state = await userActionState(env, userId, newsId);
+      const state = userId
+        ? await userActionState(env, userId, newsId)
+        : { is_liked: false, is_favorited: false, is_shared: false, is_viewed: false };
       return ok({
         is_liked: state.is_liked,
         is_favorited: state.is_favorited,
@@ -325,7 +330,8 @@ export function registerNewsRoutes(router) {
 
   router.post('/news/check_user_like_batch', async (request, env, ctx, args) => {
     const body = args.body || {};
-    if (body.user_id === undefined || body.news_ids === undefined) return fail(400, '缺少必要参数');
+    // 只要求 news_ids: 身份由下面的 identity() 从 token 反查(不再要求客户端传 user_id)
+    if (body.news_ids === undefined) return fail(400, '缺少必要参数');
     const ids = Array.from(new Set(idList(body.news_ids)));
     if (!ids.length) return fail(400, '参数错误');
     if (ids.length > MAX_BATCH_NEWS_IDS) return fail(400, `一次最多查询${MAX_BATCH_NEWS_IDS}条`);

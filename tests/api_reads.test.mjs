@@ -296,18 +296,32 @@ test('评论列表: 缺 news_id 给 400; 正常返回 pagination', async () => {
   assert.equal(body.data.pagination.has_more, false);
 });
 
-test('行为状态与批量点赞态', async () => {
-  const { env } = makeEnv({ db: () => null });
-  assert.equal((await getJson('/news/check_user_action?news_id=5', env)).code, 400);
-
+test('行为状态: 身份只认 token, 不接受 body.user_id', async () => {
   const withState = makeEnv({
     db: (sql) => {
+      if (/FROM users WHERE token/i.test(sql)) return USER_ROW;
       if (/SELECT likes,favorites,shares,view_count FROM news/i.test(sql)) return { likes: 2, favorites: 1, shares: 0, view_count: 9 };
       if (/FROM news_likes WHERE news_id=\? AND user_id=\?/i.test(sql)) return { id: 1 };
       return null;
     }
   });
-  const state = await getJson('/news/check_user_action?news_id=5&user_id=7', withState.env);
+
+  // 缺 news_id → 400(与旧口径一致)
+  assert.equal((await getJson('/news/check_user_action', withState.env)).code, 400);
+
+  // 游客(无 token): 全 false, 但仍返回计数 —— 不再因为缺 user_id 报 400
+  const guest = await getJson('/news/check_user_action?news_id=5', withState.env);
+  assert.equal(guest.code, 200);
+  assert.equal(guest.data.is_liked, false);
+  assert.equal(guest.data.view_count, 9);
+
+  // 伪造 user_id 但没有 token: 一样按游客处理(调用方不能指定"查谁的点赞态")
+  const forged = await getJson('/news/check_user_action?news_id=5&user_id=7', withState.env);
+  assert.equal(forged.code, 200);
+  assert.equal(forged.data.is_liked, false);
+
+  // 带 token: 按 token 反查出的用户查状态
+  const state = await getJson('/news/check_user_action?news_id=5&token=tok-1', withState.env);
   assert.equal(state.code, 200);
   assert.equal(state.data.is_liked, true);
   assert.equal(state.data.is_favorited, false);
