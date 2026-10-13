@@ -315,7 +315,8 @@ wrangler login                                   # 登录（或用 API Token 的
 wrangler d1 create lyjxxapp-d1 --location apac   # 建库（亚太），把输出的 ID 回填 wrangler.toml
 wrangler r2 bucket create lyjxxapp-r2 --location apac   # 建桶（亚太）
 
-npm run schema:remote                            # 一条命令建完 4 个建表脚本
+npm run schema:remote                            # 一条命令建完 5 个建表脚本（0001~0005）
+npm run schema:notnull                           # 老库才要：执行 0006 收紧 NOT NULL（会重建表，先备份，见第 4 步）
 wrangler d1 execute lyjxxapp-d1 --remote --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"   # 核对表是否都在
 
 python tools\export_sqlite.py ..\fastapi\data\lyjx.db out\seed.sql

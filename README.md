@@ -100,7 +100,7 @@ cfapi/
 | --- | --- |
 | `main.js` | 应用入口：装配中间件与路由、媒体/R2 直出、统一异常兜底、定时任务（`scheduled`）、`API_VERSION` 唯一来源、对外接口与 `/admin` 在此分流 |
 | `wrangler.toml` | Worker 绑定（D1 `DB` / R2 `STORAGE` / Cron）、`[vars]` 明文变量、`compatibility_date`、本地 `8787` |
-| `package.json` | `scripts`：`dev`/`deploy`/`test`/`schema:local`/`schema:remote`/`secrets:put` |
+| `package.json` | `scripts`：`dev`/`deploy`/`test`/`schema:local`/`schema:remote`/`schema:notnull`/`secrets:put` |
 | `DEPLOY.md` | 部署手册（建 D1/R2 必须亚太、建表导数据、3 个密钥、自定义域、bootstrap 超管） |
 | `建议.md` | 全量源码检查的问题清单与建议（专题文档：一次检查的结论，**以代码为准**，不逐条维护"是否已修"） |
 | `.dev.vars.example` / `.secrets.json.example` | 本地变量 / 密文样例（不入库） |
@@ -229,7 +229,8 @@ cfapi/
 | `npm install` | 安装 wrangler 开发依赖（仅 devDependency） |
 | `npm run dev` | `wrangler dev --local`（本地 8787） |
 | `npm test` | `node --test` |
-| `npm run schema:local` / `schema:remote` | 依次执行 4 个 `app/sql/*.sql` 建表（本地 / 远程 D1） |
+| `npm run schema:local` / `schema:remote` | 依次执行 5 个 `app/sql/*.sql` 建表（`0001`~`0005`，本地 / 远程 D1） |
+| `npm run schema:notnull` | **老库专用**：单独执行 `0006_news_notnull_rebuild.sql`（会重建 4 张表，**执行前先备份**，见该文件头）。**故意不并进 `schema:remote`** —— 它重建表，不能在普通部署里顺手带上 |
 | `npm run secrets:put` | `wrangler secret bulk .secrets.json`（推 3 个密文） |
 | `npm run deploy` | `wrangler deploy` |
 
