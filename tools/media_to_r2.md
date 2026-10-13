@@ -24,7 +24,8 @@
    ```bash
    cd fastapi
    # 逐个上传; 文件只有二十几个, 不必写复杂脚本
-   wrangler r2 object put lyjxxapp-r2/news_uploads/home/<文件> --file=news_uploads/home/<文件>
+   # **--remote 必须带**: wrangler v4 的 r2 object put 默认写本地模拟桶, 会照常打印 Upload complete 但线上桶里没有
+   wrangler r2 object put lyjxxapp-r2/news_uploads/home/<文件> --file=news_uploads/home/<文件> --remote
    ```
 
    文件多时改用 S3 兼容方式（rclone / aws-cli，需 R2 的 Access Key 与 Secret —— **待确认**）：
@@ -41,8 +42,10 @@
 
    ```bash
    find fastapi/news_uploads -type f | wc -l          # 本地文件数
-   wrangler r2 object list lyjxxapp-r2 --prefix=news_uploads | wc -l   # R2 对象数
    ```
+
+   R2 侧的对象数**没有 CLI 列举子命令**（实测 wrangler 4.147：`wrangler r2 object` 只有 `get` / `put` / `delete`），
+   到控制台 R2 → 桶 `lyjxxapp-r2` → 对象列表按前缀筛，或直接请求公开域核对：`https://storage.250036.xyz/<key>` 返回 200 且体积与本地一致即为到位。
 
 5. 验证公开访问：用一个真实 key 直接请求自定义域，确认 200 与 `Content-Type` 正确，并核对 **`Cache-Control`** 是否符合口径（上传写入的对象是 `public, max-age=604800, immutable`；vendor 1 年 immutable）—— 由自定义域缓存规则或前置 Worker 设置（**待确认**用哪种）。
 

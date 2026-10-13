@@ -195,12 +195,37 @@ npm run deploy     # 正式部署
 | `app/admin/static/vendor/wangeditor/*` | `admin/vendor/wangeditor/*` |
 | `app/admin/static/vendor/fonts/*` | `admin/vendor/fonts/*` |
 
-用 rclone（已按 `tools/media_to_r2.md` 配好桶的 S3 凭据）直接照搬目录结构：
+这几个文件就在本仓库里（**不是**已经在 R2 上，所以桶里现在找不到是正常的）：
+
+```
+app/admin/static/vendor/wangeditor/index.js     ← 编辑器本体
+app/admin/static/vendor/wangeditor/style.css    ← 编辑器样式
+app/admin/static/vendor/fonts/bootstrap-icons.woff
+app/admin/static/vendor/fonts/bootstrap-icons.woff2
+```
+
+**做法 A（推荐，无需额外工具）**：控制台 → R2 → 桶 `lyjxxapp-r2` → 建目录并上传。
+
+| 目录（R2 里新建） | 传进去的文件 |
+| --- | --- |
+| `admin/vendor/wangeditor/` | `app/admin/static/vendor/wangeditor/index.js`、`style.css` |
+| `admin/vendor/fonts/` | `app/admin/static/vendor/fonts/bootstrap-icons.woff`、`.woff2` |
+
+**做法 B（命令行，用你已经装好的 wrangler）**：在本仓库根目录逐条执行（共 4 条）：
 
 ```powershell
-rclone copy app\admin\static\vendor\wangeditor lyjxxapp-r2:lyjxxapp-r2/admin/vendor/wangeditor
-rclone copy app\admin\static\vendor\fonts      lyjxxapp-r2:lyjxxapp-r2/admin/vendor/fonts
+wrangler r2 object put lyjxxapp-r2/admin/vendor/wangeditor/index.js  --file=app/admin/static/vendor/wangeditor/index.js  --remote --content-type text/javascript --cache-control "public, max-age=31536000, immutable"
+wrangler r2 object put lyjxxapp-r2/admin/vendor/wangeditor/style.css --file=app/admin/static/vendor/wangeditor/style.css --remote --content-type text/css --cache-control "public, max-age=31536000, immutable"
+wrangler r2 object put lyjxxapp-r2/admin/vendor/fonts/bootstrap-icons.woff  --file=app/admin/static/vendor/fonts/bootstrap-icons.woff  --remote --content-type font/woff  --cache-control "public, max-age=31536000, immutable"
+wrangler r2 object put lyjxxapp-r2/admin/vendor/fonts/bootstrap-icons.woff2 --file=app/admin/static/vendor/fonts/bootstrap-icons.woff2 --remote --content-type font/woff2 --cache-control "public, max-age=31536000, immutable"
 ```
+
+- **`--remote` 不能省**：wrangler v4 的 `r2 object put` 默认写**本地模拟桶**，命令会照常打印 "Upload complete."，但线上桶里啥也没有（表现为：命令全成功、页面照旧缺字形）。判断依据看首行 `Resource location: remote` 还是 `local`。
+- `wrangler whoami` 能列出账号即已登录；`--file=` 后面是相对仓库根的路径。
+- `--content-type` 与 `--cache-control` 建议一起给：地址已带 `?v=<版本号>`，所以给长缓存安全；MIME 给对才不至于被 `nosniff` 拦下。
+
+**核对是否传成功**：浏览器直接打开 `https://storage.250036.xyz/admin/vendor/wangeditor/style.css`，返回一串 CSS 即成功（图标字体同理换成 `.woff2`）。
+若以后文件多到懒得逐条敲，再考虑 S3 兼容方式（rclone / aws-cli，需要 R2 的 Access Key 与 Secret —— 见 `tools/media_to_r2.md`，那条路径本身还是「待确认」）。
 
 **没上传时的表现**（不影响后台还能不能用，只影响这两处）：
 - 笔记编辑页的富文本编辑器退回**普通文本域**（页面顶部有提示，粘贴 HTML 照样能保存、前台显示不受影响）；
