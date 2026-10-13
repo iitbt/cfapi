@@ -9,8 +9,9 @@ import {
   searchSelect, selectField, switchField, textareaField, textField
 } from '../lib/partials.js';
 import { statusButtons, statusCell } from '../lib/status.js';
+import { listController } from '../lib/listPage.js';
 import {
-  PER_PAGE, auditLog, buildListUrl, clampPage, firstScreenLimit, intOr,
+  PER_PAGE, auditLog, buildListUrl, clampPage, intOr,
   invalidateEntityCache, normalizeDatetime, positiveId, strOf, textOf
 } from '../lib/utils.js';
 import { json, redirect } from '../lib/http.js';
@@ -95,25 +96,10 @@ async function managePage(ctx) {
   const keyword = strOf(ctx.query.keyword);
   const status = strOf(ctx.query.status);
   const where = noticeWhere(keyword, status);
-  let total = 0;
-  let totalPages = 1;
-  let page = 1;
-  let rows = [];
-  let error = '';
-  try {
-    const counted = await one(ctx.env, `SELECT COUNT(*) AS total FROM app_notices${where.sql}`, ...where.args);
-    total = intOr(counted && counted.total, 0);
-    totalPages = Math.max(Math.ceil(total / PER_PAGE), 1);
-    const limited = firstScreenLimit(ctx.query.page, PER_PAGE, totalPages);
-    page = limited[0];
-    rows = await all(ctx.env,
-      `SELECT * FROM app_notices${where.sql} ORDER BY sort_order ASC, id DESC LIMIT ?`,
-      ...where.args, limited[1]);
-  } catch (err) {
-    console.error('获取公告列表失败', err && err.message);
-    rows = [];
-    error = '读取数据失败，请稍后重试';
-  }
+  // 取数 + 分页骨架走公共实现(lib/listPage.js)
+  const { total, totalPages, page, rows, error } = await listController(ctx, {
+    table: 'app_notices', where, orderBy: 'sort_order ASC, id DESC', label: '获取公告列表'
+  });
   // 搜索条: 共用实现(顺序统一为"下拉 → 输入框 → 搜索按钮"); 参数名 status/keyword 与取值不变
   const searchForm = searchBar({
     action: MANAGE_URL,

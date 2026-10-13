@@ -332,6 +332,11 @@ export function listShell(options = {}) {
 </div>`;
 }
 
+//: 页面脚本标签的唯一入口: 静态资源统一带 ?v=<API_VERSION>, 升版本后浏览器才会换缓存
+export function staticScript(file, version) {
+  return `<script src="/admin/static/${file}?v=${escapeHtml(version || '')}"></script>`;
+}
+
 // 列表页末尾脚本: 同步引入 infinite_scroll.js(它定义 AdminListLoader) + DOMContentLoaded 里 init
 export function pagerScript(options = {}) {
   // 底部工具栏: 回到顶部永远有; jump=false 的页面(2.4.1 起的笔记页与素材库页)不传跳页元素,
@@ -350,7 +355,7 @@ export function pagerScript(options = {}) {
     pager
   };
   if (options.rowMarker) config.rowMarker = options.rowMarker;
-  return `<script src="/admin/static/js/infinite_scroll.js?v=${escapeHtml(options.version || '')}"></script>
+  return `${staticScript('js/infinite_scroll.js', options.version)}
 <script>
   document.addEventListener('DOMContentLoaded', function () {
     AdminListLoader.init(${JSON.stringify(config)});

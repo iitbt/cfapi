@@ -3,11 +3,16 @@
 // 重点盯"闸门"与"判定"两类问题: 开关默认关、只允许白名单业务表、写语句必须二次确认、
 // 敏感列脱敏、有引用一律拒绝删除(含回收站)。
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { handleAdmin } from '../app/admin/index.js';
 import { API_VERSION } from '../main.js';
 import { HOST, findCall, get, loginCookie, makeAdminEnv, post } from './admin_stub.mjs';
+
+// 2.5.0: 两页的页尾/页内脚本从模板字符串搬到了 static/js/*.js —— 涉及脚本内容的断言统一读这两个文件
+const DB_TOOLS_SCRIPT = new URL('../app/admin/static/js/db_tools.js', import.meta.url);
+const MEDIA_GOVERN_SCRIPT = new URL('../app/admin/static/js/media_govern.js', import.meta.url);
 
 // 数据库工具页要用到的 D1 桩: 表清单 / 行数 / PRAGMA / 分页
 function dbStub(sql) {
@@ -338,11 +343,14 @@ test('数据库管理: 单行编辑/批量删除只在页面里生成 SQL, 写�
   assert.ok(html.includes('data-row-action="edit"'), '可写表要有"编辑"按钮');
   assert.ok(html.includes('data-batch-action="delete"'), '可写表要有批量删除');
   assert.ok(html.includes('data-row-pick') && html.includes('data-select-all'), '行首复选框与全选');
-  assert.ok(html.includes('data-edit-save') && html.includes('data-edit-delete'), '编辑卡片里是保存/删除');
+  // 编辑卡片与写语句都是页尾脚本里拼的(见 editorCard / editorSql), 所以下面几条读脚本文件;
+  // 真文件里保留着 \" 这种转义(在单引号串里与 " 同义), 先还原成浏览器拿到的形态, 断言写法不变
+  const rendered = (await readFile(DB_TOOLS_SCRIPT, 'utf8')).replace(/\\"/g, '"');
+  assert.ok(rendered.includes('data-edit-save') && rendered.includes('data-edit-delete'), '编辑卡片里是保存/删除');
   // 页面里生成的写语句只有 UPDATE/DELETE 两种形状, 且都 POST 给 exec
-  assert.ok(html.includes("'UPDATE \"' + editState.table"), '编辑保存 = 一条 UPDATE');
-  assert.ok(html.includes("'DELETE FROM \"' + editState.table"), '删除 = 一条 DELETE');
-  assert.ok(html.includes("fetch('/admin/db_manage/exec'"), '两类写操作都发给 exec(同一条安全内核)');
+  assert.ok(rendered.includes("'UPDATE \"' + editState.table"), '编辑保存 = 一条 UPDATE');
+  assert.ok(rendered.includes("'DELETE FROM \"' + editState.table"), '删除 = 一条 DELETE');
+  assert.ok(rendered.includes("fetch('/admin/db_manage/exec'"), '两类写操作都发给 exec(同一条安全内核)');
 
   // 路由没变: 页面 GET ×2 + 表详情 JSON ×2 + exec ×1, 没有第三个 POST
   const { PAGE_ROUTES } = await import('../app/admin/pages/index.js');
@@ -387,12 +395,16 @@ test('数据库管理: 页内脚本必须是可解析的 JS(模板里 \n 写错�
   const cookie = await loginCookie(env);
   const html = await (await get('/admin/db_manage?table=news', env, cookie)).text();
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
-  assert.ok(scripts.length >= 2, `至少要有外壳内联脚本 + 页面脚本, 实际 ${scripts.length}`);
+  assert.ok(scripts.length >= 1, `外壳的内联脚本还在, 实际 ${scripts.length}`);
   scripts.forEach((code, index) => {
     assert.doesNotThrow(() => new Function(code), `第 ${index + 1} 段内联脚本要能解析`);
   });
-  // 传到浏览器的应当是两个反斜杠转义(\n\n), 而不是被模板展开成的真换行
-  assert.ok(html.includes("\\n\\n' +"), '确认框里的换行要用转义写法(不能是模板展开后的真换行)');
+  // 2.5.0: 页尾脚本搬成真文件后, 上面那个坑由文件本身避免 —— 这里改成"页面引到它 + 文件能解析 +
+  // 确认框里的换行仍是转义写法"
+  assert.ok(html.includes('static/js/db_tools.js'), '页面要引到搬出去的页尾脚本');
+  const script = await readFile(DB_TOOLS_SCRIPT, 'utf8');
+  assert.doesNotThrow(() => new Function(script), 'db_tools.js 要能解析');
+  assert.ok(script.includes("\\n\\n' +"), '确认框里的换行要用转义写法(不能是真换行)');
 });
 
 test('数据库管理: 成本与额度卡 + 本屏用量留给页尾脚本累计', async () => {
@@ -421,7 +433,7 @@ test('数据库工具: 单行操作按钮带齐数据(复制 JSON/INSERT/生成 
   assert.ok(html.includes('data-sensitive-columns='), '敏感列清单要下发(生成 SQL 时跳过, 免得把 *** 写回库)');
   assert.ok(html.includes('rowid'), '数据表第一列是隐式 rowid');
   // 单行"生成 UPDATE"只是把语句填进控制台, 真正的写仍走唯一的 exec 写路径
-  assert.ok(html.includes("UPDATE ' + table + ' SET"), '生成 UPDATE 走前端拼语句');
+  assert.ok((await readFile(DB_TOOLS_SCRIPT, 'utf8')).includes("UPDATE ' + table + ' SET"), '生成 UPDATE 走前端拼语句');
 });
 
 test('数据库工具: 只允许白名单业务表的单条语句, 写语句必须 confirm=1', async () => {
@@ -880,6 +892,8 @@ test('素材库(2.4.1): 图片与视频两个独立入口(各带文件/文件夹
   const cookie = await loginCookie(env);
 
   const html = await (await get('/admin/media_manage', env, cookie)).text();
+  // 2.5.0: 上传脚本搬到 static/js/media_govern.js —— 脚本内容的断言读文件
+  const script = await readFile(MEDIA_GOVERN_SCRIPT, 'utf8');
   // 拆分后的四个入口: 类型由入口决定, 每个入口都能选文件或整个文件夹
   assert.ok(html.includes('id="mediaUploadImageFiles"') && html.includes('id="mediaUploadImageFolder"'),
     '图片入口: 文件 + 文件夹');
@@ -893,7 +907,7 @@ test('素材库(2.4.1): 图片与视频两个独立入口(各带文件/文件夹
     '命名策略: 自动生成(默认) / 保留原名');
   assert.ok(html.includes('id="mediaUploadBar"') && html.includes('id="mediaUploadOverall"'),
     '整体进度条与统计行(进度来自 XHR upload.onprogress, 不是 fetch)');
-  assert.ok(html.includes("data.set('purpose', item.purpose)"), '每个文件按自己入口的 purpose 上传');
+  assert.ok(script.includes("data.set('purpose', item.purpose)"), '每个文件按自己入口的 purpose 上传');
   // 2.4.2 文案: 每个入口两个按钮, 文案不重复(原生 file 控件的按钮文字改不了, 用 label 按钮显示)
   assert.equal((html.match(/for="mediaUploadImageFiles">选择文件</g) || []).length, 1, '图片入口: 选择文件');
   assert.equal((html.match(/for="mediaUploadImageFolder">选择文件夹</g) || []).length, 1, '图片入口: 选择文件夹');
@@ -947,6 +961,7 @@ test('素材库(2.4.3/2.4.4): 目标路径是可选项(根目录 + 本入口根 
   const cookie = await loginCookie(env);
   // 上传卡片的「目标路径」建议来自**当前浏览层**的子目录(2.4.6 起不再全桶扫描): 进 image/ 这一层, 建议里就有 image/素材/
   const html = await (await get('/admin/media_manage?prefix=image%2F', env, cookie)).text();
+  const script = await readFile(MEDIA_GOVERN_SCRIPT, 'utf8');
 
   assert.ok(html.includes('id="mediaUploadImageDir"') && html.includes('id="mediaUploadVideoDir"'),
     '两个入口各有一个目标路径控件');
@@ -966,11 +981,11 @@ test('素材库(2.4.3/2.4.4): 目标路径是可选项(根目录 + 本入口根 
   assert.ok(videoOptions.includes('value="video/" selected') && !videoOptions.includes('image/'),
     '视频那条只给 video/ 与根目录');
   // 提交与校验
-  assert.ok(html.includes("data.set('target_dir', target)"), '提交时带上目标路径');
-  assert.ok(html.includes('function dirProblem()') && html.includes('if (problem)'),
+  assert.ok(script.includes("data.set('target_dir', target)"), '提交时带上目标路径');
+  assert.ok(script.includes('function dirProblem()') && script.includes('if (problem)'),
     '前端开跑前也校验一遍(前后端双校验)');
-  assert.ok(html.includes("value === '/'"), '前端认根目录这个提交值');
-  assert.ok(html.includes("的目标路径必须以 '") && html.includes('目标路径不能包含两个点'), '前端拦跨入口与穿越');
+  assert.ok(script.includes("value === '/'"), '前端认根目录这个提交值');
+  assert.ok(script.includes("的目标路径必须以 '") && script.includes('目标路径不能包含两个点'), '前端拦跨入口与穿越');
 });
 
 test('上传接口(2.4.4): target_dir=/ 落存储桶根目录(不带任何前缀)', async () => {

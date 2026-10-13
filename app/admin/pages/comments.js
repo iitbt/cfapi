@@ -1,12 +1,13 @@
 // 留言管理: 列表(状态/用户/笔记筛选) / 行片段 / 通过·拒绝·删除
 // 逐条对齐旧站 fastapi/app/admin/comments_admin.py
 import { escapeHtml } from '../../core/html.js';
-import { all, one, run } from '../../core/db.js';
+import { all, run } from '../../core/db.js';
 import { adminLayout } from '../lib/layout.js';
 import { json, redirect } from '../lib/http.js';
 import { emptyRow, filterButtons, listShell, pagerScript } from '../lib/partials.js';
 import { applyStatus, statusButtons, statusCell, statusKind } from '../lib/status.js';
-import { PER_PAGE, auditLog, buildListUrl, clampPage, firstScreenLimit, intOr, positiveId, strOf } from '../lib/utils.js';
+import { listController } from '../lib/listPage.js';
+import { PER_PAGE, auditLog, buildListUrl, clampPage, intOr, positiveId, strOf } from '../lib/utils.js';
 
 const MANAGE_URL = '/admin/comments_manage';
 const ALLOWED_STATUS = ['approved', 'pending', 'rejected'];
@@ -34,10 +35,12 @@ function filtersOf(ctx) {
 }
 
 // 列表与片段共用的 JOIN 查询: 留言 + 作者(昵称/用户名/内部测试) + 所属笔记标题
+// 列与 FROM 各自一份常量: 首屏(listController 的 columns/from)与触底片段都从这里取, 只在改一处
+const COMMENTS_COLUMNS = 'c.*, u.username, u.nickname, u.is_trusted, n.title AS news_title';
+const COMMENTS_FROM = 'news_comments c LEFT JOIN users u ON c.user_id = u.id '
+  + 'LEFT JOIN news n ON c.news_id = n.id';
 function listSql(where) {
-  return 'SELECT c.*, u.username, u.nickname, u.is_trusted, n.title AS news_title '
-    + 'FROM news_comments c LEFT JOIN users u ON c.user_id = u.id '
-    + 'LEFT JOIN news n ON c.news_id = n.id' + where;
+  return `SELECT ${COMMENTS_COLUMNS} FROM ${COMMENTS_FROM}${where}`;
 }
 
 function userLabel(row) {
@@ -94,22 +97,11 @@ function statusPills(filters) {
 
 async function managePage(ctx) {
   const filters = filtersOf(ctx);
-  let total = 0;
-  let totalPages = 1;
-  let page = 1;
-  let rows = [];
-  let error = '';
-  try {
-    total = intOr((await one(ctx.env, `SELECT COUNT(*) AS total FROM news_comments c${filters.sql}`, ...filters.args)).total, 0);
-    totalPages = Math.max(Math.ceil(total / PER_PAGE), 1);
-    const limited = firstScreenLimit(ctx.query.page, PER_PAGE, totalPages);
-    page = limited[0];
-    rows = await all(ctx.env, `${listSql(filters.sql)} ORDER BY c.created_at DESC LIMIT ?`, ...filters.args, limited[1]);
-  } catch (err) {
-    console.error('获取留言列表失败', err && err.message);
-    rows = [];
-    error = '读取数据失败，请稍后重试';
-  }
+  // 取数 + 分页骨架走公共实现(lib/listPage.js); 这一页的取行 SQL 带两个 LEFT JOIN, 用 from 传进去
+  const { total, totalPages, page, rows, error } = await listController(ctx, {
+    table: 'news_comments c', where: filters, from: COMMENTS_FROM, columns: COMMENTS_COLUMNS,
+    orderBy: 'c.created_at DESC', label: '获取留言列表'
+  });
   const content = filterHint(filters) + listShell({
     title: '留言管理', columns: COLUMNS, rows: renderRows(ctx, rows), actions: statusPills(filters),
     tableAttrs: ' data-status-filter-param="status"',

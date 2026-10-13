@@ -6,9 +6,9 @@ import { adminLayout } from '../lib/layout.js';
 import { emptyRow, listShell, pagerScript } from '../lib/partials.js';
 import { json, redirect } from '../lib/http.js';
 import { MIN_PASSWORD_LENGTH, hashPassword } from '../lib/password.js';
+import { listController } from '../lib/listPage.js';
 import {
-  PER_PAGE, auditLog, buildListUrl, clampPage, firstScreenLimit, fmtDatetime, idemKey,
-  intOr, isDuplicateSubmit, strOf
+  PER_PAGE, auditLog, buildListUrl, clampPage, fmtDatetime, intOr, onceOrError, strOf
 } from '../lib/utils.js';
 
 const MANAGE_URL = '/admin/admin_users';
@@ -91,31 +91,21 @@ function randomPassword(length = 10) {
 }
 
 async function managePage(ctx) {
-  const page = clampPage(ctx.query.page, null);
-  const total = intOr((await one(ctx.env, 'SELECT COUNT(*) AS total FROM admin_users').catch(() => null) || {}).total, 0);
-  const totalPages = Math.max(Math.ceil(total / PER_PAGE), 1);
-  const limited = firstScreenLimit(page, PER_PAGE, totalPages);
-  const current = limited[0];
+  // 取数 + 分页骨架走公共实现(lib/listPage.js); 管理员表没有筛选条件
+  const { total, totalPages, page, rows: admins, error } = await listController(ctx, {
+    table: 'admin_users',
+    columns: 'id, username, nickname, email, avatar, last_login_time, create_time',
+    orderBy: 'id', label: '获取管理员列表', failure: '获取管理员列表失败，请稍后重试'
+  });
   // 行里的回跳页码要用"实际渲染到的那一页"(见 renderRows), 所以摊进 ctx 传下去
-  ctx.listPage = current;
-  let admins = [];
-  let error = '';
-  try {
-    admins = await all(ctx.env,
-      'SELECT id, username, nickname, email, avatar, last_login_time, create_time FROM admin_users ORDER BY id LIMIT ?',
-      limited[1]);
-  } catch (err) {
-    console.error('获取管理员列表失败', err && err.message);
-    admins = [];
-    error = '获取管理员列表失败，请稍后重试';
-  }
+  ctx.listPage = page;
   const content = `<div class="card"><div class="card-body">
   ${addForm()}
   <hr>
   ${listShell({
     title: '管理员', columns: COLUMNS, rows: renderRows(ctx, admins), actions: '',
     tbodyId: 'adminTbody', sentinelId: 'adminLoadMore', textId: 'adminLoadMoreText',
-    hintId: 'adminLoadedHint', total, perPage: PER_PAGE, currentPage: current, totalPages,
+    hintId: 'adminLoadedHint', total, perPage: PER_PAGE, currentPage: page, totalPages,
     unit: '位', backTopId: 'adminBackTopBtn', jumpBtnId: 'adminJumpBtn', jumpInputId: 'adminJumpInput'
   })}
 </div></div>`;
@@ -125,7 +115,7 @@ async function managePage(ctx) {
     message: ctx.message, error: error || ctx.error, content,
     scripts: pagerScript({
       tbodyId: 'adminTbody', sentinelId: 'adminLoadMore', textId: 'adminLoadMoreText',
-      rowsUrl: '/admin/admin_users_rows', currentPage: current, totalPages, total, perPage: PER_PAGE,
+      rowsUrl: '/admin/admin_users_rows', currentPage: page, totalPages, total, perPage: PER_PAGE,
       unit: '位', hintId: 'adminLoadedHint', announceLabel: '管理员', baseUrl: MANAGE_URL,
       backTopId: 'adminBackTopBtn', jumpBtnId: 'adminJumpBtn', jumpInputId: 'adminJumpInput',
       version: ctx.version
@@ -210,8 +200,9 @@ async function writeSubmit(ctx) {
   } else if (form.reset_admin_password && form.admin_id) {
     const adminId = form.admin_id;
     // 幂等: 双击/刷新不会重复改密(第二次的新口令会让人以为没生效)
-    if (await isDuplicateSubmit(ctx.env, idemKey('admin_reset_password', String(ctx.session.id || '-'), String(adminId)))) {
-      error = '该操作刚刚已执行，请勿重复提交';
+    const duplicated = await onceOrError(ctx, 'admin_reset_password', [adminId]);
+    if (duplicated) {
+      error = duplicated;
     } else {
       try {
         const target = await one(ctx.env, 'SELECT id, username FROM admin_users WHERE id = ?', intOr(adminId, 0));

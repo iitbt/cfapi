@@ -9,9 +9,10 @@ import {
   pagerScript, searchBar, searchInput, selectField, textareaField, textField
 } from '../lib/partials.js';
 import { statusButtons, statusCell, statusKind } from '../lib/status.js';
+import { listController } from '../lib/listPage.js';
 import {
-  PER_PAGE, auditLog, buildListUrl, clampPage, firstScreenLimit, idemKey,
-  invalidateEntityCache, isDuplicateSubmit, intOr, positiveId, strOf
+  PER_PAGE, auditLog, buildListUrl, clampPage, intOr,
+  invalidateEntityCache, onceOrError, positiveId, strOf
 } from '../lib/utils.js';
 import { json, redirect } from '../lib/http.js';
 
@@ -141,24 +142,10 @@ async function managePage(ctx) {
   const config = configOf(ctx.query.topic);
   const keyword = strOf(ctx.query.keyword);
   const where = topicWhere(config, keyword);
-  let total = 0;
-  let totalPages = 1;
-  let page = 1;
-  let rows = [];
-  let error = '';
-  try {
-    const counted = await one(ctx.env, `SELECT COUNT(*) AS total FROM ${config.table}${where.sql}`, ...where.args);
-    total = intOr(counted && counted.total, 0);
-    totalPages = Math.max(Math.ceil(total / PER_PAGE), 1);
-    const limited = firstScreenLimit(ctx.query.page, PER_PAGE, totalPages);
-    page = limited[0];
-    rows = await all(ctx.env, `SELECT * FROM ${config.table}${where.sql} ORDER BY id DESC LIMIT ?`, ...where.args, limited[1]);
-  } catch (err) {
-    // 查询失败要明说, 不能渲染成"暂无数据"
-    console.error(`获取${config.itemLabel}列表失败`, err && err.message);
-    rows = [];
-    error = '读取数据失败，请稍后重试';
-  }
+  // 取数 + 分页骨架走公共实现(lib/listPage.js); 表名随专题配置走(摩旅/户外)
+  const { total, totalPages, page, rows, error } = await listController(ctx, {
+    table: config.table, where, orderBy: 'id DESC', label: `获取${config.itemLabel}列表`
+  });
   const columns = ['ID'].concat(config.columns.map((column) => headerLabel(config, column)), ['操作']);
   // 搜索条: 共用实现(顺带补上原来缺的 flex-wrap —— 窄屏不再挤压错位); 参数 topic/keyword 不变
   const searchForm = searchBar({
@@ -261,9 +248,9 @@ async function editPage(ctx, routeConfig) {
     if (missing.length) {
       error = `请填写必填项: ${missing.join('、')}`;
       errorField = !title ? 'title' : (!description ? 'description' : 'poster');
-    } else if (isNew && await isDuplicateSubmit(ctx.env,
-      idemKey('topic_create', String(ctx.session.id || '-'), config.kind, title, poster))) {
-      error = '该操作刚刚已执行，请勿重复提交';
+    } else if (isNew) {
+      // 新增补一次性防重: 双击/刷新重发会插入两条一模一样的专题
+      error = await onceOrError(ctx, 'topic_create', [config.kind, title, poster]);
     }
 
     if (!error) {
@@ -376,8 +363,9 @@ async function deleteSubmit(ctx, routeConfig) {
   if (!positiveId(rawId)) {
     return redirect(buildListUrl(TOPIC_MANAGE_URL, { error: '参数错误', filters: { topic: config.kind }, page }));
   }
-  if (await isDuplicateSubmit(ctx.env, idemKey('topic_delete', String(ctx.session.id || '-'), config.kind, String(rawId)))) {
-    return redirect(buildListUrl(TOPIC_MANAGE_URL, { error: '该操作刚刚已执行，请勿重复提交', filters: { topic: config.kind }, page }));
+  const duplicated = await onceOrError(ctx, 'topic_delete', [config.kind, rawId]);
+  if (duplicated) {
+    return redirect(buildListUrl(TOPIC_MANAGE_URL, { error: duplicated, filters: { topic: config.kind }, page }));
   }
   let message = '';
   try {

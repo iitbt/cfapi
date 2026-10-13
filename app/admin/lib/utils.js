@@ -143,6 +143,17 @@ export async function isDuplicateSubmit(env, key, ttl = 10) {
   }
 }
 
+//: 重复提交的统一提示(全站唯一一份文案, 改文案只改这里)
+export const DUPLICATE_SUBMIT = '该操作刚刚已执行，请勿重复提交';
+
+// 幂等防重的唯一调用入口(以前 15 处写操作各写一份 idemKey + isDuplicateSubmit + 同一句文案)。
+// 命中重复提交时返回可直接回显的文案, 正常放行返回空串 —— 空串是假值, 调用方 `if (duplicated)` 即可。
+// parts 里不要再自己拼会话 id: 这里统一把它作为 key 的第一段, 免得各页写法漂移。
+export async function onceOrError(ctx, action, parts = [], ttl = 10) {
+  const key = idemKey(action, String((ctx.session || {}).id || '-'), ...(parts || []));
+  return (await isDuplicateSubmit(ctx.env, key, ttl)) ? DUPLICATE_SUBMIT : '';
+}
+
 // 实体写操作后的缓存清理。Workers 无进程内缓存、对外接口层也未加缓存(先不加),
 // 所以这里是**有意的空实现** —— 保留同名入口与调用点, 将来上 Cache API 时只改这一处。
 export function invalidateEntityCache(entityKey) {

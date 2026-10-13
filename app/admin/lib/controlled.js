@@ -10,7 +10,7 @@ import { one, run } from '../../core/db.js';
 import { sanitizeHtml } from '../../core/sanitize.js';
 import { auditAction } from './entities.js';
 import {
-  auditLog, buildListUrl, idemKey, intOr, invalidateEntityCache, isDuplicateSubmit, positiveId, strOf, textOf
+  auditLog, buildListUrl, intOr, invalidateEntityCache, onceOrError, positiveId, strOf, textOf
 } from './utils.js';
 import { redirect } from './http.js';
 
@@ -141,11 +141,9 @@ export async function runEdit(specDef, ctx) {
     const submitted = strOf(form.form_nonce);
     if (!error && submitted) {
       // 新增与更新都要防重: 更新虽然内容幂等, 但双击/重放会多写一次审计与 update_time(运营看到"改了两次")
-      const parts = [String(session.id || '-'), submitted];
+      const parts = [submitted];
       if (!isNew) parts.push(String(rowId));
-      if (await isDuplicateSubmit(env, idemKey(`${specDef.key}_${isNew ? 'create' : 'update'}`, ...parts), FORM_NONCE_TTL)) {
-        error = '该操作刚刚已执行，请勿重复提交';
-      }
+      error = await onceOrError(ctx, `${specDef.key}_${isNew ? 'create' : 'update'}`, parts, FORM_NONCE_TTL);
     }
     if (!error) {
       try {
@@ -182,8 +180,9 @@ export async function runDelete(specDef, ctx) {
   const rawId = form.id;
   if (!isIdLike(rawId)) return deleteRedirect(specDef, { error: '参数错误', form });
 
-  if (await isDuplicateSubmit(env, idemKey(`${specDef.key}_delete`, String(session.id || '-'), String(rawId)))) {
-    return deleteRedirect(specDef, { error: '该操作刚刚已执行，请勿重复提交', form });
+  const duplicated = await onceOrError(ctx, `${specDef.key}_delete`, [rawId]);
+  if (duplicated) {
+    return deleteRedirect(specDef, { error: duplicated, form });
   }
 
   let row = null;

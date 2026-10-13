@@ -9,9 +9,10 @@ import {
   pagerScript, selectField, switchField, textField, editShell
 } from '../lib/partials.js';
 import { statusButtons, statusCell } from '../lib/status.js';
+import { listController } from '../lib/listPage.js';
 import {
-  PER_PAGE, auditLog, buildListUrl, clampPage, firstScreenLimit, idemKey,
-  invalidateEntityCache, isDuplicateSubmit, intOr, positiveId, strOf
+  PER_PAGE, auditLog, buildListUrl, clampPage, intOr,
+  invalidateEntityCache, onceOrError, positiveId, strOf
 } from '../lib/utils.js';
 import { json, redirect } from '../lib/http.js';
 
@@ -68,26 +69,10 @@ export function renderRows(ctx, banners, page) {
 async function managePage(ctx) {
   const keyword = strOf(ctx.query.keyword);
   const where = bannerWhere(keyword);
-  let total = 0;
-  let totalPages = 1;
-  let page = 1;
-  let banners = [];
-  let error = '';
-  try {
-    const row = await one(ctx.env, `SELECT COUNT(*) AS total FROM banner_images${where.sql}`, ...where.args);
-    total = intOr(row && row.total, 0);
-    totalPages = Math.max(Math.ceil(total / PER_PAGE), 1);
-    const limited = firstScreenLimit(ctx.query.page, PER_PAGE, totalPages);
-    page = limited[0];
-    banners = await all(ctx.env,
-      `SELECT * FROM banner_images${where.sql} ORDER BY sort_order ASC, id DESC LIMIT ?`,
-      ...where.args, limited[1]);
-  } catch (err) {
-    // 查询失败要明说, 不能渲染成"暂无数据"(运营会以为数据被删了)
-    console.error('获取轮播图列表失败', err && err.message);
-    banners = [];
-    error = '读取数据失败，请稍后重试';
-  }
+  // 取数 + 分页骨架走公共实现(lib/listPage.js)
+  const { total, totalPages, page, rows: banners, error } = await listController(ctx, {
+    table: 'banner_images', where, orderBy: 'sort_order ASC, id DESC', label: '获取轮播图列表'
+  });
   const rows = renderRows(ctx, enrichPositions(banners), page);
   const content = listShell({
     title: '轮播图', columns: COLUMNS, rows,
@@ -162,15 +147,13 @@ async function editPage(ctx) {
     if (!error) {
       try {
         let message = '';
-        if (isNew && await isDuplicateSubmit(ctx.env,
-          idemKey('banner_create', String(ctx.session.id || '-'), title, imageUrl, linkUrl, position))) {
-          // 新增补一次性防重: 双击/刷新重发会插入两条一模一样的轮播图
-          error = '该操作刚刚已执行，请勿重复提交';
-        } else if (isNew) {
+        // 新增补一次性防重: 双击/刷新重发会插入两条一模一样的轮播图(命中时 error 已由 onceOrError 写好)
+        if (isNew) error = await onceOrError(ctx, 'banner_create', [title, imageUrl, linkUrl, position]);
+        if (!error && isNew) {
           await run(ctx.env, 'INSERT INTO banner_images (title, image_url, link_url, position, sort_order, status) VALUES (?,?,?,?,?,?)',
             title, imageUrl, linkUrl, position, sortOrder, status);
           message = '轮播图添加成功';
-        } else {
+        } else if (!error) {
           await run(ctx.env, 'UPDATE banner_images SET title=?, image_url=?, link_url=?, position=?, sort_order=?, status=? WHERE id=?',
             title, imageUrl, linkUrl, position, sortOrder, status, bannerId);
           message = '轮播图更新成功';
@@ -229,8 +212,9 @@ async function deleteSubmit(ctx) {
   if (!positiveId(rawId)) {
     return redirect(buildListUrl(MANAGE_URL, { error: '参数错误', page }));
   }
-  if (await isDuplicateSubmit(ctx.env, idemKey('banner_delete', String(ctx.session.id || '-'), String(rawId)))) {
-    return redirect(buildListUrl(MANAGE_URL, { error: '该操作刚刚已执行，请勿重复提交', page }));
+  const duplicated = await onceOrError(ctx, 'banner_delete', [rawId]);
+  if (duplicated) {
+    return redirect(buildListUrl(MANAGE_URL, { error: duplicated, page }));
   }
   let message = '';
   try {
@@ -255,8 +239,9 @@ async function copySubmit(ctx) {
   if (!positiveId(rawId)) {
     return redirect(buildListUrl(MANAGE_URL, { error: '参数错误', page }));
   }
-  if (await isDuplicateSubmit(ctx.env, idemKey('banner_copy', String(ctx.session.id || '-'), String(rawId)))) {
-    return redirect(buildListUrl(MANAGE_URL, { error: '该操作刚刚已执行，请勿重复提交', page }));
+  const duplicated = await onceOrError(ctx, 'banner_copy', [rawId]);
+  if (duplicated) {
+    return redirect(buildListUrl(MANAGE_URL, { error: duplicated, page }));
   }
   let message = '';
   try {

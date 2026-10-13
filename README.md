@@ -1,6 +1,6 @@
 # 狼牙极限运动笔记 · 主后端（cfapi / Cloudflare Workers）
 
-> **版本**：`v2.4.9` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
+> **版本**：`v2.5.0` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
 > **主域名**：**https://lyjx.250036.xyz**（对外 API + `/admin` 管理后台同一域名）。
 > **素材域名**：**https://storage.250036.xyz**（R2 公开域，与接口域名分离）。
 > **定位**：微信小程序「狼牙极限运动笔记」的**主要后端**。今后小程序的开发、接口变更、联调、发版均以本工程为准；FastAPI 工程（`../fastapi/`）为**备用后端**。
@@ -62,7 +62,10 @@
 | 路由单点 | 对外 API 由 `app/core/router.js` 精确路径匹配（Map，支持 GET/HEAD/POST），各 `app/api/*.js` 导出的 `registerXxxRoutes(router)` 在 `main.js` 装配 |
 | 后台写入口受控 | 写权限由 `app/admin/lib/entities.js` 四份清单统一口径（`SUPER_ONLY_WRITE_PATHS`/`ROUTE_SUPER_ONLY_WRITE_PATHS`/`NORMAL_WRITE_PATHS`/`EXEMPT_WRITE_PATHS`），未登记写入口一律 403 |
 | 后台页面唯一布局 | 后台页面外壳在 `app/admin/lib/layout.js`（对齐旧站 `base.html`），宏/片段唯一实现在 `app/admin/lib/partials.js` |
-| 静态资源内联 | `app/admin/assets/static-assets.js`（约 2.3MB，由 `tools/embed_admin_assets.mjs` 打包 `app/admin/static/**` 生成，含内联字体 data:URL）随代码提交但**不是手改文件** |
+| 列表页骨架单点 | 后台列表页的取数/分页一律走 `app/admin/lib/listPage.js` 的 `listController`（7 个列表页共用），页面只提供表名/筛选/排序/行渲染 |
+| 幂等防重单点 | 后台写操作的防重一律走 `app/admin/lib/utils.js` 的 `onceOrError(ctx, action, parts)`（命中就返回可直接回显的文案），不再各页手拼 `idemKey` + `isDuplicateSubmit` |
+| 页面脚本不内联 | 页面脚本一律放 `app/admin/static/js/*.js`，模板里最多注入配置（`window.__xxxCfg`）—— 大段脚本写在模板字符串里会被吃掉反斜杠、被反引号截断（2026-10-10 两次教训） |
+| 静态资源内联 | `app/admin/assets/static-assets.js`（自有 css/js 内联，由 `tools/embed_admin_assets.mjs` 打包 `app/admin/static/**` 生成）随代码提交但**不是手改文件**；`static/vendor/`（wangEditor / 图标字体 / bootstrap）**不内联**，从 R2 的 `admin/` 前缀直出（见 `DEPLOY.md` 第 7.5 步） |
 | 时间口径 | 全站东八区，集中在 `app/core/timeutil.js`（`beijingNow`/`windowStart`/`toEpoch`） |
 | 安全 | 日志键名/文本双重脱敏（`app/core/logging.js`），后台审计 `auditLog` |
 
@@ -83,7 +86,7 @@ cfapi/
 │   ├── api/                 # 对外 JSON 接口（6 个路由文件 + 2 个辅助）
 │   ├── admin/               # 管理后台（index/routes/auth + lib/ + pages/ + assets/ + static/）
 │   ├── core/                # 平台能力（db/response/router/middleware/storage/ratelimit/...）
-│   └── sql/                 # 建表脚本（0001~0004，按序执行）
+│   └── sql/                 # 建表脚本（0001~0006，按序执行）
 ├── tests/                   # *.test.mjs（node --test，桩模拟 D1/R2）
 ├── tools/                   # 运维脚本（对拍/冒烟/区域迁移/资源内联/导出）
 ├── notes/                   # 迁移与运维笔记（api-inventory/structure-map/limits-design/ops-sql）
@@ -162,6 +165,7 @@ cfapi/
 | `guard.js` | 访问控制常量 + `currentAdmin` + 写请求来源校验 `writeOriginAllowed` |
 | `auth-store.js` | `admin_users` 表读写（含按 id 取数与写回新口令哈希） |
 | `http.js` | `json` / `redirect` 的**唯一实现**（以前散在十几个页面模块里各写一份） |
+| `listPage.js` | 列表页「取数 + 分页」骨架的**唯一实现** `listController`（news/users/comments/banners/notices/topics/admin_users 七个列表页共用，各页只给表名/筛选/排序/行渲染） |
 | `nav.js` | 侧栏菜单唯一来源 `NAV_GROUPS` + `migrationProgress()` |
 | `entities.js` | 实体注册表 + 后台写权限四份清单 + `classifyWritePath` |
 | `catalog.js` | 目录 / 文案 / 菜单常量唯一来源（同旧站 `catalog.py`） |
@@ -174,7 +178,7 @@ cfapi/
 | `newsContent.js` | 富文本 `<wx-video>`↔`<video>` 转换 + 摘要生成 |
 | `partials.js` | 后台页面「宏」唯一实现 |
 | `status.js` | 后台「状态切换」注册表 + 行内徽章/启停按钮的唯一渲染入口 `statusCell`/`statusButtons` |
-| `utils.js` | 后台通用小工具（分页 / 审计 / 幂等键 / `positiveId`；`invalidateEntityCache` 是**预留的空实现** —— 当前接口层没有缓存） |
+| `utils.js` | 后台通用小工具（分页 / 审计 / 幂等键 + 防重入口 `onceOrError` / `positiveId`；`invalidateEntityCache` 是**预留的空实现** —— 当前接口层没有缓存） |
 | `base64url.js` | base64url 编解码 |
 
 `pages/`（17 个后台页面模块，各导出 `routes` 合并进 `PAGE_ROUTES`）：
@@ -199,6 +203,16 @@ cfapi/
 | `systemInfo.js` | 系统信息：运行环境 / 表数量 / 记录数 / 素材占用 |
 | `topics.js` | 专题精选（摩旅 / 户外）：聚合列表 / 编辑 / 预览 / 删除 |
 | `users.js` | 用户管理：列表 / 详情 / 设内部测试 / 恢复 / 删除 |
+
+`static/js/`（页面脚本，全部打包进 `assets/static-assets.js`；引用一律走 `partials.js` 的 `staticScript`，带 `?v=<API_VERSION>`）：
+
+| 文件 | 职责 |
+| --- | --- |
+| `media_govern.js` | 素材库治理页：上传队列/进度/失败重试跳过 + 批量勾选（常量由页面注入 `window.__mediaGovernCfg`） |
+| `db_tools.js` | 数据库管理页：复制、表名本地筛选、单行 JSON/INSERT/UPDATE、SQL 控制台（快捷语句/历史/结果） |
+| `news_batch.js` | 笔记管理页：批量勾选与提交 |
+| `infinite_scroll.js` | 触底加载 `AdminListLoader`（各列表页共用，由 `pagerScript` 引入） |
+| `admin-shell.js` / `status-toggle.js` / `sidebar-groups.js` / `live_time.js` / `image_upload.js` / `media_library.js` | 外壳交互 / 状态就地切换 / 侧栏分组 / 相对时间 / 上传弹窗 / 素材库弹窗 |
 
 ### 6.5 `app/sql/`（建表脚本，按序执行）
 
@@ -340,7 +354,7 @@ cfapi/
 | --- | --- | --- |
 | 技术栈 | Cloudflare Workers + D1 + R2，零运行时依赖 | Python + FastAPI + SQLite/MySQL（双驱动） |
 | 域名 | `lyjx.250036.xyz` | `api0.250036.xyz`、`api.250036.xyz` |
-| 版本号 | `API_VERSION=2.4.9` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.4.0`） |
+| 版本号 | `API_VERSION=2.5.0` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.4.0`） |
 | 接口 | 33 条业务接口已全量实现并自测 | 历史「唯一后端」，接口同构可互切 |
 | 后台 | 17 页面（字符串拼 HTML） | 同样 17+ 模块（Jinja2 服务端渲染） |
 | 口令哈希 | PBKDF2-SHA256（Workers CPU 限制，不用 bcrypt） | bcrypt |

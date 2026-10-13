@@ -9,8 +9,8 @@ import {
 } from '../lib/partials.js';
 import { statusButtons, statusCell } from '../lib/status.js';
 import {
-  CONTROLLED_LIST_LIMIT, auditLog, buildListUrl, idemKey, intOr, invalidateEntityCache,
-  isDuplicateSubmit, positiveId, strOf
+  CONTROLLED_LIST_LIMIT, auditLog, buildListUrl, intOr, invalidateEntityCache,
+  onceOrError, positiveId, strOf
 } from '../lib/utils.js';
 import { redirect } from '../lib/http.js';
 
@@ -303,8 +303,9 @@ async function deleteSubmit(ctx) {
   if (!positiveId(rawId)) {
     return redirect(buildListUrl(MANAGE_URL, { error: '参数错误' }));
   }
-  if (await isDuplicateSubmit(ctx.env, idemKey('category_delete', String(ctx.session.id || '-'), String(rawId)))) {
-    return redirect(buildListUrl(MANAGE_URL, { error: '该操作刚刚已执行，请勿重复提交' }));
+  const duplicated = await onceOrError(ctx, 'category_delete', [rawId]);
+  if (duplicated) {
+    return redirect(buildListUrl(MANAGE_URL, { error: duplicated }));
   }
   const moveTo = strOf(ctx.form.move_to);
   let message = '';

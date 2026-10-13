@@ -12,13 +12,13 @@ import { getNameMap, nameFor, optionsForSelect } from '../lib/categorySource.js'
 import { imagesForStorage, plainDesc, videoForBrowser, videoForEditor, videoForStorage } from '../lib/newsContent.js';
 import {
   addButton, backButton, emptyRow, filterButtons, imageUploadField, imageUploadModal, listShell, mediaLibraryModal,
-  pagerScript, searchBar, searchInput, searchSelect, selectField, switchField, textareaField, textField
+  pagerScript, searchBar, searchInput, searchSelect, selectField, staticScript, switchField, textareaField, textField
 } from '../lib/partials.js';
 import { statusButtons, statusCell, statusKind, statusLabel } from '../lib/status.js';
+import { listController } from '../lib/listPage.js';
 import {
-  MAX_FIRST_SCREEN_PAGES, PER_PAGE, auditLog, buildListUrl, clampPage, datetimeLocalValue,
-  firstScreenLimit, idemKey, invalidateEntityCache, isDuplicateSubmit, intOr, normalizeDatetime,
-  nowLocalMinute, positiveId, strOf
+  PER_PAGE, auditLog, buildListUrl, clampPage, datetimeLocalValue, invalidateEntityCache,
+  intOr, normalizeDatetime, nowLocalMinute, onceOrError, positiveId, strOf
 } from '../lib/utils.js';
 
 const MANAGE_URL = '/admin/news_manage';
@@ -119,65 +119,19 @@ function batchBar(ctx) {
 </form>`;
 }
 
-const BATCH_SCRIPT = `<script>
-  (function () {
-    var form = document.getElementById('batchForm');
-    if (!form) return;
-    var all = document.getElementById('rowCheckAll');
-    if (all) {
-      all.addEventListener('change', function () {
-        Array.prototype.forEach.call(document.querySelectorAll('.rowCheck'), function (box) { box.checked = all.checked; });
-      });
-    }
-    function selected() {
-      return Array.prototype.filter.call(document.querySelectorAll('.rowCheck'), function (box) { return box.checked; });
-    }
-    Array.prototype.forEach.call(form.querySelectorAll('[data-batch]'), function (btn) {
-      btn.addEventListener('click', function () {
-        var boxes = selected();
-        if (!boxes.length) { alert('请先勾选要操作的笔记'); return; }
-        var action = btn.getAttribute('data-batch');
-        if (action === 'delete' && !confirm('确定删除选中的 ' + boxes.length + ' 条笔记？')) return;
-        document.getElementById('batchIds').value = boxes.map(function (box) { return box.value; }).join(',');
-        document.getElementById('batchAction').value = action;
-        form.submit();
-      });
-    });
-  })();
-</script>`;
+// 批量操作脚本已搬到 static/js/news_batch.js(2.5.0): 模板字符串里改脚本容易整段坏掉, 搬出去才有语法检查
 
 async function managePage(ctx) {
   const where = listWhere(ctx.query);
-  let total = 0;
-  let totalPages = 1;
-  let page = 1;
-  let rows = [];
-  let error = '';
   // 分类筛选: 走共用的筛选按钮组(与留言管理页同一套), 参数仍是 ?category=xxx, 值取库里的分类
   const currentCategory = strOf(ctx.query.category);
-  let categoryOptions = [];
-  try {
-    // 三条查询互不依赖 → **一次并发发出**(每条各占一次 D1 往返; D1 在西欧时顺序发约为 3 × RTT)
-    // 首屏最多渲染 MAX_FIRST_SCREEN_PAGES 页, 所以先按这个上限取行, 拿到总数后再裁到本页应有条数
-    // (裁与原先的 LIMIT 等价: 同一条 ORDER BY, 只是多取了几行数据、少等一次往返)
-    const [counted, listed, options] = await Promise.all([
-      one(ctx.env, `SELECT COUNT(*) AS total FROM news${where.sql}`, ...where.args),
-      all(ctx.env, `SELECT ${LIST_COLUMNS} FROM news${where.sql} ORDER BY publish_time DESC, id DESC LIMIT ?`,
-        ...where.args, MAX_FIRST_SCREEN_PAGES * PER_PAGE),
-      optionsForSelect(ctx.env, currentCategory === 'all' ? '' : currentCategory)
-    ]);
-    total = intOr(counted && counted.total, 0);
-    totalPages = Math.max(Math.ceil(total / PER_PAGE), 1);
-    const limited = firstScreenLimit(ctx.query.page, PER_PAGE, totalPages);
-    page = limited[0];
-    rows = listed.slice(0, limited[1]);
-    categoryOptions = options;
-  } catch (err) {
-    // 查询失败要明说: 渲染成"暂无数据"会让运营以为数据被删了
-    console.error('获取笔记列表失败', err && err.message);
-    rows = [];
-    error = '读取数据失败，请稍后重试';
-  }
+  // COUNT、取行、分类下拉三条互不依赖 → 由 listController 一次并发发出(见 lib/listPage.js)
+  const { total, totalPages, page, rows, extra, error } = await listController(ctx, {
+    table: 'news', where, columns: LIST_COLUMNS, orderBy: 'publish_time DESC, id DESC',
+    label: '获取笔记列表',
+    parallel: () => optionsForSelect(ctx.env, currentCategory === 'all' ? '' : currentCategory)
+  });
+  const categoryOptions = extra || [];
   // 「分类」列要显示中文名称: 直接用上面那条分类查询的结果(key→名称)做映射, 不额外发语句;
   // 已删除/未登记的标识由 nameFor 回退成标识本身(便于在页面上发现历史脏数据)
   ctx.nameMap = Object.fromEntries(categoryOptions);
@@ -225,7 +179,7 @@ async function managePage(ctx) {
       // 2.4.1: 页面已没有跳页控件, 这里也不再下发跳页 id(只留回到顶部)
       baseUrl: MANAGE_URL, backTopId: 'newsBackTopBtn', jump: false,
       rowMarker: 'rowCheck', version: ctx.version
-    }) + BATCH_SCRIPT
+    }) + staticScript('js/news_batch.js', ctx.version)
   });
 }
 
@@ -514,8 +468,9 @@ async function deleteSubmit(ctx) {
   if (!positiveId(rawId)) {
     return redirect(buildListUrl(MANAGE_URL, { error: '无效的请求', page }));
   }
-  if (await isDuplicateSubmit(ctx.env, idemKey('news_delete', String(ctx.session.id || '-'), rawId))) {
-    return redirect(buildListUrl(MANAGE_URL, { error: '该删除刚刚已执行，请勿重复提交', page }));
+  const duplicated = await onceOrError(ctx, 'news_delete', [rawId]);
+  if (duplicated) {
+    return redirect(buildListUrl(MANAGE_URL, { error: duplicated, page }));
   }
   let message = '';
   try {
@@ -540,8 +495,9 @@ async function copySubmit(ctx) {
   if (!positiveId(rawId)) {
     return redirect(buildListUrl(MANAGE_URL, { error: '缺少有效的笔记ID参数', page }));
   }
-  if (await isDuplicateSubmit(ctx.env, idemKey('news_copy', String(ctx.session.id || '-'), rawId))) {
-    return redirect(buildListUrl(MANAGE_URL, { error: '该操作刚刚已执行，请勿重复提交', page }));
+  const duplicated = await onceOrError(ctx, 'news_copy', [rawId]);
+  if (duplicated) {
+    return redirect(buildListUrl(MANAGE_URL, { error: duplicated, page }));
   }
   let message = '';
   try {
@@ -575,8 +531,9 @@ async function batchSubmit(ctx) {
   if (!['approve', 'pending', 'delete'].includes(action)) {
     return redirect(buildListUrl(MANAGE_URL, { error: '不支持的操作类型', filters, page }));
   }
-  if (await isDuplicateSubmit(ctx.env, idemKey('news_batch', String(ctx.session.id || '-'), action, ids.join(',')))) {
-    return redirect(buildListUrl(MANAGE_URL, { error: '该操作刚刚已执行，请勿重复提交', filters, page }));
+  const duplicated = await onceOrError(ctx, 'news_batch', [action, ids.join(',')]);
+  if (duplicated) {
+    return redirect(buildListUrl(MANAGE_URL, { error: duplicated, filters, page }));
   }
   let message = '';
   try {
@@ -752,8 +709,9 @@ async function purgeSubmit(ctx) {
   if (!positiveId(rawId)) {
     return redirect(buildListUrl(RECYCLE_URL, { error: '参数错误' }));
   }
-  if (await isDuplicateSubmit(ctx.env, idemKey('news_purge', String(ctx.session.id || '-'), rawId))) {
-    return redirect(buildListUrl(RECYCLE_URL, { error: '该操作刚刚已执行，请勿重复提交' }));
+  const duplicated = await onceOrError(ctx, 'news_purge', [rawId]);
+  if (duplicated) {
+    return redirect(buildListUrl(RECYCLE_URL, { error: duplicated }));
   }
   let message = '';
   try {
@@ -775,8 +733,9 @@ async function purgeExpiredSubmit(ctx) {
   if (strOf(ctx.form.confirm) !== '1') {
     return redirect(buildListUrl(RECYCLE_URL, { error: '请从回收站点「清理到期记录」提交（缺少确认标记）' }));
   }
-  if (await isDuplicateSubmit(ctx.env, idemKey('news_purge_expired', String(ctx.session.id || '-')))) {
-    return redirect(buildListUrl(RECYCLE_URL, { error: '该操作刚刚已执行，请勿重复提交' }));
+  const duplicated = await onceOrError(ctx, 'news_purge_expired');
+  if (duplicated) {
+    return redirect(buildListUrl(RECYCLE_URL, { error: duplicated }));
   }
   let purged = 0;
   try {

@@ -84,19 +84,23 @@ test('上传(2.4.0): 页面用 XHR 报进度、顺序上传、失败可重试/�
   const cookie = await loginCookie(env);
   env.ENABLE_SQL_TOOL = '1';
   const html = await (await get('/admin/media_manage', env, cookie)).text();
+  // 2.5.0: 上传脚本已搬到 static/js/media_govern.js 真文件 —— 脚本内容的断言读文件, 页面里只留引标签
+  const script = await readFile(new URL('../app/admin/static/js/media_govern.js', import.meta.url), 'utf8');
+  assert.ok(html.includes('static/js/media_govern.js'), '页面要引到搬出去的上传脚本');
+  assert.ok(html.includes('window.__mediaGovernCfg'), '脚本要的两个常量由页面注入(不再写死在模板里)');
   // 进度只能来自 XHR(fetch 没有上传进度), 且一次只发一个文件(顺序) —— 并发会让两条进度互相打架
-  assert.ok(html.includes('new XMLHttpRequest()'), '用 XHR 上传(才有 upload.onprogress)');
-  assert.ok(html.includes("xhr.upload.addEventListener('progress'"), '监听上传进度');
-  assert.ok(!html.includes('Promise.all(pending.map'), '不并发上传(顺序逐文件)');
-  assert.ok(html.includes("data.set('name_mode', mode())"), '命名策略随请求发出');
-  assert.ok(html.includes("data.set('rel_path', item.rel)"), '相对路径随请求发出');
+  assert.ok(script.includes('new XMLHttpRequest()'), '用 XHR 上传(才有 upload.onprogress)');
+  assert.ok(script.includes("xhr.upload.addEventListener('progress'"), '监听上传进度');
+  assert.ok(!script.includes('Promise.all(pending.map'), '不并发上传(顺序逐文件)');
+  assert.ok(script.includes("data.set('name_mode', mode())"), '命名策略随请求发出');
+  assert.ok(script.includes("data.set('rel_path', item.rel)"), '相对路径随请求发出');
   assert.ok(html.includes('webkitdirectory'), '文件夹入口(浏览器原生目录选择)');
-  assert.ok(html.includes("retry.textContent = '重试'") && html.includes('renderFailed'), '失败项带「重试」按钮');
-  assert.ok(html.includes("skip.textContent = '跳过'"), '失败可跳过');
+  assert.ok(script.includes("retry.textContent = '重试'") && script.includes('renderFailed'), '失败项带「重试」按钮');
+  assert.ok(script.includes("skip.textContent = '跳过'"), '失败可跳过');
   // 2.4.2: 目录结构两种命名模式都保留 —— rel_path 不再按命名模式分叉, 也不再剥掉顶层文件夹名
-  assert.ok(!html.includes("mode() === 'keep' && item.rel"), 'rel_path 不该只在"保留原名"时发');
-  assert.ok(!html.includes('parts.slice(1).join'), '不再剥掉顶层文件夹名(整棵树都要保留)');
-  assert.ok(html.includes("return file.webkitRelativePath || ''"), '相对路径整条带上(清洗交给服务端)');
+  assert.ok(!script.includes("mode() === 'keep' && item.rel"), 'rel_path 不该只在"保留原名"时发');
+  assert.ok(!script.includes('parts.slice(1).join'), '不再剥掉顶层文件夹名(整棵树都要保留)');
+  assert.ok(script.includes("return file.webkitRelativePath || ''"), '相对路径整条带上(清洗交给服务端)');
 });
 
 test('页面内联脚本必须能解析(2.4.2): 页面用模板字符串生成 <script>, 多层转义很容易吃掉反斜杠', async () => {

@@ -9,9 +9,9 @@ import { assetUrl } from '../../core/media_scheme.js';
 import { adminLayout } from '../lib/layout.js';
 import { backButton, emptyRow, listShell, pagerScript, searchBar, searchInput, searchSelect } from '../lib/partials.js';
 import { json, redirect } from '../lib/http.js';
+import { listController } from '../lib/listPage.js';
 import {
-  PER_PAGE, auditLog, buildListUrl, clampPage, firstScreenLimit, fmtDatetime, idemKey,
-  intOr, isDuplicateSubmit, strOf
+  PER_PAGE, auditLog, buildListUrl, clampPage, fmtDatetime, intOr, onceOrError, strOf
 } from '../lib/utils.js';
 
 const MANAGE_URL = '/admin/users';
@@ -96,22 +96,11 @@ const LIST_COLUMNS = 'id, username, nickname, email, avatar, login_type, is_trus
 
 async function managePage(ctx) {
   const filters = filtersOf(ctx.query);
-  let total = 0;
-  let totalPages = 1;
-  let page = 1;
-  let users = [];
-  let error = '';
-  try {
-    total = intOr((await one(ctx.env, `SELECT COUNT(*) AS total FROM users${filters.sql}`, ...filters.args)).total, 0);
-    totalPages = Math.max(Math.ceil(total / PER_PAGE), 1);
-    const limited = firstScreenLimit(ctx.query.page, PER_PAGE, totalPages);
-    page = limited[0];
-    users = await all(ctx.env, `SELECT ${LIST_COLUMNS} FROM users${filters.sql} ORDER BY id ASC LIMIT ?`, ...filters.args, limited[1]);
-  } catch (err) {
-    console.error('获取用户列表失败', err && err.message);
-    users = [];
-    error = '获取用户列表失败，请稍后重试';
-  }
+  // 取数 + 分页骨架走公共实现(lib/listPage.js), 这一页只提供表名/筛选/排序
+  const { total, totalPages, page, rows: users, error } = await listController(ctx, {
+    table: 'users', where: filters, columns: LIST_COLUMNS, orderBy: 'id ASC',
+    label: '获取用户列表', failure: '获取用户列表失败，请稍后重试'
+  });
   // 搜索条: 共用实现(顺序统一为"下拉 → 输入框 → 搜索按钮"); 参数名 search/trusted 不变
   const searchForm = searchBar({
     action: MANAGE_URL,
@@ -281,8 +270,9 @@ async function writeSubmit(ctx) {
       message = '账号已恢复：该用户现可正常登录，昵称已还原为原昵称(已恢复)，原头像保持不变';
     } else if (action === 'delete_user') {
       // 物理删除 + 级联清子表, 后台最不可逆的操作: 必须幂等(双击/刷新不会二次执行)
-      if (await isDuplicateSubmit(ctx.env, idemKey('user_delete', String(ctx.session.id || '-'), rawId))) {
-        error = '该操作刚刚已执行，请勿重复提交';
+      const duplicated = await onceOrError(ctx, 'user_delete', [rawId]);
+      if (duplicated) {
+        error = duplicated;
       } else {
         const outcome = await purgeUser(ctx.env, row);
         auditLog('admin.user.delete', { user: ctx.session.username, user_id: userId, news_count: outcome.newsCount });
