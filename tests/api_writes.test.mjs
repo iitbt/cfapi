@@ -401,7 +401,7 @@ test('撤回申请(2.5.4): 有待处理申请才能撤 / 撤回后置 0 可再�
     const cancel = makeEnv({ db: appliedDb, vars: { WXWORK_WEBHOOK_KEY: 'k-1' } });
     const body = await postJson('/user/apply_test', { token: 'tok-1', action: 'cancel' }, cancel.env);
     assert.equal(body.code, 200);
-    assert.deepEqual(body.data, { test_applied: 0 });
+    assert.deepEqual(body.data, { test_applied: 0, is_trusted: 0 }, '待审批撤回不动身份, 回给端上的还是 0');
     const write = cancel.calls.find((item) => /UPDATE users SET test_applied=0 WHERE id=\? AND test_applied=1/i.test(item.sql));
     assert.ok(write && write.args[0] === 7, '撤回也要带 test_applied=1 的条件(没申请过就撤不动)');
     assert.equal(cancel.calls.some((item) => /is_trusted/i.test(item.sql)), false, '撤回只清申请标记, 不碰内部测试身份');
@@ -427,6 +427,33 @@ test('撤回申请(2.5.4): 有待处理申请才能撤 / 撤回后置 0 可再�
     const bogus = makeEnv({ db: baseDb() });
     assert.equal((await postJson('/user/apply_test', { token: 'tok-1', action: 'x' }, bogus.env)).msg, '操作类型错误');
     assert.equal(bogus.calls.some((item) => /UPDATE users SET test_applied/i.test(item.sql)), false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('已通过后撤回(2.5.5): 连 is_trusted 一起退回 0(放弃内部测试身份)并单独通知管理员', async () => {
+  const realFetch = globalThis.fetch;
+  const sent = [];
+  globalThis.fetch = async (url, init) => { sent.push({ url, init }); return { ok: true, json: async () => ({ errcode: 0 }) }; };
+  // 已通过的用户行(is_trusted=1)
+  const approvedDb = (sql, args, kind) => (/FROM users WHERE token=/i.test(sql)
+    ? Object.assign({}, USER_ROW, { is_trusted: 1 }) : baseDb()(sql, args, kind));
+  try {
+    const { env, calls } = makeEnv({ db: approvedDb, vars: { WXWORK_WEBHOOK_KEY: 'k-1' } });
+    const body = await postJson('/user/apply_test', { token: 'tok-trusted', action: 'cancel' }, env);
+    assert.equal(body.code, 200);
+    assert.deepEqual(body.data, { test_applied: 0, is_trusted: 0 }, '要把退回后的身份也回给端上');
+    assert.equal(body.msg, '已撤回申请，内部测试身份已取消');
+    const write = calls.find((item) => /UPDATE users SET is_trusted=0, test_applied=0 WHERE id=\? AND is_trusted=1/i.test(item.sql));
+    assert.ok(write, '已通过后撤回要把 is_trusted 一起退回 0');
+    assert.equal(write.args[0], 7);
+    const content = JSON.parse(sent[0].init.body).text.content;
+    assert.ok(content.includes('放弃内部测试身份') && content.includes('撤回时间：'), content);
+
+    // 已通过的人点"申请"仍被拒(身份不会重复发放, 4.4.7 的语义不变)
+    const again = makeEnv({ db: approvedDb });
+    assert.equal((await postJson('/user/apply_test', { token: 'tok-trusted' }, again.env)).code, 409);
   } finally {
     globalThis.fetch = realFetch;
   }

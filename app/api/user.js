@@ -97,19 +97,25 @@ const WXWORK_WEBHOOK_URL = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key
 /**
  * 通知正文: 管理员照着就能在后台定位到人(昵称 + ID + 用户名 + 时间)。
  *
- * 两种事件共用这一份格式: apply = 用户提交申请; cancel = 用户撤回申请(2.5.4)。
- * 撤回要再发一条, 原因是**机器人消息发出去就撤不回**: 管理员可能已经看到上一条准备去点
+ * 三种事件共用这一份格式: apply = 提交申请(2.5.3); cancel = 撤回待审批的申请(2.5.4);
+ * withdraw = 已通过后退回普通用户(2.5.5, 内部测试身份被用户自己取消了)。
+ * 撤回类要再发一条, 原因是**机器人消息发出去就撤不回**: 管理员可能已经看到上一条准备去点
  * 「设为内部测试」, 不提醒的话就白忙一次(后台徽章虽然也没了, 但他不一定回头看后台)。
  */
 function testApplyNoticeText(user, kind = 'apply') {
-  const cancel = kind === 'cancel';
-  return [
-    cancel ? '【内部测试申请·已撤回】' : '【内部测试申请】',
+  const withdrawn = kind === 'withdraw';
+  const lines = [
+    kind === 'apply'
+      ? '【内部测试申请】'
+      : (withdrawn ? '【内部测试申请·已撤回（放弃内部测试身份）】' : '【内部测试申请·已撤回】'),
     `用户：${str(user.nickname) || str(user.username) || '-'}（ID ${user.id}／${str(user.username) || '-'}）`,
     `登录方式：${str(user.login_type) === 'wechat' ? '微信' : '账号'}`,
-    `${cancel ? '撤回时间' : '申请时间'}：${beijingNow()}`,
-    cancel ? '说明：该用户已撤回申请，上一条申请通知可忽略' : '处理：管理后台 → 用户 → 设为内部测试'
-  ].join('\n');
+    `${kind === 'apply' ? '申请时间' : '撤回时间'}：${beijingNow()}`
+  ];
+  if (kind === 'apply') lines.push('处理：管理后台 → 用户 → 设为内部测试');
+  else if (withdrawn) lines.push('说明：该用户已放弃内部测试身份（内部测试权限已收回），上一条申请通知可忽略');
+  else lines.push('说明：该用户已撤回申请，上一条申请通知可忽略');
+  return lines.join('\n');
 }
 
 /**
@@ -276,10 +282,10 @@ export function registerUserRoutes(router) {
     }
   });
 
-  // ---------------- 内部测试申请 / 撤回(4.4.7 新增, 2.5.4 补撤回) ----------------
-  // action = apply(默认) 提交申请 / cancel 撤回申请。两条路径都靠"条件更新 + changes"防双击:
+  // ---------------- 内部测试申请 / 撤回(4.4.7 新增, 2.5.4 补撤回, 2.5.5 补"已通过后退回") ----------------
+  // action = apply(默认) 提交申请 / cancel 撤回。两条路径都靠"条件更新 + changes"防双击:
   //   apply: 只能提交一次(已是内部测试用户 / 已有待处理申请都直接拒掉, 重复点击不会再发通知);
-  //   cancel: 只有"确实有待处理申请"才撤得动, 撤回后 test_applied=0, 可以重新申请。
+  //   cancel: 待审批 → 清 test_applied(可以重新申请); 已通过 → 连 is_trusted 一起退回(放弃内部测试身份)。
   // 处理入口始终是后台「用户 → 设为内部测试」, 这两个动作只负责"让管理员知道有人想进来 / 又不来了"。
   router.post('/user/apply_test', async (request, env, ctx, args) => {
     const body = args.body || {};
@@ -289,19 +295,29 @@ export function registerUserRoutes(router) {
     if (!user) return fail(401, AUTH_MESSAGES.expired);
     const action = str(body.action) || 'apply';
 
-    // 撤回申请(2.5.4): 不改 is_trusted(内部测试身份只能由后台给/收), 只清申请标记
+    // 撤回(2.5.4; 已通过后的撤回 2.5.5):
+    //   待审批 → 只清申请标记 test_applied, 之后可以重新申请;
+    //   已通过 → 连 is_trusted 一起退回 0 —— 这是用户自己的身份, 允许自助放弃(立即失去专题视频 / 留言免审等);
+    //            管理员侧不用做任何动作, 后台「类型」列跟着这两个字段走。
     if (action === 'cancel') {
+      const approved = Number(user.is_trusted) === 1;
+      const sql = approved
+        ? 'UPDATE users SET is_trusted=0, test_applied=0 WHERE id=? AND is_trusted=1'
+        : 'UPDATE users SET test_applied=0 WHERE id=? AND test_applied=1';
       try {
-        const result = await run(env, 'UPDATE users SET test_applied=0 WHERE id=? AND test_applied=1', user.id);
+        const result = await run(env, sql, user.id);
         if (!result || !result.meta || Number(result.meta.changes) < 1) {
-          return fail(409, '当前没有待处理的申请');
+          return fail(409, approved ? '当前不是内部测试用户' : '当前没有待处理的申请');
         }
       } catch (error) {
         return fail(500, '服务器错误，请稍后重试');
       }
       // 再发一条通知: 机器人消息撤不回, 提醒管理员"上一条可忽略"
-      await notifyTestApply(env, ctx, user, 'cancel');
-      return ok({ test_applied: 0 }, '已撤回申请，可以重新提交');
+      await notifyTestApply(env, ctx, user, approved ? 'withdraw' : 'cancel');
+      return ok(
+        { test_applied: 0, is_trusted: approved ? 0 : (Number(user.is_trusted) || 0) },
+        approved ? '已撤回申请，内部测试身份已取消' : '已撤回申请，可以重新提交'
+      );
     }
     if (action !== 'apply') return fail(400, '操作类型错误');
 
