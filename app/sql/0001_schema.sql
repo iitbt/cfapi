@@ -72,8 +72,12 @@ CREATE TABLE app_notices (
   status INTEGER NOT NULL DEFAULT 1,
   -- 接收人(2.5.9): 0=所有用户(默认, 与历史数据同义) / 1=内部测试用户 / 2=普通用户(已登录且非内部测试) / 3=指定用户
   receiver_type INTEGER NOT NULL DEFAULT 0,
-  -- 指定用户(2.5.9, 仅 receiver_type=3 时有意义): 收件人 users.id;
+  -- 指定用户(2.6.0, 仅 receiver_type=3 时有意义): 收件人 users.id 的**逗号列表**, 两端带逗号, 如 `,7,9,`;
+  -- 空串 = 一位都没选。写法与读法见 core/notice_targets.js(唯一实现)。
   -- 2.5.7 的"内部测试通知"也落在这里(同时把 receiver_type 置 3), 所以定向消息与后台指定的定向公告共用同一列
+  target_user_ids TEXT NOT NULL DEFAULT '',
+  -- 遗留列(2.5.7~2.5.9 的单值列): 新代码不读也不写, 老库由 0010 折进 target_user_ids 后即废弃。
+  -- 不删列是因为 SQLite 删列要重建整表(代价见 0006), 而它已经没有写入方
   target_user_id INTEGER,
   create_time TEXT DEFAULT (datetime('now','+8 hours')),
   update_time TEXT

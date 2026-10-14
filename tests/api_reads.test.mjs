@@ -202,8 +202,9 @@ test('公告接收人(2.5.9): 四档可见性由一条 OR 查询判定, 未登�
     await getJson(path, env);
     return calls.filter((call) => /FROM app_notices/i.test(call.sql));
   };
-  // 0=所有用户 / 1=内部测试 / 2=普通用户 / 3=指定用户(target_user_id); 前两档按观看者档位判定
-  const VISIBLE = /\(receiver_type=0 OR \(receiver_type=1 AND \?=1\) OR \(receiver_type=2 AND \?=0\) OR \(receiver_type=3 AND target_user_id=\?\)\)/;
+  // 0=所有用户 / 1=内部测试 / 2=普通用户 / 3=指定用户(target_user_ids); 前两档按观看者档位判定。
+  // 3 档是 LIKE 而不是 = (2.6.0 起收件人是逗号列表), 参数据形如 `%,7,%` —— 两端带逗号才不会被 17、70 蹭到
+  const VISIBLE = /\(receiver_type=0 OR \(receiver_type=1 AND \?=1\) OR \(receiver_type=2 AND \?=0\) OR \(receiver_type=3 AND target_user_ids LIKE \?\)\)/;
 
   // 游客: 计数 + 列表两条都要带可见性条件; 档位 -1, 用户 id 0 —— 两个"按用户类型"的分支都命中不了
   const guest = await runsFor('/content/get_notices?page=1&page_size=10', null);
@@ -211,21 +212,21 @@ test('公告接收人(2.5.9): 四档可见性由一条 OR 查询判定, 未登�
   guest.forEach((call) => {
     assert.match(call.sql, VISIBLE, call.sql);
     assert.deepEqual(call.args.slice(2, 4), [-1, -1], '游客档位 = -1(只看得到"所有用户"的公告)');
-    assert.equal(call.args[4], 0, '游客没有 user id, 按 0 算');
+    assert.equal(call.args[4], '%,0,%', '游客没有 user id, 按 0 算(users.id 从 1 起, 所以永不匹配)');
   });
 
-  // 普通用户: 两个档位占位符都是 0, 收件人 id 取 token 反查出的用户
+  // 普通用户: 两个档位占位符都是 0, 收件人取 token 反查出的用户
   const normal = await runsFor('/content/get_notice_unread?token=tok-1', USER_ROW);
   assert.equal(normal.length, 1, '未读只查一条 id 列表');
   assert.match(normal[0].sql, VISIBLE, normal[0].sql);
   assert.deepEqual(normal[0].args.slice(2, 4), [0, 0], '普通用户档位 = 0');
-  assert.equal(normal[0].args[4], USER_ROW.id, '收件人只能是 token 解析出的用户');
+  assert.equal(normal[0].args[4], `%,${USER_ROW.id},%`, '收件人只能是 token 解析出的用户');
   assert.equal(normal[0].args[5], 200, '未读 id 列表仍封顶 200');
 
   // 内部测试用户: 档位 1 —— 不区分的话"仅内部测试可见"的公告永远发不出去
   const trusted = await runsFor('/content/get_notice_unread?token=tok-trusted', TRUSTED_USER_ROW);
   assert.deepEqual(trusted[0].args.slice(2, 4), [1, 1], '内部测试用户档位 = 1');
-  assert.equal(trusted[0].args[4], TRUSTED_USER_ROW.id);
+  assert.equal(trusted[0].args[4], `%,${TRUSTED_USER_ROW.id},%`);
 });
 
 test('应用配置: message 键 + timestamp, 表空时回退内置内容', async () => {

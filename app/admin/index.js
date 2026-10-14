@@ -128,7 +128,12 @@ async function readForm(request) {
     const form = await request.formData();
     const body = {};
     for (const [key, value] of form.entries()) {
-      if (typeof value === 'string') body[key] = value;
+      if (typeof value !== 'string') continue;
+      // 同名多值按提交顺序拼成逗号串(2.6.0): 公告编辑页的"收件人"是**一组同名** target_user_id 复选框,
+      // 只留最后一个的话"勾了 5 位只记住最后 1 位", 而哪一位算"最后"由 DOM 顺序决定, 完全不可靠。
+      // 拼成逗号串而不是数组: 后台所有字段的消费方都是 strOf/intOr 的字符串语义, 数组会静默变成 "a,b" 或 NaN。
+      // 全站只有公告收件人这一处用多值字段(唯一 name 的页面拿到的东西一字不变)。
+      body[key] = body[key] === undefined ? value : `${body[key]},${value}`;
     }
     return body;
   } catch (error) {

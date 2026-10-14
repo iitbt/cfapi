@@ -5,6 +5,7 @@ import { assetUrl } from '../core/media_scheme.js';
 import { currentUser, tokenOf } from './helpers.js';
 import { clampPage } from './schemas.js';
 import { beijingNow } from '../core/timeutil.js';
+import { targetsLike } from '../core/notice_targets.js';
 import { logError } from '../core/logging.js';
 import { cacheOnce } from '../core/ttlCache.js';
 
@@ -13,16 +14,16 @@ const LEVEL_TEXT = { info: '公告', warning: '提醒', important: '重要' };
 const BANNERS_CACHE_TTL_MS = 30 * 1000;
 //: 未读公告只要 id 列表, 封顶 200 条: 公告是运营内容, 不会同时上线几百条, 而改前没有 LIMIT
 const UNREAD_NOTICE_LIMIT = 200;
-// 公告"接收人"可见性(2.5.9): 一条 OR 查询判完四种接收人 ——
+// 公告"接收人"可见性(2.5.9 四档; 2.6.0 起"指定用户"可多选): 一条 OR 查询判完四种接收人 ——
 //   0=所有用户(含游客; 历史数据默认值, 语义与改造前完全一致)
 //   1=内部测试用户   2=普通用户(已登录且不是内部测试)
-//   3=指定用户(单个, 认 app_notices.target_user_id)
-// 占位符顺序: 观看者档位 ×2, 指定用户 id ×1(见 noticeViewer)
+//   3=指定用户(可多个, 认 app_notices.target_user_ids 里的逗号列表)
+// 占位符顺序: 观看者档位 ×2, 收件人 LIKE 参数据 ×1(见 noticeViewer 与 core/notice_targets.js)
 // 为什么不拆成"先查类型再查列表": 公告量极小(运营内容), 一条 OR 能保证列表/计数/未读三处口径逐字一致
 const NOTICE_VISIBLE_SQL = '(receiver_type=0'
   + ' OR (receiver_type=1 AND ?=1)'
   + ' OR (receiver_type=2 AND ?=0)'
-  + ' OR (receiver_type=3 AND target_user_id=?))';
+  + ' OR (receiver_type=3 AND target_user_ids LIKE ?))';
 // 生效中的公告(启用 + 在生效区间内), 占位符顺序: start_at, end_at
 const NOTICE_ACTIVE_SQL = "status=1 AND (start_at IS NULL OR start_at='' OR start_at<=?) AND (end_at IS NULL OR end_at='' OR end_at>=?)";
 
@@ -46,7 +47,7 @@ async function unreadNoticeIds(env, userId, viewer) {
   const now = beijingNow();
   const [rows, readRows] = await Promise.all([
     all(env, `SELECT id FROM app_notices WHERE ${NOTICE_ACTIVE_SQL} AND ${NOTICE_VISIBLE_SQL} ORDER BY id DESC LIMIT ?`,
-      now, now, viewer, viewer, userId, UNREAD_NOTICE_LIMIT),
+      now, now, viewer, viewer, targetsLike(userId), UNREAD_NOTICE_LIMIT),
     all(env, 'SELECT notice_id FROM app_notice_reads WHERE user_id=?', userId)
   ]);
   const readSet = new Set(readRows.map((row) => Number(row.notice_id)));
@@ -155,11 +156,13 @@ export function registerContentRoutes(router) {
       const viewer = noticeViewer(user);
       const now = beijingNow();
       const where = `${NOTICE_ACTIVE_SQL} AND ${NOTICE_VISIBLE_SQL}`;
-      const total = Number((await one(env, `SELECT COUNT(*) AS c FROM app_notices WHERE ${where}`, now, now, viewer, viewer, userId)).c) || 0;
+      // 收件人匹配值只算一次: 计数与列表两条 SQL 必须用同一个值, 否则"总数 3 条却只列出 2 条"
+      const targetLike = targetsLike(userId);
+      const total = Number((await one(env, `SELECT COUNT(*) AS c FROM app_notices WHERE ${where}`, now, now, viewer, viewer, targetLike)).c) || 0;
       const rows = await all(
         env,
         `SELECT id,title,content,level,link_type,link_value,create_time FROM app_notices WHERE ${where} ORDER BY sort_order ASC, id DESC LIMIT ? OFFSET ?`,
-        now, now, viewer, viewer, userId, size, (page - 1) * size
+        now, now, viewer, viewer, targetLike, size, (page - 1) * size
       );
       const list = rows.map((row) => {
         const level = LEVEL_TEXT[row.level] ? row.level : 'info';

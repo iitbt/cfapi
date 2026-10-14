@@ -88,7 +88,7 @@ test('用户写操作: 设为内部测试 / 删除用户(级联) / 恢复账号'
   assert.ok(removed.headers.get('location').includes(encodeURIComponent('已全部删除')));
 });
 
-test('设/取消内部测试: 给本人发一条定向公告(覆盖式, 同一用户只留最新一条)', async () => {
+test('设/取消内部测试(2.6.0): 每次新建一条定向公告, 来回操作的历史都留着', async () => {
   const { env, state } = makeAdminEnv({
     db: (sql, args, kind) => (kind === 'first' && /FROM users WHERE id = \?/i.test(sql) ? USER_ROW : undefined)
   });
@@ -96,24 +96,23 @@ test('设/取消内部测试: 给本人发一条定向公告(覆盖式, 同一�
 
   const setRes = await post('/admin/users', { action: 'set_trusted', user_id: '7' }, env, cookie);
   assert.equal(setRes.status, 302, '发公告失败也不能把身份变更报成失败');
-  // 先清旧的那条(连它的已读行) —— 否则"已通过"与"已取消"会同时躺在公告页里。
-  // 2.5.9 起定向消息与后台"接收人=指定用户"共用 receiver_type=3, 所以删除也要带上它, 免得把管理员发的定向公告一起删掉
-  assert.ok(findCall(state, /DELETE FROM app_notice_reads WHERE notice_id IN \(SELECT id FROM app_notices WHERE receiver_type=3 AND target_user_id=\?\)/i),
-    '要一并清掉旧定向消息的已读行(不然新消息的红点会被旧 id 的已读盖住)');
-  assert.ok(findCall(state, /DELETE FROM app_notices WHERE receiver_type=3 AND target_user_id=\?/i), '同一用户只保留最新一条');
+  // 2.6.0 起由"覆盖式"改为每次新建: 用户回头能看到"什么时候被设过 / 取消过", 也能回溯是谁改的。
+  // 所以这两条 DELETE 必须**消失** —— 它们一回来就等于又只剩最后一条(老行为)
+  assert.equal(findCall(state, /DELETE FROM app_notices WHERE receiver_type=3/i), null, '不再删掉用户的旧消息');
+  assert.equal(findCall(state, /DELETE FROM app_notice_reads WHERE notice_id IN/i), null, '也不再删旧消息的已读行');
   const insert = findCall(state, /INSERT INTO app_notices/i);
   assert.ok(insert, '要插入一条定向公告');
-  assert.match(insert.sql, /receiver_type, target_user_id/, '公告必须带上接收人类型与收件人');
+  assert.match(insert.sql, /receiver_type, target_user_ids/, '公告必须带上接收人类型与收件人');
   assert.match(insert.sql, /VALUES \(\?,\?,\?,'','',0,1,3,\?,\?\)/, '系统消息固定按「指定用户」落库');
-  assert.equal(insert.args[3], 7, '收件人 = 被操作的用户');
+  assert.equal(insert.args[3], ',7,', '收件人 = 被操作的用户(逗号列表, 见 core/notice_targets.js)');
   assert.equal(insert.args[2], 'important', '身份变更属于重要消息');
   assert.ok(String(insert.args[0]).includes('内部测试申请已通过'), insert.args[0]);
 
-  // 取消内部测试 → 同样发一条(覆盖掉上一条)
+  // 取消内部测试 → 再发一条(2.6.0: 追加而不是覆盖)
   const removeRes = await post('/admin/users', { action: 'remove_trusted', user_id: '7' }, env, cookie);
   assert.equal(removeRes.status, 302);
   const inserts = state.calls.filter((call) => /INSERT INTO app_notices/i.test(call.sql));
-  assert.equal(inserts.length, 2, '两次操作各发一条');
+  assert.equal(inserts.length, 2, '两次操作各发一条(2.6.0 起不再覆盖)');
   assert.ok(String(inserts[1].args[0]).includes('内部测试已取消'), inserts[1].args[0]);
 });
 

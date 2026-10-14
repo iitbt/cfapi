@@ -1,4 +1,4 @@
-// 小程序前端守卫(4.5.2 起; 4.5.3 补"同身份资料刷新不许抹红点"): 我的页「通知公告」红点的刷新时机 + 公告页已读补丁
+// 小程序前端守卫(4.5.2 起; 4.5.3 补"同身份资料刷新不许抹红点"; 4.5.4 补"前台公告轮询"): 我的页「通知公告」红点的刷新时机 + 公告页已读补丁
 //
 // 为什么这条守卫放在后端测试里: 小程序工程没有 npm / 测试跑不起来(纯原生 WXML+JS),
 // 而这两个页面文件与 app.js 都是**可被 Node 直接 require 的普通 CommonJS 模块** ——
@@ -180,4 +180,61 @@ test('app.fetchNoticeUnread(4.5.2): 不再有 30 秒内存缓存, 并发只发�
   assert.equal(await appCfg.fetchNoticeUnread(), 0);
   assert.equal(requests.length, countBefore, '游客不该去打未读接口');
   assert.equal(appCfg._hasUnopenedNotice(), false, '未登录不亮红点');
+});
+
+test('公告轮询(4.5.4): 前台每 30 秒问一次, 切后台必须停', async (t) => {
+  if (!existsSync(APP)) {
+    t.skip(`本机没有小程序源码 ${APP}`);
+    return;
+  }
+  // app.js 已被上面那条用例 require 过, 这里清掉模块缓存重新执行一遍, 拿到一个干净的对象
+  delete require.cache[require.resolve(APP)];
+  let appCfg = null;
+  installMiniProgramStubs();
+  globalThis.App = (cfg) => { appCfg = cfg; };
+  try {
+    require(APP);
+    assert.ok(appCfg && typeof appCfg.startNoticeWatcher === 'function', 'app.js 要暴露 startNoticeWatcher');
+  } finally {
+    dropMiniProgramStubs();
+  }
+
+  // 假定时器替掉真的: 既不用等 30 秒, 也不会把测试进程钉住
+  const timers = [];
+  const realSet = globalThis.setInterval;
+  const realClear = globalThis.clearInterval;
+  globalThis.setInterval = (fn, ms) => {
+    const handle = { fn, ms, cleared: false };
+    timers.push(handle);
+    return handle;
+  };
+  globalThis.clearInterval = (handle) => { if (handle) handle.cleared = true; };
+
+  installMiniProgramStubs();   // onShow 里的 touchLoginState 要读 storage
+  let asked = 0;
+  const realFetch = appCfg.fetchNotices;
+  appCfg.fetchNotices = () => { asked += 1; return Promise.resolve([]); };
+  try {
+    appCfg.onShow();
+    assert.equal(timers.length, 1, '回前台要挂上公告轮询');
+    assert.equal(timers[0].ms, 30000, '30 秒一拍(fetchNotices 自己还有 60 秒静默刷新节流)');
+    assert.equal(appCfg._noticeWatcher, timers[0]);
+    timers[0].fn();
+    assert.equal(asked, 1, '到点要真去拉一次公告 —— 否则"页面不动也能收到"是空的');
+
+    // 冷启动 App.onShow 会连着触发: 只能留一个定时器, 不许叠加
+    appCfg.onShow();
+    assert.equal(timers.length, 2);
+    assert.equal(timers[0].cleared, true, '重复 onShow 要先清掉旧的定时器');
+    assert.equal(appCfg._noticeWatcher, timers[1]);
+
+    appCfg.onHide();
+    assert.equal(timers[1].cleared, true, '切后台必须停轮询(后台发请求纯属浪费流量与电量)');
+    assert.equal(appCfg._noticeWatcher, null);
+  } finally {
+    appCfg.fetchNotices = realFetch;
+    globalThis.setInterval = realSet;
+    globalThis.clearInterval = realClear;
+    dropMiniProgramStubs();
+  }
 });

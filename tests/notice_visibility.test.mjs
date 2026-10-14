@@ -53,13 +53,15 @@ function buildEnv(sqlite) {
     (7, 'wx_u7', '普通甲', 'tok-7', 0, 0, 'openid-7'),
     (8, 'wx_u8', '内测乙', 'tok-8', 0, 1, 'openid-8'),
     (9, 'wx_u9', '普通丙', 'tok-9', 0, 0, 'openid-9');`);
-  db.exec(`INSERT INTO app_notices (id, title, content, level, status, receiver_type, target_user_id, create_time) VALUES
-    (1, '全员公告', 'x', 'info', 1, 0, NULL, '2026-10-15 09:00:00'),
-    (2, '内测公告', 'x', 'info', 1, 1, NULL, '2026-10-15 09:01:00'),
-    (3, '普通公告', 'x', 'info', 1, 2, NULL, '2026-10-15 09:02:00'),
-    (4, '定向给甲', 'x', 'info', 1, 3, 7, '2026-10-15 09:03:00'),
-    (5, '定向给丙', 'x', 'info', 1, 3, 9, '2026-10-15 09:04:00'),
-    (6, '已下架公告', 'x', 'info', 0, 0, NULL, '2026-10-15 09:05:00');`);
+  // 4 号是"一条公告发给两位"(2.6.0 的逗号列表存法): 顺带证明 LIKE '%,9,%' 能命中 `,7,9,` 里的**第二个** id ——
+  // 只测单值的话, 就算 SQL 写成 `target_user_ids = ?`(而不是 LIKE) 也看不出来
+  db.exec(`INSERT INTO app_notices (id, title, content, level, status, receiver_type, target_user_ids, create_time) VALUES
+    (1, '全员公告', 'x', 'info', 1, 0, '', '2026-10-15 09:00:00'),
+    (2, '内测公告', 'x', 'info', 1, 1, '', '2026-10-15 09:01:00'),
+    (3, '普通公告', 'x', 'info', 1, 2, '', '2026-10-15 09:02:00'),
+    (4, '定向给甲丙', 'x', 'info', 1, 3, ',7,9,', '2026-10-15 09:03:00'),
+    (5, '定向给丙', 'x', 'info', 1, 3, ',9,', '2026-10-15 09:04:00'),
+    (6, '已下架公告', 'x', 'info', 0, 0, '', '2026-10-15 09:05:00');`);
   const { env } = makeEnv({ db: () => null });
   env.DB = d1Of(db);
   return env;
@@ -94,17 +96,17 @@ test('接收人四档(2.5.9): 真实库里谁能看到哪条 + 未读数(红点)
   assert.equal(guest.data.unread_count, 0);
   assert.equal(guest.msg, '未登录');
 
-  // 0=所有用户 / 2=普通用户 / 3=定向给我 —— 普通用户这三样都收得到, 收不到内测(1)与别人的定向(5)
-  sameTitles(await titlesOf(env, 'tok-7'), ['定向给甲', '全员公告', '普通公告']);
+  // 0=所有用户 / 2=普通用户 / 3=定向给我 —— 普通用户这三样都收得到, 收不到内测(1)与"只发给丙"的(5)
+  sameTitles(await titlesOf(env, 'tok-7'), ['定向给甲丙', '全员公告', '普通公告']);
   // 内部测试用户拿的是 0 + 1, 拿不到 2(普通用户)
   sameTitles(await titlesOf(env, 'tok-8'), ['内测公告', '全员公告']);
-  // 另一个普通用户: 定向给丙的能看到, 定向给甲的看不到 —— 定向不串号
-  sameTitles(await titlesOf(env, 'tok-9'), ['定向给丙', '全员公告', '普通公告']);
+  // 另一个普通用户: 4 号的收件人列表里有丙(还排在第二位), 5 号也发给丙 —— 定向既不能漏也不能串号
+  sameTitles(await titlesOf(env, 'tok-9'), ['定向给甲丙', '定向给丙', '全员公告', '普通公告']);
 
   // 红点来源: 未读数 = 看得到的 − 自己读过的
   assert.equal(await unreadOf(env, 'tok-7'), 3);
   assert.equal(await unreadOf(env, 'tok-8'), 2);
-  assert.equal(await unreadOf(env, 'tok-9'), 3);
+  assert.equal(await unreadOf(env, 'tok-9'), 4);
 
   // 发布时间到秒(2.5.9): 端上直接显示这个字符串, 不再自己格式化
   const list = (await getJson('/content/get_notices?page=1&page_size=20&token=tok-7', env)).data.list;
@@ -125,7 +127,7 @@ test('已读互不影响(2.5.9): 甲读了不改变乙丙的未读数', async (t
   assert.equal(read.data.unread_count, 2, '回包里的未读数与未读接口同口径');
 
   assert.equal(await unreadOf(env, 'tok-7'), 2);
-  assert.equal(await unreadOf(env, 'tok-9'), 3, '别人没读, 未读数不该被牵连');
+  assert.equal(await unreadOf(env, 'tok-9'), 4, '别人没读, 未读数不该被牵连');
   assert.equal(await unreadOf(env, 'tok-8'), 2);
 
   const list = (await getJson('/content/get_notices?page=1&page_size=20&token=tok-7', env)).data.list;

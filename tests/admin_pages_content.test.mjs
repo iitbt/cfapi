@@ -84,7 +84,7 @@ test('公告列表(2.5.9): 接收人列显示发给谁, 可按接收人筛选', 
     rows: {
       app_notices: [
         Object.assign({}, NOTICE, { id: 8, receiver_type: 0 }),
-        Object.assign({}, NOTICE, { id: 9, receiver_type: 3, target_user_id: 7 }),
+        Object.assign({}, NOTICE, { id: 9, receiver_type: 3, target_user_ids: ',7,' }),
         Object.assign({}, NOTICE, { id: 10, receiver_type: 1 })
       ],
       users: [{ id: 7, nickname: '老王', username: 'wx_a' }]
@@ -116,15 +116,26 @@ test('公告编辑(2.5.9): 接收人卡片仅超管可见, 选「指定用户」
   const bad = await post('/admin/notice_edit?id=0',
     { title: '定向公告', level: 'info', receiver_type: '3', status: '1' }, env, cookie);
   assert.equal(bad.status, 200);
-  assert.ok((await bad.text()).includes('必须选一位用户'));
+  assert.ok((await bad.text()).includes('必须至少选一位用户'));
   assert.equal(findCall(state, /INSERT INTO app_notices/i), null);
 
+  // 2.6.0 起收件人是**同名多值**字段: 勾两位就提交两个 target_user_id(见 app/admin/index.js 的 readForm),
+  // 存成两端带逗号的逗号列表(见 core/notice_targets.js)
   const saved = await post('/admin/notice_edit?id=0',
-    { title: '定向公告', level: 'info', receiver_type: '3', target_user_id: '7', status: '1' }, env, cookie);
+    { title: '定向公告', level: 'info', receiver_type: '3', target_user_id: ['7', '9'], status: '1' }, env, cookie);
   assert.equal(saved.status, 302);
   const insert = findCall(state, /INSERT INTO app_notices/i);
   assert.equal(insert.args[9], 3, 'receiver_type=3(指定用户)');
-  assert.equal(insert.args[10], 7, 'target_user_id = 勾选的用户');
+  assert.equal(insert.args[10], ',7,9,', 'target_user_ids = 勾选的用户(逗号列表)');
+
+  // 类型改回「所有用户」: 被 CSS 隐藏的收件人控件**照样会随表单提交**, 后端必须忽略它并把列表清空。
+  // 反过来(依赖"前端保证不提交")的后果是一条发给 5 个人的定向公告, 被一次普通"改标题"扩散成全员广播
+  const cleared = await post('/admin/notice_edit?id=0',
+    { title: '改回全员', level: 'info', receiver_type: '0', target_user_id: ['7', '9'], status: '1' }, env, cookie);
+  assert.equal(cleared.status, 302);
+  const inserts = state.calls.filter((call) => /INSERT INTO app_notices/i.test(call.sql));
+  assert.equal(inserts[inserts.length - 1].args[9], 0, 'receiver_type 落成「所有用户」');
+  assert.equal(inserts[inserts.length - 1].args[10], '', '非「指定用户」时收件人列表必须清空');
 });
 
 test('公告编辑(2.5.9): 非超管改正文不会把定向公告重置成「所有用户」', async () => {
@@ -132,7 +143,7 @@ test('公告编辑(2.5.9): 非超管改正文不会把定向公告重置成「�
     // 非超管: 本项目的超管口径是 role 为 super/admin, 所以这里用 normal
     role: 'normal',
     db: (sql, args, kind) => (kind === 'first' && /FROM app_notices WHERE id = \?/i.test(sql)
-      ? Object.assign({}, NOTICE, { receiver_type: 3, target_user_id: 7 }) : undefined)
+      ? Object.assign({}, NOTICE, { receiver_type: 3, target_user_ids: ',7,' }) : undefined)
   });
   const cookie = await loginCookie(env);
   const html = await (await get('/admin/notice_edit?id=8', env, cookie)).text();
@@ -144,7 +155,7 @@ test('公告编辑(2.5.9): 非超管改正文不会把定向公告重置成「�
   assert.equal(res.status, 302);
   const update = findCall(state, /UPDATE app_notices SET/i);
   assert.equal(update.args[9], 3, '提交里塞了 receiver_type=0 也要保留库里的 3');
-  assert.equal(update.args[10], 7);
+  assert.equal(update.args[10], ',7,', '收件人也原样保留(非超管提交里根本没有这个字段)');
 });
 
 test('分类列表: 显示笔记数与首页引用, 并对未登记分类给黄框', async () => {

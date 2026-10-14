@@ -1,6 +1,6 @@
 # 狼牙极限运动笔记 · 主后端（cfapi / Cloudflare Workers）
 
-> **版本**：`v2.5.9` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
+> **版本**：`v2.6.0` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
 > **主域名**：**https://lyjx.250036.xyz**（对外 API + `/admin` 管理后台同一域名）。
 > **素材域名**：**https://storage.250036.xyz**（R2 公开域，与接口域名分离）。
 > **定位**：微信小程序「狼牙极限运动笔记」的**主要后端**。今后小程序的开发、接口变更、联调、发版均以本工程为准；FastAPI 工程（`../fastapi/`）为**备用后端**。
@@ -142,7 +142,8 @@ cfapi/
 | `md5.js` | 自带 MD5（仅用于生成 `wx_<md5(openid)>` 用户名前缀） |
 | `media_scheme.js` | 素材地址拼装 `assetUrl`/`iconAssetUrl`/`putObject` |
 | `timeutil.js` | 全站东八区时间口径 |
-| `user_notice.js` | **定向公告（系统消息）唯一写入口** `pushUserNotice(env, userId, {title, content})`：给某个用户发一条只他可见的公告（2.5.9 起落库为 `receiver_type=3` + `target_user_id=<uid>`，与后台「接收人=指定用户」同一套语义），覆盖式（先删该用户旧的那条+它的已读行，再插新的，三条语句走一次 `batch`）。失败只记日志不抛 —— 公告只是通知，不能把管理员刚做完的身份变更报成失败 |
+| `notice_targets.js` | 公告「指定用户」收件人列表的**唯一读写实现**（2.6.0）：`targetsMark`（单值/数组/逗号串 → `,7,9,`，去重丢非正整数）/ `targetsList`（存值 → `[7,9]`）/ `targetsLike`（`%,7,%`，供 `LIKE` 判定用）。**两端带逗号**是为了让 `LIKE '%,7,%'` 不会把 17、70 算成收件人；后台编辑页、系统消息写入、小程序可见性判定三处共用这一份 |
+| `user_notice.js` | **定向公告（系统消息）唯一写入口** `pushUserNotice(env, userId, {title, content})`：给某个用户发一条只他可见的公告（落库为 `receiver_type=3` + `target_user_ids=,<uid>,`，与后台「接收人=指定用户」同一套语义）。**2.6.0 起每次动作都新建一条**（不再覆盖旧的）：用户回头能看到"什么时候被设过 / 取消过"。失败只记日志不抛 —— 公告只是通知，不能把管理员刚做完的身份变更报成失败 |
 | `wechat.js` | 微信 `code2session` / `access_token` 缓存（D1）/ 昵称安全送审 |
 | `sanitize.js` | 富文本白名单净化 + 图片与视频封面改绝对地址 |
 | `overview.js` | 表行数 / 核心计数唯一实现（须排除 D1 内部表，逐表 COUNT） |
@@ -201,7 +202,7 @@ cfapi/
 | `media.js` | 素材上传 `POST /admin/image_upload` + 素材库 `GET /admin/media_library` |
 | `mediaGovern.js` | 素材库治理（R2 桶资源管理器：浏览/改名/复制/删除/引用检查，仅超管） |
 | `news.js` | 笔记管理：列表 / 发布编辑 / 预览 / 软删 / 复制 / 回收站 / 恢复 / 彻底删 |
-| `notices.js` | 通知公告：列表（可按接收人筛选）/ 编辑 / 删除。**接收人四档**（所有用户 / 内部测试用户 / 普通用户 / 指定用户）仅超管可改；选「指定用户」时用 `name=action value=search_user` 的普通提交按钮重画本页来搜人（不引入弹窗与接口），非超管提交时保留库里的原接收人 |
+| `notices.js` | 通知公告：列表（可按接收人筛选）/ 编辑 / 删除。**接收人四档**（所有用户 / 内部测试用户 / 普通用户 / 指定用户）仅超管可改；选「指定用户」时用 `name=action value=search_user` 的普通提交按钮重画本页来搜人、用每位后面的「移除」按钮摘掉收件人（都不引入弹窗与接口），**2.6.0 起可一次指定多位**（同名多值 `target_user_id`，由 `app/admin/index.js` 的 `readForm` 拼成逗号串），非超管提交时保留库里的原接收人 |
 | `settings.js` | 管理员设置：改自己资料 / 改自己口令 |
 | `systemInfo.js` | 系统信息：运行环境 / 表数量 / 记录数 / 素材占用 |
 | `topics.js` | 专题精选（摩旅 / 户外）：聚合列表 / 编辑 / 预览 / 删除 |
@@ -230,9 +231,9 @@ cfapi/
 
 ### 6.6 `tests/` `tools/` `notes/` `out/`
 
-- **`tests/`**：`*.test.mjs`（约 296 条用例，`node --test`，桩模拟 D1/R2），含 `api_contract`/`api_reads`/`api_writes`、`admin_*`、`unit`、`sql_migrations` 与 `notice_visibility`（后两个用真实 SQLite）、`stub` 等。
-  - `notice_visibility`（2.5.9 起）用**真实 SQLite**顶掉 D1 后走真接口，验证公告接收人四档："谁能看到哪条 / 未读数对得上 / 已读互不影响 / 游客只看得到「所有用户」"。为什么要真库：桩只能证明"SQL 长什么样"（`api_reads` 里那条断言），证明不了口径在真 SQL 上确实是这个结果 —— 例如 `?` 占位符顺序错位在桩里看不出来。
-  - `frontend_notice_reddot`（2.5.8 起；4.5.3 起多一条"同一身份的资料刷新不许把红点抹掉 / 换账号必须归零"）是**跨端守卫**：用桩顶掉 `getApp/wx/Page` 后直接 require 小程序的 `pages/profile/profile.js` 与 `subpackages/content/notices/notices.js`，真跑一遍"红点每次强制取服务端未读数 / 状态翻转才重渲染 / 已读补丁回写秒开缓存"。本机没有 `../xapp`（只部署后端）时自动跳过，也可用 `LYXJ_DIR=<xapp 路径>` 指定。
+- **`tests/`**：`*.test.mjs`（约 299 条用例，`node --test`，桩模拟 D1/R2），含 `api_contract`/`api_reads`/`api_writes`、`admin_*`、`unit`、`sql_migrations` 与 `notice_visibility`（后两个用真实 SQLite）、`stub` 等。
+  - `notice_visibility`（2.5.9 起）用**真实 SQLite**顶掉 D1 后走真接口，验证公告接收人四档："谁能看到哪条 / 未读数对得上 / 已读互不影响 / 游客只看得到「所有用户」"（2.6.0 起含"一条公告发给两位"的逗号列表）。为什么要真库：桩只能证明"SQL 长什么样"（`api_reads` 里那条断言），证明不了口径在真 SQL 上确实是这个结果 —— 例如 `?` 占位符顺序错位在桩里看不出来。
+  - `frontend_notice_reddot`（2.5.8 起；4.5.3 起多一条"同一身份的资料刷新不许把红点抹掉 / 换账号必须归零"，4.5.4 起多一条"前台每 30 秒轮询公告、切后台必须停"）是**跨端守卫**：用桩顶掉 `getApp/wx/Page` 后直接 require 小程序的 `pages/profile/profile.js` 与 `subpackages/content/notices/notices.js`，真跑一遍"红点每次强制取服务端未读数 / 状态翻转才重渲染 / 已读补丁回写秒开缓存"。本机没有 `../xapp`（只部署后端）时自动跳过，也可用 `LYXJ_DIR=<xapp 路径>` 指定。
 - **`tools/`**：`diff_api.mjs`（新旧站 JSON 对拍）、`live_smoke.mjs`（真实数据端到端冒烟）、`cf_region.mjs`（R2/D1 区域迁移）、`embed_admin_assets.mjs`（打包静态资源）、`embed_favicon.mjs`（内联 favicon）、`export_sqlite.py`（旧库导出 seed）、`split_sql.py`（SQL 拆块便于控制台粘贴）、`verify_counts.py`（行数校验）、`media_to_r2.md`（素材搬 R2 说明）。
 - **`notes/`**：`api-inventory.md`（对外接口台账）、`structure-map.md`（fastapi↔cfapi 结构与机制对照）、`limits-design.md`（限流方案）、`ops-sql.md`（运营改数 SQL）。
 - **`out/`**：**生成物**（已被 `.gitignore` 忽略）：`seed.sql`（全量数据）+ 拆块 `schema/`、`seed/`、`schema-big/`、`seed-big/`，供控制台逐块粘贴建表/导数据。
@@ -253,6 +254,7 @@ cfapi/
 | `npm run schema:testapply` | **老库专用（2.5.3 起）**：单独执行 `0007_user_test_applied.sql`，给 `users` 加 `test_applied` 列（`ALTER TABLE ADD COLUMN` **不幂等**，只跑一次；新建库已含该列，不用跑） |
 | `npm run schema:noticetarget` | **老库专用（2.5.7 起）**：单独执行 `0008_notice_target.sql`，给 `app_notices` 加 `target_user_id` 列（定向公告用；同样 **不幂等**，只跑一次；新建库已含该列，不用跑） |
 | `npm run schema:noticereceiver` | **老库专用（2.5.9 起）**：单独执行 `0009_notice_receiver.sql`，给 `app_notices` 加 `receiver_type` 并把历史定向行回填成 `3`（`ALTER TABLE ADD COLUMN` **不幂等**，只跑一次；新建库已含该列，不用跑）。**漏跑的两条后果**：① 公告接口与后台公告页报 `no such column: receiver_type`；② 不做那步回填，2.5.7 起发的定向消息（`target_user_id` 非空）会按默认值 `0` 当成「所有用户」**全员可见**（私信变广播） |
+| `npm run schema:noticetargets` | **老库专用（2.6.0 起）**：单独执行 `0010_notice_targets.sql`，给 `app_notices` 加 `target_user_ids`（逗号列表）并把老的单值列 `target_user_id` 折进去（同样 **不幂等**，只跑一次；新建库已含该列，不用跑）。**漏跑的后果**：公告列表/未读接口与后台公告页统一报 `no such column: target_user_ids`（公告功能整体不可用）；即使接口没碰, 不折数据也会让 2.5.7 起发的定向消息与后台发过的定向公告变成"没有收件人"—— 静默丢消息 |
 | `npm run secrets:put` | `wrangler secret bulk .secrets.json`（推 3 个密文） |
 | `npm run deploy` | `wrangler deploy` |
 
@@ -339,27 +341,28 @@ cfapi/
 > - 管理员在 `/admin/users` 看到「已申请」徽章（下拉可筛「仅已申请」）→ 点【设为内部测试】后 `is_trusted=1`、`test_applied=0`（申请已处理，徽章消失）；用户撤回后徽章同样消失、已通过后退回则「类型」列从「内部测试 微信」回到「普通 微信」（列表读的就是这两个字段，**管理员不需要做任何清理动作**）；
 > - `test_applied` 与 `is_trusted` 随 `/user/login`、`/user/get_user_info` 一起下发，小程序据此决定点【申请测试】后弹哪一条、显示哪张图标（菜单文案不变）。
 > - **身份状态不缓存（2.5.6 复核）**：`/user/get_user_info` 每次都按 token 直查 `users` 表（`app/api/helpers.js::userByToken`，`SELECT * FROM users WHERE token=?`，无内存/KV/CDN 缓存层），所以管理员在后台改完 `is_trusted` 后，端上只要重新拉一次资料就能拿到最新身份 —— **不需要刷新接口、不需要额外状态字段**。2.5.6 本身没有接口改动（仅版本号对齐 + 本条说明）；若日后给用户资料加服务端缓存，必须同时提供失效手段，否则端上会出现"重进/下拉也拉不到新身份"。
-> - **定向公告：管理员设/取消内部测试 → 本人收到一条系统消息（2.5.7）**：不新增接口、也不新增表 —— 复用 `app_notices`，用 `target_user_id` 表示"只发给这个用户"（NULL = 全体公告，与历史数据同义）。管理员点【设为内部测试】/【取消内部测试】后，后端经 `app/core/user_notice.js::pushUserNotice` 插入一条（级别 fixed `important`，标题「内部测试申请已通过」/「内部测试已取消」），用户在小程序「通知公告」页看到它，并在「我的」页公告菜单亮红点。要点：
+> - **定向公告：管理员设/取消内部测试 → 本人收到一条系统消息（2.5.7）**：不新增接口、也不新增表 —— 复用 `app_notices`，用收件人列表（`receiver_type=3` + `target_user_ids=,<uid>,`）表示"只发给这个用户"。管理员点【设为内部测试】/【取消内部测试】后，后端经 `app/core/user_notice.js::pushUserNotice` 插入一条（级别 fixed `important`，标题「内部测试申请已通过」/「内部测试已取消」），用户在小程序「通知公告」页看到它，并在「我的」页公告菜单亮红点。要点：
 >   - **可见性与未读口径收窄**：`/content/get_notices`、`/content/get_notice_unread`、`/content/notice_read` 三条路径统一按同一份口径过滤（2.5.7 时是 `target_user_id IS NULL OR target_user_id = 当前用户`，未登录按游客 `0` 算只看全体公告；**2.5.9 起换成下面那条 `receiver_type` 四档 OR 查询**，语义向后兼容）。改造前 `notice_read` 回的是"全体公告数 − 我的已读行数"，引入定向公告后那个减法会把**别人的**定向消息算成我的未读，红点永远消不掉 —— 2.5.7 起 `get_notice_unread` 与 `notice_read` 共用同一份口径 `unreadNoticeIds()`。
->   - **覆盖式**：同一用户只保留最新一条定向消息（先删旧的那条 + 它的已读行，再插新的）。否则"已通过"和"已取消"会同时躺在公告页互相矛盾，反复设置还会越堆越多。
->   - **发消息失败不回滚身份变更**：写公告的三条语句走一次 `batch`，失败只记 `notice.push_user_notice_failed` 日志。
->   - **老库升级（2.5.7）**：先跑一次 `npm run schema:noticetarget` 给 `app_notices` 加列，否则公告相关接口与后台用户页会报 `no such column: target_user_id`。
+>   - **每次新建，不再覆盖（2.6.0）**：2.5.7~2.5.9 是"同一用户只保留最新一条"（先删旧的那条 + 它的已读行，再插新的），代价是"设为 → 取消 → 再设为"来回操作后只剩最后一条，用户看不到中间发生过什么，也无从回溯是谁在什么时候改过他的身份。现在每次动作都插一条（已读仍按"用户 + 公告"逐条记，靠 `app_notice_reads` 的唯一索引，所以新消息不会顶掉旧消息的已读、也不会把别的未读一起清掉），代价是历史消息会累积在公告页里 —— 这是需求要的取舍。
+>   - **发消息失败不回滚身份变更**：写公告的语句走一次 `batch`，失败只记 `notice.push_user_notice_failed` 日志。
+>   - **老库升级（2.5.7 / 2.6.0）**：老库要**依次**跑 `npm run schema:noticetarget`（加 `target_user_id`）→ `npm run schema:noticetargets`（加 `target_user_ids` 并把老的单值折进新列）。**2.6.0 的代码只认新列**，只跑前者会报 `no such column: target_user_ids`。
 >   - **小程序侧（4.5.1）**：`app.js` 的公告"秒开"缓存原先**不按身份区分**，定向消息是私有内容，退出/换账号/掉线时已改为清空该缓存（`clearNoticeCache`），否则上一个账号的系统消息会显示给下一个人。
 >   - **红点为什么"不立即亮"（2.5.8 复核：后端无需配合）**：定向通知与普通公告**同表同接口**（都落在 `app_notices`，都走 `/content/get_notice_unread` 的 `unreadNoticeIds` 口径），所以未读统计**天然涵盖**这两条内部测试通知 —— 本版**没有接口/行为改动**（2.5.8 仅版本号对齐 + 本条结论）。不生效的原因全在端上：`app.fetchNoticeUnread` 有 30 秒内存缓存，而「我的」页 onShow 与下拉刷新都没强制取最新值（修法见 `../xapp/README.md` 7.12）。修完后红点的亮灭只由这一个服务端数字决定：`unread_count > 0` 亮、`= 0` 灭，公告页条目红点读的是同一份服务端状态（列表里的 `is_read`），两处不再各判一套。
 >
 >   排查入口：`POST /content/get_notice_unread`（带 token）→ `{unread_count, ids}`。它**就是**端上红点的唯一来源；`ids` 里能直接看到定向消息的 id（未登录恒为 `{0, []}`）。
 >
-> - **公告接收人：一条公告可以只发给某几类人（2.5.9）**：`app_notices` 新增 `receiver_type`（`0`=所有用户 / `1`=内部测试用户 / `2`=普通用户 / `3`=指定用户），默认 `0` —— **与历史数据同义**，所以老公告的行为一字不变。后台公告编辑页由超管选择（值定义在 `pages/notices.js` 的 `RECEIVERS`，列表页多一列「接收人」并可按它筛选）。要点：
->   - **一条 OR 查询判完四档**（`app/api/content.js` 的 `NOTICE_VISIBLE_SQL`）：`receiver_type=0 OR (receiver_type=1 AND ?=1) OR (receiver_type=2 AND ?=0) OR (receiver_type=3 AND target_user_id=?)`。占位符顺序是「观看者档位 ×2，然后指定用户 id ×1」，排在生效区间（`start_at`/`end_at`）之后。
+> - **公告接收人：一条公告可以只发给某几类人（2.5.9 起，2.6.0 起「指定用户」可多选）**：`app_notices` 新增 `receiver_type`（`0`=所有用户 / `1`=内部测试用户 / `2`=普通用户 / `3`=指定用户），默认 `0` —— **与历史数据同义**，所以老公告的行为一字不变；`3` 档的收件人存在 `target_user_ids`（**逗号列表**，两端带逗号，如 `,7,9,`，写法与读法见 `core/notice_targets.js`；2.6.0 之前的单值列 `target_user_id` 已由 0010 折进来、新代码不再读写）。后台公告编辑页由超管选择（值定义在 `pages/notices.js` 的 `RECEIVERS`，列表页多一列「接收人」并可按它筛选）。要点：
+>   - **一条 OR 查询判完四档**（`app/api/content.js` 的 `NOTICE_VISIBLE_SQL`）：`receiver_type=0 OR (receiver_type=1 AND ?=1) OR (receiver_type=2 AND ?=0) OR (receiver_type=3 AND target_user_ids LIKE ?)`。第三个占位符是 `targetsLike(uid)` 给出的 `%,7,%`，**不是裸 id** —— 写成 `LIKE '%7%'` 会把 17、70 也算成收件人，而 `target_user_ids = ?` 又只能匹配"只有他一个人"的公告。占位符顺序是「观看者档位 ×2，然后收件人参数据 ×1」，排在生效区间（`start_at`/`end_at`）之后。
 >   - **观看者档位**（`noticeViewer()`）：已登录且 `is_trusted=1` → `1`；已登录普通用户 → `0`；**游客 → `-1`**（两个"按用户类型"的分支都命中不了 → 游客只看得到 `receiver_type=0` 的公告，未登录行为与改造前完全一致）。定向消息（`3`）与游客无关。
 >   - **为什么不拆成"先查接收人类型再查列表"**：公告是运营内容、总量极小，一条 OR 能保证**列表 / 计数 / 未读**三处口径逐字一致 —— 少一处就会出现"列表里有这条、红点却数不着"这种只能靠用户反馈才发现的问题。
->   - **2.5.7 的定向系统消息并入同一字段**：`pushUserNotice` 插入时固定 `receiver_type=3`；删除旧消息也必须带 `receiver_type=3` 条件，否则用户下次点【设为内部测试】会把**管理员手动发给他的定向公告**一起删掉。
->   - **非超管编辑公告**：接收人字段只读，且提交时保留库里的原值 —— 否则普通管理员改一次标题就把定向公告重置成"所有用户"（等于把私信发给了所有人）。
->   - **指定用户怎么选**：编辑页用一个普通提交按钮（`name=action value=search_user`）带当前草稿重画本页来搜人/选人，最多列 20 位（空关键词 = 最近注册的 20 位，纯数字按 ID 精确）；**不引入弹窗、不加 AJAX 接口、不加静态资源**。公告只记 `users.id`，不会把 openid 写进公告或下发到小程序。
+>   - **2.5.7 的定向系统消息并入同一列**：`pushUserNotice` 插入时固定 `receiver_type=3` + `target_user_ids=,<uid>,`。2.6.0 起不再有"删旧消息"这一步（改为每次新建），那条"删旧定向消息（连同已读行）"的语句随之消失 —— 系统消息与"管理员手动指定的定向公告"从此只是同一列里的两条记录，不会再互相删。
+>   - **非超管编辑公告**：接收人字段只读，且提交时保留库里的原值 —— 否则普通管理员改一次标题就把定向公告重置成"所有用户"（等于把私信发给了所有人）。收件人那两条校验（"必须至少选一位"/"最多 200 位"）也只对超管生效：非超管页面上根本没有这个控件，拿库里的脏数据把他拦住是说不通的。
+>   - **指定用户怎么选（2.5.9 起，2.6.0 起可多选）**：候选用户是**一组同名复选框**（`name=target_user_id`），勾几位就提交几个同名值 —— `app/admin/index.js` 的 `readForm` 把同名多值按提交顺序拼成逗号串（全站只有这一处用多值字段，唯一 name 的页面拿到的东西一字不变）。已选清单里每人后面一个「移除」按钮（`name=remove_user_id`），搜索框配一个「搜索用户」按钮（`name=action value=search_user`）；三个都是普通提交按钮、都只带当前草稿重画本页，**不引入弹窗、不加 AJAX 接口、不加静态资源**。三个必须记住的细节：① **接收人类型不能用下拉框** —— 「指定用户」那一段的显隐靠纯 CSS（`#noticeReceiver3:checked ~ .notice-picker`，见 `admin.css`），而 `select` 的选中项命中不了 CSS 兄弟选择器；② **CSS 只是"看不见"**，隐藏起来的收件人控件照样会随表单提交，所以"类型不是指定用户时收件人一律清空"由后端在 `receiver_type≠3` 时忽略提交值来保证（不依赖前端"不提交"）；③ 已选但**不在当前候选列表**里的用户（刚搜了别的关键词）会用隐藏域一起提交，否则"搜一次人"就会让他们悄悄掉出收件人。一次最多指定 200 位（`MAX_TARGETS`）—— 收件人存成逗号串，没上限的话一条公告能把这列撑到几百 KB。公告只记 `users.id`，不会把 openid 写进公告或下发到小程序。
 >   - **`published_at` 给到秒**：`/content/get_notices` 由"只到日期"改为 `create_time` 的前 19 位（端上原样显示）。库里的字符串本来就是业务时区，**不要再做一次时区换算**（会多/少 8 小时）。
->   - **索引：故意不新增**。公告是运营内容（几十条量级），现有 `idx_app_notices_active (status, sort_order, id)` 已经吃掉 `status=1` 这一段，再为 `receiver_type` / `target_user_id` 单独建索引只会给每次后台发布加写入代价，收益是零；真涨到几千条再补也不迟（`ALTER TABLE ADD COLUMN` 本身只改元数据、O(1)，0009 里真正的写操作只有那条回填 `UPDATE`）。
->   - **自检覆盖**：`tests/notice_visibility.test.mjs` 用**真实 SQLite** 跑一遍四档（谁能看到哪条 / 未读数/红点对得上 / 已读互不影响 / 游客只看得到「所有用户」），`tests/api_reads.test.mjs` 另盯住三处复用的 SQL 形状与占位符顺序。
->   - **老库升级（2.5.9）**：先跑一次 `npm run schema:noticereceiver`（加列 + 回填历史定向行），漏跑的后果见第七节命令表。
+>   - **索引：故意不新增**。公告是运营内容（几十条量级），现有 `idx_app_notices_active (status, sort_order, id)` 已经吃掉 `status=1` 这一段，再为 `receiver_type` / `target_user_ids` 单独建索引只会给每次后台发布加写入代价，收益是零；真涨到几千条再补也不迟（`ALTER TABLE ADD COLUMN` 本身只改元数据、O(1)，0009 / 0010 里真正的写操作只有那两条回填 `UPDATE`）。
+>   - **页面停着不动也要收到公告（2.5.10 复核：后端无需配合）**：原先只有"进页面 onShow / 下拉刷新"才调 `fetchNotices`，所以停在首页或「我的」页不动时，刚发的公告要退出重进才出现 —— 这是端上的调用时机问题，本版**没有接口/行为改动**（2.5.10 仅版本号对齐 + 本条结论 + 守卫落档）。修法见 `../xapp/README.md` 7.14：端上前台每 30 秒调一次 `fetchNotices`（它自带 60 秒静默刷新节流，所以真实请求仍是每 60 秒一次），内容真变了才由 `_emitNoticesUpdated` 通知首页公告条与我的页红点；后端这条读接口本来就是"可反复调的轻量 GET"，不需要任何配合。
+>   - **自检覆盖**：`tests/notice_visibility.test.mjs` 用**真实 SQLite** 跑一遍四档（谁能看到哪条 / 未读数/红点对得上 / 已读互不影响 / 游客只看得到「所有用户」），其中 4 号公告的收件人是 `,7,9,` —— 顺便证明 `LIKE '%,9,%'` 能命中列表里的**第二位**（只测单值的话，SQL 写成 `=` 也看不出来）。`tests/api_reads.test.mjs` 另盯住三处复用的 SQL 形状与占位符顺序（收件人那条必须是 `LIKE ?` 且参数据是 `%,7,%`）；`tests/admin_pages_content.test.mjs` 覆盖"勾两位就存 `,7,9,`""类型改回所有用户时收件人必须清空"；`tests/sql_migrations.test.mjs` 在真 SQLite 上验证 0010 的折数与 `NOT NULL DEFAULT ''`；`tests/admin_submit_action.test.mjs` 钉住那条 CSS 显隐规则及生成物同步。
+>   - **老库升级（2.5.9 / 2.6.0）**：依次跑 `npm run schema:noticereceiver`（加 `receiver_type` + 回填历史定向行为 `3`）、`npm run schema:noticetargets`（加 `target_user_ids` + 把老的单值折进去），漏跑的后果见第七节命令表。
 
 **笔记类**
 
@@ -395,7 +398,7 @@ cfapi/
 | --- | --- | --- |
 | 技术栈 | Cloudflare Workers + D1 + R2，零运行时依赖 | Python + FastAPI + SQLite/MySQL（双驱动） |
 | 域名 | `lyjx.250036.xyz` | `api0.250036.xyz`、`api.250036.xyz` |
-| 版本号 | `API_VERSION=2.5.9` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.5.3`） |
+| 版本号 | `API_VERSION=2.6.0` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.5.4`） |
 | 接口 | 34 条业务接口已全量实现并自测 | 历史「唯一后端」，接口同构可互切（**缺 `/user/apply_test` 与 `test_applied`**） |
 | 后台 | 17 页面（字符串拼 HTML） | 同样 17+ 模块（Jinja2 服务端渲染） |
 | 口令哈希 | PBKDF2-SHA256（Workers CPU 限制，不用 bcrypt） | bcrypt |
@@ -426,11 +429,11 @@ cfapi/
 7. **测试**：`npm test` 跑 `node --test`（桩模拟 D1/R2），不连外网；`tools/live_smoke.mjs` 跑真实数据端到端冒烟。
 8. **用户申请（或撤回）内部测试但群里没消息**：先看 `wrangler.toml` 的 `WXWORK_WEBHOOK_KEY` 是否配了（空 = 不发，且不报错）；再按 `user.test_apply_notify_rejected` / `user.test_apply_notify_failed` 日志排查（企业微信失败时 HTTP 仍是 200，错误在 `errcode`，日志带 `kind=apply|cancel`）。**通知发不出去不影响用户那边的结果**，后台照样能看到「已申请」徽章的出现与消失。
 9. **老库升级到 2.5.3**：先跑一次 `npm run schema:testapply` 加 `users.test_applied` 列，否则 `/user/apply_test` 与后台用户列表会报 `no such column`。该脚本不幂等，只跑一次。
-10. **老库升级到 2.5.7**：先跑一次 `npm run schema:noticetarget` 加 `app_notices.target_user_id` 列，否则公告接口（`/content/get_notices` 等）会报 `no such column: target_user_id`。同样不幂等，只跑一次。
+10. **老库升级到 2.5.7 / 2.6.0**：依次跑 `npm run schema:noticetarget`（加 `app_notices.target_user_id`）、`npm run schema:noticetargets`（加 `target_user_ids` 并把老的单值折进去），否则公告接口（`/content/get_notices` 等）会报 `no such column: target_user_id` / `no such column: target_user_ids`。两个脚本都不幂等，各只跑一次。
 11. **用户说"设了内部测试但小程序里没收到消息"**：先看公告页是否拉到那一页（定向消息也占一条，排在 `sort_order` 相同的公告之前）、再看「我的」页公告红点；后端侧按 `notice.push_user_notice_failed` 日志排查，并确认老库已跑 `schema:noticetarget`。**发消息失败不影响身份变更本身**（列表里的「内部测试」徽章照样会出现）。
-12. **用户说"红点不亮 / 亮了不消失"**：先确认端上版本 —— 小程序 **≤4.5.1** 进「我的」页会吃 `fetchNoticeUnread` 的 30 秒内存缓存（管理员刚改完的这段时间里红点不动），**4.5.2 起**改为每次 onShow / 下拉刷新都强制取最新值；**4.5.3 起**修掉剩余竞态（`updateLoginStatus` 原先无条件把未读数清零，资料刷新回包后到会把刚亮起的红点抹掉，清零现在只在换人/首次登录时做）。后端侧只需确认 `POST /content/get_notice_unread` 返回的 `unread_count` 正确：它同时统计**全体公告 + 只发给本人的定向通知**，`> 0` 红点亮、`= 0` 灭。
+12. **用户说"红点不亮 / 亮了不消失"**：先确认端上版本 —— 小程序 **≤4.5.1** 进「我的」页会吃 `fetchNoticeUnread` 的 30 秒内存缓存（管理员刚改完的这段时间里红点不动），**4.5.2 起**改为每次 onShow / 下拉刷新都强制取最新值；**4.5.3 起**修掉剩余竞态（`updateLoginStatus` 原先无条件把未读数清零，资料刷新回包后到会把刚亮起的红点抹掉，清零现在只在换人/首次登录时做）；**4.5.4 起**页面停着不动也会收到新公告（端上前台每 30 秒轮询一次，见 `../xapp/README.md` 7.14）。后端侧只需确认 `POST /content/get_notice_unread` 返回的 `unread_count` 正确：它同时统计**全体公告 + 只发给本人的定向通知**，`> 0` 红点亮、`= 0` 灭。
 8. **线上"又慢了"先看状态页的「D1 响应」**：它是一次真实 D1 往返的耗时（基线约 240ms）。接口/页面的耗时 ≈ **串行轮数 × 它**，所以"多了几百毫秒"基本都是多了一轮串行查询，而不是单条 SQL 变慢。
 9. **怎么量"串行轮数"**：本地用 `tests/stub.mjs` / `tests/admin_stub.mjs` 的桩，把每条 D1 语句包一层 `await sleep(240)`，再跑一次该页面/接口 —— `耗时 ÷ 240ms` 就是串行轮数（后台全部 GET 路径可从 `app/admin/pages/index.js` 的 `PAGE_ROUTES` 列出来）。2.5.2 的对照：控制面板 7 轮 → 2 轮、`/config/get_app_config` 6 轮 → 1 轮（命中缓存 0 轮）、`/news/list` 3 轮 → 1~2 轮、`/news/detail` 4 轮 → 2 轮。
 10. **配置类数据最多 30 秒延迟生效**：分类/首页板块/精选/文案/菜单/轮播图走 `core/ttlCache.js` 的 30 秒进程内缓存（跨 isolate 没法主动失效）。后台改完若在小程序侧没立刻看到，等半分钟或重启小程序再试。
 8. **`notes/`、`out/` 已被 `.gitignore` 忽略**：`notes/` 是迁移/运维笔记，`out/` 是生成物，不要手动提交。
-13. **老库升级到 2.5.9**：先跑一次 `npm run schema:noticereceiver`，给 `app_notices` 加 `receiver_type` 并回填历史定向行。漏跑的两条后果：① 公告接口与后台公告页报 `no such column: receiver_type`；② 不回填则 2.5.7 起发的定向消息会被当成「所有用户」**全员可见**（私信变广播）。该脚本不幂等，只跑一次；新建库已含该列，不用跑。
+13. **老库升级到 2.5.9 / 2.6.0**：按顺序跑 `npm run schema:noticereceiver`（给 `app_notices` 加 `receiver_type` 并回填历史定向行）→ `npm run schema:noticetargets`（加 `target_user_ids` 并把老的单值列折进去）。漏跑 0009 的两条后果：① 公告接口与后台公告页报 `no such column: receiver_type`；② 不回填则 2.5.7 起发的定向消息会被当成「所有用户」**全员可见**（私信变广播）。漏跑 0010 的后果：**2.6.0 的代码只认 `target_user_ids`**，接口与后台一律报 `no such column: target_user_ids`（公告功能整体不可用）；即使手工把接口绕开，不折数据也会让已有的定向消息变成"没有收件人"—— 静默丢消息。两个脚本都不幂等，各只跑一次；新建库已含这两列，都不用跑。

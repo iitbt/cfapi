@@ -119,9 +119,9 @@ test('迁移 0005: 新建库(0001~0004) 跑一遍也不报错', async (t) => {
   const left = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='news_comments'").all()
     .map((item) => item.name);
   assert.ok(!left.includes('status'), '新建库里那条重复索引也应被清掉');
-  // 新建库的 0001 就必须带这两列(定向公告 2.5.7 / 接收人 2.5.9), 老库才靠 0008、0009 补
+  // 新建库的 0001 就必须带这几列(定向公告 2.5.7 / 接收人 2.5.9 / 多选收件人 2.6.0), 老库才靠 0008、0009、0010 补
   const columns = db.prepare("SELECT name FROM pragma_table_info('app_notices')").all().map((item) => item.name);
-  for (const wanted of ['target_user_id', 'receiver_type']) {
+  for (const wanted of ['target_user_id', 'receiver_type', 'target_user_ids']) {
     assert.ok(columns.includes(wanted), `新建库的 app_notices 应有 ${wanted} 列`);
   }
 });
@@ -149,4 +149,36 @@ test('迁移 0008/0009: 老库补接收人列, 历史定向行必须回填成「
   assert.deepEqual(rows.map((row) => [row.title, row.receiver_type]), [['全体公告', 0], ['定向消息', 3]],
     '全体公告保持默认 0(与历史数据同义); 定向消息必须回填 3 —— 不回填就成了「私信变广播」');
   assert.equal(rows[1].target_user_id, 7, '收件人 id 不该被动过');
+});
+
+test('迁移 0010: 老库的单值收件人折进逗号列表(2.6.0 一条公告可发给多位)', async (t) => {
+  const sqlite = await sqliteOf();
+  if (!sqlite) {
+    t.skip('本机没有 node:sqlite');
+    return;
+  }
+  const db = new sqlite.DatabaseSync(':memory:');
+  // 2.5.9 时期的 app_notices: 只有单值列 target_user_id(没有 target_user_ids)
+  db.exec(`CREATE TABLE app_notices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL DEFAULT '', content TEXT,
+    level TEXT NOT NULL DEFAULT 'info', start_at TEXT, end_at TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0, status INTEGER NOT NULL DEFAULT 1,
+    receiver_type INTEGER NOT NULL DEFAULT 0, target_user_id INTEGER, create_time TEXT);`);
+  // 三行: 全体公告 / 2.5.7 起的定向系统消息 / 一条"类型=定向但没写收件人"的脏行
+  db.exec(`INSERT INTO app_notices (title, receiver_type, target_user_id) VALUES
+    ('全体公告', 0, NULL), ('定向消息', 3, 7), ('脏行', 3, 0);`);
+
+  db.exec(read('0010_notice_targets.sql'));
+
+  const rows = db.prepare('SELECT title, target_user_ids FROM app_notices ORDER BY id').all();
+  assert.deepEqual(rows.map((row) => [row.title, row.target_user_ids]),
+    [['全体公告', ''], ['定向消息', ',7,'], ['脏行', '']],
+    '定向行折成两端带逗号的列表; 全体公告与脏行保持空串(不许写成 "7" 这种单值形状, LIKE 会匹配不上)');
+  // 折过来之后, 新代码的可见性判定就是靠这一条 LIKE: 命中不了等于"这条定向消息谁都收不到"(静默丢消息)
+  const hit = db.prepare('SELECT COUNT(*) AS c FROM app_notices WHERE target_user_ids LIKE ?').get('%,7,%').c;
+  assert.equal(hit, 1, "LIKE '%,7,%' 要能命中折过来的收件人");
+  // 新列必须带 NOT NULL DEFAULT '': 后台"接收人类型不是指定用户时清空列表"直接写空串, 给 NULL 会让 LIKE 判定变成 UNKNOWN
+  const column = db.prepare("SELECT \"notnull\", dflt_value FROM pragma_table_info('app_notices') WHERE name='target_user_ids'").get();
+  assert.equal(column.notnull, 1, 'target_user_ids 要 NOT NULL');
+  assert.equal(column.dflt_value, "''", "默认值要是空串");
 });

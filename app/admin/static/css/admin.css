@@ -252,6 +252,18 @@
 .col-actions-sm { width: 180px; }
 /* 详情表窄标签列 */
 .th-rowlabel-sm { width: 120px; }
+/* 公告编辑页「接收人=指定用户」那一段(搜人 + 已选清单)的显隐(2.6.0): 纯 CSS 跟着上方的单选按钮走。
+   为什么能这么写: 选中的那个 radio 是 .notice-picker 的**前面的兄弟节点**, 所以用 ~ 就能控制显隐, 一行 JS 都不用;
+   这也是接收人类型**必须用 radio 而不是下拉框**的原因 —— select 的选中项没法被 CSS 兄弟选择器命中(见 pages/notices.js)。
+   注意: CSS 只负责"看不见"。隐藏起来的控件**照样会随表单提交**,
+   所以"类型不是指定用户时收件人列表一律清空"这件事必须由后端兜(receiver_type≠3 时忽略提交上来的收件人)。 */
+.notice-picker { display: none; }
+#noticeReceiver3:checked ~ .notice-picker { display: block; }
+/* 「接收人」控件里的三个小件(2.6.0): 页面里不写内联 style(见本文件抬头那段约定) */
+.notice-avatar { display: inline-block; width: 24px; height: 24px; object-fit: cover; }
+.notice-user-option { cursor: pointer; }
+/* 候选用户列表: 只占一屏的一部分高度, 里面自己滚 —— 200 位候选也不把保存按钮顶到屏幕外 */
+.notice-user-list { max-height: 34vh; overflow: auto; }
 
 /* ================= 富文本「小程序尺度」统一层(唯一实现, 2026-09-23 / 后端 v2.2.5) =================
    服务对象: 预览页(/admin/news_preview 的手机框) 与 编辑页(/admin/news_edit 的富文本框架)。

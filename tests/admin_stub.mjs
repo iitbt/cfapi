@@ -162,7 +162,14 @@ function request(path, options = {}) {
   const init = { method, headers };
   if (options.body !== undefined) {
     headers['content-type'] = 'application/x-www-form-urlencoded';
-    init.body = new URLSearchParams(options.body).toString();
+    // 值是数组时逐个 append(2.6.0): 公告「收件人」是**同名多值**字段(勾几位就发几个 target_user_id),
+    // 直接 URLSearchParams(body) 会把数组 String() 成 "7,9" 一个值 —— 那测到的就不是浏览器真实发的形状,
+    // 而是"服务端恰好也能解析逗号串"的假通过。
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(options.body || {})) {
+      for (const item of Array.isArray(value) ? value : [value]) params.append(key, item);
+    }
+    init.body = params.toString();
   }
   return new Request(`${HOST}${path}`, init);
 }

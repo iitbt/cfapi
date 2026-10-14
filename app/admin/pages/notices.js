@@ -2,6 +2,7 @@
 // 逐条对齐旧站 fastapi/app/admin/notices.py
 import { escapeHtml } from '../../core/html.js';
 import { all, one, run } from '../../core/db.js';
+import { targetsList, targetsMark } from '../../core/notice_targets.js';
 import { beijingNow } from '../../core/timeutil.js';
 import { assetUrl } from '../../core/media_scheme.js';
 import { adminLayout } from '../lib/layout.js';
@@ -31,6 +32,9 @@ const RECEIVER_PICKED = 3;
 // 搜人结果封顶: 够"按昵称搜出某个人"用, 又不至于一次渲染几百行
 const PICKER_LIMIT = 20;
 const PICKER_COLUMNS = 'id,nickname,username,avatar,is_trusted';
+// 一次最多指定多少位收件人(2.6.0): 够运营用, 同时挡住"有人把全站用户都勾上"那种提交 ——
+// 收件人存成逗号串(见 core/notice_targets.js), 没有上限的话一条公告能把这列撑到几百 KB
+const MAX_TARGETS = 200;
 const COLUMNS = ['ID', '标题', '类型', '接收人', '生效时间', '排序', '状态', '操作'];
 
 // 页面路径前缀: 公告的"跳转页面"只接受小程序页面, 与旧站 catalog.is_page_path 同口径
@@ -67,8 +71,10 @@ function noticeWhere(filters) {
 async function receiversOf(env, rows) {
   const ids = [];
   (rows || []).forEach((row) => {
-    const id = intOr(row.target_user_id, 0);
-    if (intOr(row.receiver_type, RECEIVER_ALL) === RECEIVER_PICKED && id > 0 && ids.indexOf(id) === -1) ids.push(id);
+    if (intOr(row.receiver_type, RECEIVER_ALL) !== RECEIVER_PICKED) return;
+    targetsList(row.target_user_ids).forEach((id) => {
+      if (ids.indexOf(id) === -1) ids.push(id);
+    });
   });
   if (!ids.length) return {};
   const marks = ids.map(() => '?').join(',');
@@ -80,15 +86,19 @@ async function receiversOf(env, rows) {
   return map;
 }
 
-// 接收人单元格: 类型徽章 + (指定用户时)收件人昵称; 用户已不在库里时把 id 显出来, 免得看起来"没接收人"
+// 接收人单元格: 类型徽章 + (指定用户时)收件人昵称(可多个, 超过 3 位折成"等 N 人");
+// 用户已不在库里时把 id 显出来, 免得看起来"没接收人"; 一位都没选是**异常数据**(存不进去, 但老库可能有), 直接标红
 function receiverCell(row, receivers) {
   const type = intOr(row.receiver_type, RECEIVER_ALL);
   const label = RECEIVER_LABELS[type] || RECEIVER_LABELS[RECEIVER_ALL];
   const badge = `<span class="badge text-bg-${RECEIVER_BADGES[type] || 'secondary'}">${escapeHtml(label)}</span>`;
   if (type !== RECEIVER_PICKED) return badge;
-  const id = intOr(row.target_user_id, 0);
-  const name = (receivers || {})[String(id)] || ('用户#' + id + '（已删除）');
-  return `${badge}<div class="small text-muted text-truncate">${escapeHtml(name)} #${id}</div>`;
+  const ids = targetsList(row.target_user_ids);
+  if (!ids.length) return `${badge}<div class="small text-danger">未选收件人</div>`;
+  const names = ids.map((id) => (receivers || {})[String(id)] || ('用户#' + id + '（已删除）'));
+  const shown = names.length > 3 ? `${names.slice(0, 3).join('、')} 等 ${names.length} 人` : names.join('、');
+  return `${badge}<div class="small text-muted text-truncate" title="${escapeHtml(names.join('、'))}">`
+    + `${escapeHtml(shown)} <span class="text-muted">#${ids.join(',#')}</span></div>`;
 }
 
 // 时间归一化走 lib/utils.js 的唯一实现(normalizeDatetime): 本页以前自己又抄了一份,
@@ -226,14 +236,13 @@ async function pickUsers(env, query) {
   }
 }
 
-// 当前选中的收件人可能不在搜索结果里(比如是很早注册的账号): 单独查出来置顶,
-// 否则用户列表里没有一个被选中, 界面上根本看不出"这条公告现在发给谁"
-async function withPickedUser(env, users, pickedId) {
-  const list = users || [];
-  const id = intOr(pickedId, 0);
-  if (!id || list.some((item) => intOr(item.id, 0) === id)) return list;
-  const picked = await one(env, `SELECT ${PICKER_COLUMNS} FROM users WHERE id = ?`, id).catch(() => null);
-  return picked ? [picked].concat(list) : list;
+// 已选收件人可能不在当前搜索结果里(很早注册的账号, 或刚换了关键词): 按 id 单独查回来画"已选清单"。
+// 只靠候选列表的话, 搜一次人就看不出这条公告现在到底发给谁(2.6.0 起还会用隐藏域把这些人带过表单, 见 receiverCard)
+async function usersByIds(env, ids) {
+  const list = (ids || []).filter((id) => id > 0);
+  if (!list.length) return [];
+  const marks = list.map(() => '?').join(',');
+  return (await all(env, `SELECT ${PICKER_COLUMNS} FROM users WHERE id IN (${marks})`, ...list).catch(() => [])) || [];
 }
 
 async function editPage(ctx) {
@@ -245,7 +254,7 @@ async function editPage(ctx) {
   if (isNew) {
     row = {
       id: 0, title: '', content: '', level: DEFAULT_LEVEL, link_type: '', link_value: '',
-      start_at: '', end_at: '', sort_order: 0, status: 1, receiver_type: RECEIVER_ALL, target_user_id: null
+      start_at: '', end_at: '', sort_order: 0, status: 1, receiver_type: RECEIVER_ALL, target_user_ids: ''
     };
   } else {
     row = await one(ctx.env, 'SELECT * FROM app_notices WHERE id = ?', noticeId).catch(() => null);
@@ -254,7 +263,9 @@ async function editPage(ctx) {
 
   // 接收人只在超管可见可改(要求: 编辑与用户选择仅超管)
   const canPick = !!ctx.session.isSuper;
-  let pickedId = intOr(row.target_user_id, 0);
+  // 库里的原值: 非超管提交时必须原样保留 —— 否则普通管理员改一次正文就把定向公告重置成"所有用户"
+  const storedIds = targetsList(row.target_user_ids);
+  let pickedIds = storedIds;      // 界面上"已选"的那批(未 POST 时 = 库里的值)
   let userQuery = '';
 
   if (ctx.method === 'POST') {
@@ -269,29 +280,30 @@ async function editPage(ctx) {
     const status = form.status ? 1 : 0;
     // link_type 由 link_value 派生(不是表单字段)
     const linkType = isPagePath(linkValue) ? 'page' : '';
-    // 接收人: 非超管提交时**保留库里的原值** —— 否则普通管理员改一次正文就会把定向公告重置成"所有用户"
     const postedType = intOr(form.receiver_type, RECEIVER_ALL);
     const receiverType = canPick && RECEIVER_LABELS[postedType] !== undefined
       ? postedType
       : intOr(row.receiver_type, RECEIVER_ALL);
-    const postedTarget = intOr(form.target_user_id, 0);
-    // 类型不是"指定用户"时清掉收件人; 是指定时没勾任何人就沿用原值(在类型之间来回切不会丢掉已选的谁)
-    const targetUserId = receiverType === RECEIVER_PICKED
-      ? (postedTarget || pickedId || 0)
-      : (canPick ? 0 : pickedId);
-    pickedId = postedTarget || targetUserId;
+    // 收件人在表单里是**同名多值**(勾选的复选框 + "搜索结果外那几位"的隐藏域), readForm 按提交顺序拼成逗号串
+    const postedIds = canPick ? targetsList(form.target_user_id) : storedIds;
+    // 「移除」按钮自带 remove_user_id=要摘掉的那位: 同样只重画本页, 不落库
+    const removedId = canPick ? intOr(form.remove_user_id, 0) : 0;
+    const chosenIds = postedIds.filter((id) => id !== removedId);
+    // 界面画的始终是"当前勾了谁"(在类型之间来回切不会把已选弄没); 真正落库的值另算:
+    //   非超管 → 原样保留库里的; 类型=指定用户 → 勾了谁存谁; 其它类型 → 清空(与 2.5.9 同一口径)
+    pickedIds = canPick ? chosenIds : storedIds;
+    const savedIds = canPick ? (receiverType === RECEIVER_PICKED ? chosenIds : []) : storedIds;
     userQuery = strOf(form.user_q);
     row = {
       id: noticeId, title, content, level, link_type: linkType, link_value: linkValue,
       start_at: startAt, end_at: endAt, sort_order: sortOrder, status,
-      receiver_type: receiverType, target_user_id: targetUserId || null
+      receiver_type: receiverType, target_user_ids: targetsMark(savedIds)
     };
 
-    // 「搜索用户」是表单里的一个普通提交按钮(name=action value=search_user):
+    // 「搜索用户」与每位收件人后面的「移除」都是表单里的普通提交按钮(自己带 name/value):
     // 拿着当前草稿重画一次页面, 不校验也不落库 —— 后台不引入弹窗/AJAX 那一套(素材库是唯一例外)
-    if (strOf(form.action) === 'search_user') {
-      const users = await withPickedUser(ctx.env, await pickUsers(ctx.env, userQuery), pickedId);
-      return editView(ctx, { isNew, row, error: '', errorField: '', users, userQuery });
+    if (strOf(form.action) === 'search_user' || removedId) {
+      return renderEdit({ error: '', errorField: '' });
     }
 
     if (!title) {
@@ -306,8 +318,13 @@ async function editPage(ctx) {
     } else if (startAt && endAt && startAt > endAt) {
       error = '生效开始时间不能晚于结束时间';
       errorField = 'end_at';
-    } else if (receiverType === RECEIVER_PICKED && !targetUserId) {
-      error = '接收人选择「指定用户」时必须选一位用户';
+    // 收件人的两条校验只对超管生效: 非超管根本没有这个控件(页面上只有一行只读文案), 报出来他也没法处理 ——
+    // 而且非超管的 savedIds 是库里的原值, 拿脏数据(类型=3 但收件人为空的老行)把他卡住是说不通的
+    } else if (canPick && receiverType === RECEIVER_PICKED && !savedIds.length) {
+      error = '接收人选择「指定用户」时必须至少选一位用户';
+      errorField = 'receiver_type';
+    } else if (canPick && savedIds.length > MAX_TARGETS) {
+      error = `指定用户一次最多选 ${MAX_TARGETS} 位`;
       errorField = 'receiver_type';
     }
 
@@ -315,15 +332,17 @@ async function editPage(ctx) {
       try {
         if (isNew) {
           await run(ctx.env,
-            'INSERT INTO app_notices (title, content, level, link_type, link_value, start_at, end_at, sort_order, status, receiver_type, target_user_id, create_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-            title, content, level, linkType, linkValue, startAt, endAt, sortOrder, status, receiverType, targetUserId || null, beijingNow());
+            'INSERT INTO app_notices (title, content, level, link_type, link_value, start_at, end_at, sort_order, status, receiver_type, target_user_ids, create_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+            title, content, level, linkType, linkValue, startAt, endAt, sortOrder, status, receiverType, targetsMark(savedIds), beijingNow());
         } else {
           await run(ctx.env,
-            'UPDATE app_notices SET title=?, content=?, level=?, link_type=?, link_value=?, start_at=?, end_at=?, sort_order=?, status=?, receiver_type=?, target_user_id=? WHERE id=?',
-            title, content, level, linkType, linkValue, startAt, endAt, sortOrder, status, receiverType, targetUserId || null, noticeId);
+            'UPDATE app_notices SET title=?, content=?, level=?, link_type=?, link_value=?, start_at=?, end_at=?, sort_order=?, status=?, receiver_type=?, target_user_ids=? WHERE id=?',
+            title, content, level, linkType, linkValue, startAt, endAt, sortOrder, status, receiverType, targetsMark(savedIds), noticeId);
         }
         invalidateEntityCache('notice');
-        auditLog(`admin.app_notice.${isNew ? 'create' : 'update'}`, { user: ctx.session.username, notice_id: noticeId, title, receiver_type: receiverType });
+        auditLog(`admin.app_notice.${isNew ? 'create' : 'update'}`, {
+          user: ctx.session.username, notice_id: noticeId, title, receiver_type: receiverType, target_count: savedIds.length
+        });
         return redirect(buildListUrl(MANAGE_URL, { message: isNew ? '公告已添加' : '公告已更新' }));
       } catch (err) {
         console.error(`保存公告失败 id=${noticeId}`, err && err.stack ? err.stack : err);
@@ -331,48 +350,105 @@ async function editPage(ctx) {
       }
     }
   }
-  const users = canPick ? await withPickedUser(ctx.env, await pickUsers(ctx.env, userQuery), pickedId) : [];
-  return editView(ctx, { isNew, row, error, errorField, users, userQuery });
+  return renderEdit({});
+
+  // 画编辑页: 候选列表走搜索词, 已选清单按 id 查(两边互相独立, 少一个都不行)
+  async function renderEdit(extra) {
+    const pickedUsers = canPick ? await usersByIds(ctx.env, pickedIds) : [];
+    const users = canPick ? await pickUsers(ctx.env, userQuery) : [];
+    return editView(ctx, Object.assign(
+      { isNew, row, error, errorField, users, userQuery, pickedIds, pickedUsers }, extra || {}
+    ));
+  }
 }
 
-// 「接收人」控件(2.5.9, 仅超管): 类型下拉 + 搜人/选人列表。
-// 为什么不用弹窗 + AJAX(素材库那一套): 后台其余页面都是"整页重渲染"风格,
-// 这里只要在同一个 form 里放一个 name=action value=search_user 的提交按钮就够了 —— 不加 JS、不加接口、不加静态资源。
-function receiverCard(env, { receiverType, pickedId, users, userQuery }) {
-  const current = intOr(pickedId, 0);
+// 接收人类型: **必须是单选按钮组, 不是下拉框** —— 「指定用户」那一段的显隐靠纯 CSS
+// (`#noticeReceiver3:checked ~ .notice-picker`, 见 admin.css), 而 select 的选中项没法被纯 CSS 的兄弟选择器命中。
+// 四个选项一眼看全也比下拉少一次点击。name/value 与 2.5.9 的下拉框完全一致(后端与筛选 UI 不用改)。
+function receiverRadios(current, errorField) {
+  const bad = errorField === 'receiver_type';
+  return RECEIVERS.map(([value, label]) => {
+    const id = `noticeReceiver${value}`;
+    const checked = intOr(current, RECEIVER_ALL) === value;
+    return `<div class="form-check form-check-inline me-3">
+  <input class="form-check-input${bad ? ' is-invalid' : ''}" type="radio" name="receiver_type" id="${id}" value="${value}"${checked ? ' checked' : ''}>
+  <label class="form-check-label" for="${id}">${escapeHtml(label)}</label>
+</div>`;
+  }).join('');
+}
+
+// 头像小圆点: 没头像就用灰底占位(候选列表与已选清单共用, 免得"头像位忽大忽小")
+function avatarDot(env, avatar) {
+  const url = strOf(avatar);
+  return url
+    ? `<img src="${escapeHtml(assetUrl(env, url, ''))}" class="rounded-circle flex-shrink-0 notice-avatar" alt="" onerror="this.style.visibility='hidden'">`
+    : '<span class="rounded-circle bg-secondary-subtle flex-shrink-0 notice-avatar"></span>';
+}
+
+function nameOfUser(user) {
+  return strOf(user && user.nickname) || strOf(user && user.username) || '（无昵称）';
+}
+
+// 「接收人」控件(2.5.9 起, 仅超管; 2.6.0 起"指定用户"可多选)。
+// 为什么不用弹窗 + AJAX(素材库那一套): 后台其余页面都是"整页重渲染"风格, 这里在同一个 form 里放两个普通提交按钮
+// (搜索用户 / 每位已选后面的移除)就够了 —— 不加 JS、不加接口、不加静态资源(见 README 的"实现约定")。
+// 显隐: 类型≠【指定用户】时这一段由 CSS 隐藏, 但**隐藏的控件照样会被提交** ——
+// 所以后端在 receiver_type≠3 时一律忽略提交上来的 target_user_id(在 editPage 里做), 不靠前端"保证不提交"。
+function receiverCard(env, { receiverType, pickedIds, pickedUsers, users, userQuery, errorField }) {
+  const current = targetsList(pickedIds);
+  const found = {};
+  (pickedUsers || []).forEach((user) => { found[String(user.id)] = user; });
+  // 已选清单(每位带「移除」): 顺序 = 勾选顺序; 用户已不在库里也照列, 否则这一位就再也摘不掉了
+  const chips = current.map((id) => {
+    const user = found[String(id)];
+    const name = user ? nameOfUser(user) : `用户#${id}（已删除）`;
+    return `<span class="badge text-bg-light border d-inline-flex align-items-center gap-1 me-1 mb-1 py-2">
+  ${avatarDot(env, user && user.avatar)}
+  <span>${escapeHtml(name)}<span class="text-muted small"> #${id}</span></span>
+  <button class="btn btn-sm btn-outline-danger py-0 px-1 ms-1" type="submit" name="remove_user_id" value="${id}">移除</button>
+</span>`;
+  }).join('');
+
+  // 候选列表(复选框, 可多选); 顺手记下"已选里哪些已经画在列表里了"
+  const rendered = [];
   const rows = (users || []).map((user) => {
     const id = intOr(user.id, 0);
-    const avatar = strOf(user.avatar);
-    const avatarHtml = avatar
-      ? `<img src="${escapeHtml(assetUrl(env, avatar, ''))}" class="rounded-circle flex-shrink-0" style="width:32px;height:32px;object-fit:cover" alt="" onerror="this.style.visibility='hidden'">`
-      : '<span class="rounded-circle bg-secondary-subtle flex-shrink-0" style="width:32px;height:32px;display:inline-block"></span>';
-    const name = strOf(user.nickname) || strOf(user.username) || '（无昵称）';
+    const checked = current.indexOf(id) >= 0;
+    if (checked) rendered.push(id);
     const tag = intOr(user.is_trusted, 0) === 1 ? '<span class="badge text-bg-danger ms-1">内部测试</span>' : '';
-    return `<label class="d-flex align-items-center gap-2 border rounded p-2 mb-1" style="cursor:pointer">
-  <input class="form-check-input mt-0" type="radio" name="target_user_id" value="${id}"${id === current ? ' checked' : ''}>
-  ${avatarHtml}
-  <span class="text-truncate">${escapeHtml(name)}${tag}<span class="text-muted small"> #${id}</span></span>
+    return `<label class="d-flex align-items-center gap-2 border rounded p-2 mb-1 notice-user-option">
+  <input class="form-check-input mt-0" type="checkbox" name="target_user_id" value="${id}"${checked ? ' checked' : ''}>
+  ${avatarDot(env, user.avatar)}
+  <span class="text-truncate">${escapeHtml(nameOfUser(user))}${tag}<span class="text-muted small"> #${id}</span></span>
 </label>`;
   }).join('');
+  // 已选但不在候选列表里的: 用隐藏域一起提交 —— 否则"搜一次人"或"摘下一位"之后, 他们会悄悄从收件人里掉出去
+  const hidden = current.filter((id) => rendered.indexOf(id) === -1)
+    .map((id) => hiddenField('target_user_id', id)).join('');
+
   return `<div class="card mb-3"><div class="card-body">
     <div class="form-label">接收人 <span class="text-muted small">（仅超级管理员可改）</span></div>
-    ${selectField({
-      name: 'receiver_type', label: '发送给', value: String(intOr(receiverType, RECEIVER_ALL)), errorField: 'receiver_type',
-      options: RECEIVERS.map(([value, label]) => [String(value), label])
-    })}
-    <div class="small text-muted mb-2">选择「指定用户」时，勾选下面的一位用户即可；点「搜索用户」只会重新加载本页，已填的标题与正文不会丢。</div>
-    <div class="input-group input-group-sm mb-2">
-      ${searchInput({ name: 'user_q', value: userQuery || '', placeholder: '按昵称 / 用户名 / ID 搜人' })}
-      <button class="btn btn-sm btn-outline-secondary" type="submit" name="action" value="search_user">搜索用户</button>
+    <div class="small text-muted mb-1">发送给</div>
+    ${receiverRadios(receiverType, errorField)}
+    <div class="notice-picker mt-2">
+      <div class="form-text mb-1">已选 ${current.length} 位${current.length
+        ? '（点某一位后面的「移除」即可摘掉）'
+        : '（勾选下面的用户，可多选）'}</div>
+      ${chips ? `<div class="mb-2">${chips}</div>` : ''}
+      <div class="input-group input-group-sm mb-2">
+        ${searchInput({ name: 'user_q', value: userQuery || '', placeholder: '按昵称 / 用户名 / ID 搜人' })}
+        <button class="btn btn-sm btn-outline-secondary" type="submit" name="action" value="search_user">搜索用户</button>
+      </div>
+      <div class="border rounded p-2 notice-user-list">
+        ${rows || '<div class="text-muted small">没有匹配的用户，换个关键词试试。</div>'}
+      </div>
     </div>
-    <div class="border rounded p-2" style="max-height:34vh;overflow:auto">
-      ${rows || '<div class="text-muted small">没有匹配的用户，换个关键词试试。</div>'}
-    </div>
-    <div class="form-text">最多列出 ${PICKER_LIMIT} 位（默认按 ID 倒序）。用户只以 ID 记录，不会把 openid 写进公告或下发到小程序。</div>
+    ${hidden}
+    <div class="form-text">最多列出 ${PICKER_LIMIT} 位（默认按 ID 倒序），一次最多指定 ${MAX_TARGETS} 位。点「搜索用户」只会重新加载本页，已填的标题与正文不会丢。用户只以 ID 记录，不会把 openid 写进公告或下发到小程序。</div>
   </div></div>`;
 }
 
-function editView(ctx, { isNew, row, error, errorField, users, userQuery }) {
+function editView(ctx, { isNew, row, error, errorField, users, userQuery, pickedIds, pickedUsers }) {
   if (!row) {
     return adminLayout({
       title: '编辑公告', currentPage: 'notice_manage', admin: ctx.session.username,
@@ -391,8 +467,7 @@ function editView(ctx, { isNew, row, error, errorField, users, userQuery }) {
   }) + (ctx.session.isSuper
     ? receiverCard(ctx.env, {
       receiverType: intOr(row.receiver_type, RECEIVER_ALL),
-      pickedId: intOr(row.target_user_id, 0),
-      users, userQuery
+      pickedIds, pickedUsers, users, userQuery, errorField
     })
     // 非超管: 只读告知, 免得"我编辑了公告却不知道它只发给某些人"
     : `<div class="form-text">接收人：${escapeHtml(RECEIVER_LABELS[intOr(row.receiver_type, RECEIVER_ALL)] || RECEIVER_LABELS[RECEIVER_ALL])}（仅超级管理员可修改）</div>`);
