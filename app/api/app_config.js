@@ -69,15 +69,24 @@ async function safeAll(env, sql, ...args) {
 
 export function registerAppConfigRoutes(router) {
   router.any('/config/get_app_config', async (request, env) => {
+    // 六块数据之间没有依赖(只有 nameOf 是内存里拼出来的): 并发查库, 接口耗时 ≈ 最慢的那一条而不是六条之和 ——
+    // 首屏的分类/首页板块/精选都在等这个聚合接口, 串行查六次会把它们的等待叠起来
+    const [categoryRows, sectionRows, featuredRows, versionRow, textRows, menuRows] = await Promise.all([
+      safeAll(env, 'SELECT category_key, name FROM app_categories WHERE status=1 ORDER BY sort_order ASC, id ASC'),
+      safeAll(env, 'SELECT section_key,item_id,image_url,status FROM app_home_sections ORDER BY section_key ASC, sort_order ASC, id ASC'),
+      safeAll(env, 'SELECT item_key,name,image_url,page_path,status FROM app_featured_items ORDER BY sort_order ASC, id ASC'),
+      one(env, 'SELECT latest_version,min_version,update_tip,update_content FROM app_version_config WHERE id=1').catch(() => null),
+      safeAll(env, 'SELECT text_key,content,status FROM app_texts ORDER BY group_name ASC, sort_order ASC, id ASC'),
+      safeAll(env, 'SELECT menu_key,title,icon,link_type,link_value,need_login,trusted_only,status FROM app_menu_items ORDER BY sort_order ASC, id ASC')
+    ]);
+
     // 分类: 表空/异常回退内置
-    const categoryRows = await safeAll(env, 'SELECT category_key, name FROM app_categories WHERE status=1 ORDER BY sort_order ASC, id ASC');
     const categories = (categoryRows && categoryRows.length ? categoryRows : NOTE_CATEGORIES)
       .map((row) => ({ id: str(row.category_key || row.id), name: str(row.name) }));
     const nameOf = {};
     categories.forEach((item) => { nameOf[item.id] = item.name; });
 
     // 首页板块: 只取启用行, 顺序固定 main → ext, 名称实时取自分类表
-    const sectionRows = await safeAll(env, 'SELECT section_key,item_id,image_url,status FROM app_home_sections ORDER BY section_key ASC, sort_order ASC, id ASC');
     const flatSections = [];
     if (sectionRows && sectionRows.length) {
       sectionRows.forEach((row) => {
@@ -106,7 +115,6 @@ export function registerAppConfigRoutes(router) {
     });
 
     // 精选: 独立模块, 只取启用行
-    const featuredRows = await safeAll(env, 'SELECT item_key,name,image_url,page_path,status FROM app_featured_items ORDER BY sort_order ASC, id ASC');
     const featuredSource = featuredRows && featuredRows.length ? featuredRows : DEFAULT_FEATURED;
     const featured = featuredSource
       .filter((row) => Number(row.status === undefined ? 1 : row.status) === 1)
@@ -118,7 +126,6 @@ export function registerAppConfigRoutes(router) {
       }));
 
     // 版本更新配置
-    const versionRow = await one(env, 'SELECT latest_version,min_version,update_tip,update_content FROM app_version_config WHERE id=1').catch(() => null);
     const version = versionRow ? {
       latest: str(versionRow.latest_version),
       min: str(versionRow.min_version),
@@ -127,7 +134,6 @@ export function registerAppConfigRoutes(router) {
     } : Object.assign({}, DEFAULT_VERSION);
 
     // 文案: 内置打底, 库中启用行覆盖
-    const textRows = await safeAll(env, 'SELECT text_key,content,status FROM app_texts ORDER BY group_name ASC, sort_order ASC, id ASC');
     const texts = Object.assign({}, DEFAULT_TEXTS);
     (textRows || []).forEach((row) => {
       if (Number(row.status) !== 1) return;
@@ -136,7 +142,6 @@ export function registerAppConfigRoutes(router) {
     });
 
     // 菜单: 只取启用行, page 型必须是小程序页面路径, 图标 /images/ 前缀原样
-    const menuRows = await safeAll(env, 'SELECT menu_key,title,icon,link_type,link_value,need_login,trusted_only,status FROM app_menu_items ORDER BY sort_order ASC, id ASC');
     const menuSource = menuRows && menuRows.length ? menuRows : DEFAULT_MENU;
     const menu = menuSource
       .filter((row) => Number(row.status === undefined ? 1 : row.status) === 1)

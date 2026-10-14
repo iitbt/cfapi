@@ -335,7 +335,7 @@ cfapi/
 
 **内容类（ANY）**：`/content/get_banners`、`/content/get_outdoor`、`/content/get_motorcycle`（户外/摩旅专题分页）、`/content/get_notices`（公告分页，带 `is_read`）、`/content/get_notice_unread`（未读数）、`/content/notice_read`（标记已读）。
 
-**配置类（ANY）**：`/config/get_app_config`（返回 `categories/home_sections/featured/version/texts/menu` + `timestamp`，用 `message` 键）。
+**配置类（ANY）**：`/config/get_app_config`（返回 `categories/home_sections/featured/version/texts/menu` + `timestamp`，用 `message` 键）。六块数据彼此无依赖，**并发查库**（耗时 ≈ 最慢的一条，而不是六条之和；失败仍各自回退内置兜底）。
 
 **静态内容页（GET）**：`/pages/terms`、`/pages/agreement`、`/pages/privacy`、`/pages/download`。
 

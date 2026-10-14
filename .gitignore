@@ -5,6 +5,7 @@ node_modules/
 .codebuddy/
 notes/
 *.sql
+建议.md
 # 例外: app/sql/ 下的建表与迁移脚本是工程的一部分, 必须入库 ——
 # 少了这条例外, 以后新增的 000N_*.sql 会被上面那条规则静默忽略(别人克隆下来的库就建不起来)
 !app/sql/*.sql
