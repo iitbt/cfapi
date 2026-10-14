@@ -165,8 +165,11 @@
         form.dataset.submitting = '';
         return;
       }
-      // 提交确实要发出去了: 只锁按钮的可点性, 绝不动它的 name/value
-      var btn = form.querySelector('button[type="submit"], input[type="submit"]');
+      // 提交确实要发出去了: 只锁按钮的可点性, 绝不动它的 name/value。
+      // 优先锁"真正被点的那个"(e.submitter): 一个表单里可能有不止一个提交按钮 ——
+      // 公告编辑页的「搜索用户」排在「保存」之前, 按"第一个"锁会在保存时把「搜索用户」变成转圈。
+      // 老浏览器(或脚本 form.submit())没有 submitter 时退回"第一个", 与旧行为一致。
+      var btn = e.submitter || form.querySelector('button[type="submit"], input[type="submit"]');
       if (btn) lockButton(btn);
       // 不再设"N 秒后自动解锁": 慢请求下解锁会让用户再次提交成功。
       // 需要恢复的场景(校验失败/异常)服务端会重新渲染整页, 按钮自然回到初始态;
@@ -177,8 +180,9 @@
       var list = document.querySelectorAll('form[data-submitting="1"]');
       for (var i = 0; i < list.length; i++) {
         list[i].dataset.submitting = '';
-        var btn = list[i].querySelector('button[type="submit"], input[type="submit"]');
-        if (btn) unlockButton(btn);
+        // 解锁该表单里**每个**提交按钮: 锁的是"实际被点的那个"(不一定是第一个), 只解锁第一个会留下转圈
+        var btns = list[i].querySelectorAll('button[type="submit"], input[type="submit"]');
+        for (var j = 0; j < btns.length; j++) unlockButton(btns[j]);
       }
     });
 

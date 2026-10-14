@@ -4,7 +4,7 @@ import test from 'node:test';
 
 import { routeTable } from '../main.js';
 import { md5Hex } from '../app/core/md5.js';
-import { beijingNow, datePart, nowEpoch, toEpoch, windowStart } from '../app/core/timeutil.js';
+import { beijingNow, nowEpoch, toEpoch, windowStart } from '../app/core/timeutil.js';
 import { assetUrl, iconAssetUrl } from '../app/core/media_scheme.js';
 import { checkObjectKey, isRootTreePath, listNewsMedia, listUnder, mediaContentType, normRel, relPathsIn } from '../app/core/storage.js';
 import { safeRelPath, safeTargetDir, saveUpload } from '../app/admin/lib/mediaUpload.js';
@@ -35,7 +35,6 @@ test('时间固定东八区且与库内字符串口径一致', () => {
   assert.equal(toEpoch('2026-10-04 12:00:00'), Date.UTC(2026, 9, 4, 4, 0, 0) / 1000);
   assert.equal(toEpoch(''), 0);
   assert.equal(toEpoch(null), 0);
-  assert.equal(datePart('2026-10-04 12:00:00'), '2026-10-04');
   assert.equal(windowStart(60, new Date('2026-10-04T04:00:30Z')) % 60, 0);
   assert.equal(nowEpoch() > 1700000000, true);
 });

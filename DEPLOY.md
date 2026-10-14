@@ -318,6 +318,7 @@ wrangler r2 bucket create lyjxxapp-r2 --location apac   # 建桶（亚太）
 npm run schema:remote                            # 一条命令建完 5 个建表脚本（0001~0005）
 npm run schema:notnull                           # 老库才要：执行 0006 收紧 NOT NULL（会重建表，先备份，见第 4 步）
 npm run schema:noticetarget                      # 老库才要：执行 0008 给 app_notices 加 target_user_id 列（定向公告；ALTER 不幂等，只跑一次）
+npm run schema:noticereceiver                    # 老库才要：执行 0009 加 receiver_type 并回填历史定向行（漏跑 = 定向消息全员可见；ALTER 不幂等，只跑一次）
 wrangler d1 execute lyjxxapp-d1 --remote --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"   # 核对表是否都在
 
 python tools\export_sqlite.py ..\fastapi\data\lyjx.db out\seed.sql

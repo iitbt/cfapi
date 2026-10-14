@@ -119,4 +119,34 @@ test('迁移 0005: 新建库(0001~0004) 跑一遍也不报错', async (t) => {
   const left = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='news_comments'").all()
     .map((item) => item.name);
   assert.ok(!left.includes('status'), '新建库里那条重复索引也应被清掉');
+  // 新建库的 0001 就必须带这两列(定向公告 2.5.7 / 接收人 2.5.9), 老库才靠 0008、0009 补
+  const columns = db.prepare("SELECT name FROM pragma_table_info('app_notices')").all().map((item) => item.name);
+  for (const wanted of ['target_user_id', 'receiver_type']) {
+    assert.ok(columns.includes(wanted), `新建库的 app_notices 应有 ${wanted} 列`);
+  }
+});
+
+test('迁移 0008/0009: 老库补接收人列, 历史定向行必须回填成「指定用户」', async (t) => {
+  const sqlite = await sqliteOf();
+  if (!sqlite) {
+    t.skip('本机没有 node:sqlite');
+    return;
+  }
+  const db = new sqlite.DatabaseSync(':memory:');
+  // 2.5.7 之前的 app_notices: 既没有 target_user_id, 也没有 receiver_type
+  db.exec(`CREATE TABLE app_notices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL DEFAULT '', content TEXT,
+    level TEXT NOT NULL DEFAULT 'info', start_at TEXT, end_at TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0, status INTEGER NOT NULL DEFAULT 1, create_time TEXT);`);
+  db.exec("INSERT INTO app_notices (title) VALUES ('全体公告')");
+
+  db.exec(read('0008_notice_target.sql'));
+  // 2.5.7 起发的系统消息: target_user_id 非空
+  db.exec("INSERT INTO app_notices (title, target_user_id) VALUES ('定向消息', 7)");
+
+  db.exec(read('0009_notice_receiver.sql'));
+  const rows = db.prepare('SELECT title, receiver_type, target_user_id FROM app_notices ORDER BY id').all();
+  assert.deepEqual(rows.map((row) => [row.title, row.receiver_type]), [['全体公告', 0], ['定向消息', 3]],
+    '全体公告保持默认 0(与历史数据同义); 定向消息必须回填 3 —— 不回填就成了「私信变广播」');
+  assert.equal(rows[1].target_user_id, 7, '收件人 id 不该被动过');
 });

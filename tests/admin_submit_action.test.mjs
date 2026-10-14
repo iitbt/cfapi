@@ -22,6 +22,11 @@ test('提交按钮防重: 不许设 disabled(会丢 name/value), 只能用 aria-
     '锁定按钮要走 aria-disabled');
   assert.ok(shellSource.includes('pointerEvents'), '锁定按钮要顺带停掉点击(pointer-events)');
   assert.ok(shellSource.includes('unlockButton'), '从 bfcache 返回时要能解锁');
+  // 一个表单里可能不止一个提交按钮(公告编辑页的「搜索用户」排在「保存」之前):
+  // 锁"第一个"会在保存时把「搜索用户」变成转圈, 所以必须优先锁实际被点的那个
+  assert.ok(/e\.submitter\s*\|\|/.test(shellCode), '加锁要优先用 e.submitter, 退化才用"第一个"提交按钮');
+  assert.ok(shellSource.includes('querySelectorAll(\'button[type="submit"], input[type="submit"]\')'),
+    'bfcache 解锁要覆盖该表单里所有提交按钮(与加锁范围一致)');
 });
 
 test('用户页: 三个动作都用隐藏域提交, 且与后端识别值一致', async () => {
@@ -155,7 +160,7 @@ test('列宽: .cell-title 是固定宽度(桌面 360 / 手机 200), 且生成物
   assert.ok(bundle.includes('.cell-title'), '生成物里要有这条样式(记得重跑 embed_admin_assets.mjs)');
 });
 
-test('筛选组: 五个管理页共用 partials.filterButtons 一份实现(结构与留言管理页逐字一致)', async () => {
+test('筛选组: 六个管理页共用 partials.filterButtons 一份实现(结构与留言管理页逐字一致)', async () => {
   const { filterButtons } = await import('../app/admin/lib/partials.js');
   const html = filterButtons({
     baseUrl: '/admin/x', param: 'kind', active: 'video', label: '按类型筛选',
@@ -168,8 +173,8 @@ test('筛选组: 五个管理页共用 partials.filterButtons 一份实现(结�
     '选中项高亮 + 可直链, 且其它筛选参数跟着走');
   assert.ok(html.includes('<a class="btn btn-outline-secondary" href="/admin/x?kind=all&amp;q=abc">全部</a>'),
     '"全部"也带参数(与留言页 ?status=all 同口径), 且其它筛选参数跟着走');
-  // 五个页面都只引用共用实现, 不自己拼按钮组/胶囊标记
-  for (const page of ['comments', 'topics', 'news', 'mediaGovern', 'appHome']) {
+  // 六个页面都只引用共用实现, 不自己拼按钮组/胶囊标记(2.5.9 起公告页也按接收人筛选)
+  for (const page of ['comments', 'topics', 'news', 'mediaGovern', 'appHome', 'notices']) {
     const source = await readFile(new URL(`../app/admin/pages/${page}.js`, import.meta.url), 'utf8');
     assert.ok(source.includes('filterButtons('), `${page}.js 要用共用筛选组`);
     assert.ok(!source.includes('btn-group'), `${page}.js 不该自己写按钮组标记`);

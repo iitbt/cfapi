@@ -32,12 +32,6 @@ export function toEpoch(value) {
   return Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000);
 }
 
-// 取日期部分(公告 published_at 用)
-export function datePart(value) {
-  const text = String(value || '').trim();
-  return text.slice(0, 10);
-}
-
 // 墙钟毫秒: 把业务时区的墙上时间当 UTC 读出来的毫秒数, 状态页用它写 data-live-anchor
 export function wallClockMs(date = new Date()) {
   return date.getTime() + CHINA_OFFSET_MS;

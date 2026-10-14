@@ -1,4 +1,4 @@
-// 小程序前端守卫(4.5.2): 我的页「通知公告」红点的刷新时机 + 公告页已读补丁
+// 小程序前端守卫(4.5.2 起; 4.5.3 补"同身份资料刷新不许抹红点"): 我的页「通知公告」红点的刷新时机 + 公告页已读补丁
 //
 // 为什么这条守卫放在后端测试里: 小程序工程没有 npm / 测试跑不起来(纯原生 WXML+JS),
 // 而这两个页面文件与 app.js 都是**可被 Node 直接 require 的普通 CommonJS 模块** ——
@@ -149,6 +149,26 @@ test('app.fetchNoticeUnread(4.5.2): 不再有 30 秒内存缓存, 并发只发�
   await Promise.all([appCfg.fetchNoticeUnread(), appCfg.fetchNoticeUnread()]);
   assert.equal(requests.length, before + 1, '并发调用共用同一次在途请求');
   assert.equal(appCfg._hasUnopenedNotice(), false, '未读清零后红点判定为灭');
+
+  // 同身份的资料刷新不许抹掉红点(4.5.3): 「我的」页 onShow 会同时发"拉未读"与"拉资料"两条请求,
+  // 资料那条回来要调 updateLoginStatus —— 它以前**无条件**把未读数清零, 于是谁后到谁说了算:
+  // 资料后到就把刚亮起的红点抹成灭(现象: 后台发布公告后进「我的」页, 红点不出现或一闪就没)。
+  // 根因是清零的条件写错了 —— 清零只该发生在"换人/首次登录"。
+  appCfg.globalData.isLoggedIn = true;
+  appCfg.globalData.userInfo = { id: 7 };
+  response = { code: 200, data: { unread_count: 4, ids: [9] } };
+  await appCfg.fetchNoticeUnread();
+  assert.equal(appCfg._hasUnopenedNotice(), true);
+  // updateLoginStatus 要落缓存, 所以这一段需要 wx 桩(上面 require 时那套已经在 finally 里撤掉了)
+  installMiniProgramStubs();
+  try {
+    appCfg.updateLoginStatus({ id: 7, nickname: '老王' }, null);   // 同一身份, 只是资料刷新
+    assert.equal(appCfg._hasUnopenedNotice(), true, '同一身份的资料刷新不该把红点抹掉');
+    appCfg.updateLoginStatus({ id: 8, nickname: '张三' }, 'tok-2');   // 换账号: 旧读数属于上一个身份
+    assert.equal(appCfg._hasUnopenedNotice(), false, '换账号后未读数必须归零');
+  } finally {
+    dropMiniProgramStubs();
+  }
 
   // 服务端不可用 / 老版本: 记 0 灭掉红点, 不沿用旧值
   appCfg.api.request = () => Promise.reject(new Error('offline'));

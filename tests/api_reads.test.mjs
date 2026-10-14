@@ -149,7 +149,8 @@ test('公告: 只有 message 键, 带 pageSize, level_text 映射, 未登录不�
   assert.equal(data.page_size, 10);
   assert.equal(data.has_more, false);
   assert.equal(data.list[0].level_text, '提醒');
-  assert.equal(data.list[0].published_at, '2026-10-01');
+  // 2.5.9 起发布时间给到秒(改前只到日期, 端上看着像"这条公告没写时间"); 库里的字符串就是业务时区, 原样切 19 位
+  assert.equal(data.list[0].published_at, '2026-10-01 09:00:00');
   assert.ok(!('is_read' in data.list[0]));
 });
 
@@ -187,35 +188,44 @@ test('公告未读: 未登录回 200+"未登录"(旧站口径); 标记已读需�
   assert.equal(read.data.unread_count, 1);
 });
 
-test('定向公告(2.5.7): 列表与未读数都按「全体 OR 只给我」过滤, 未登录按游客 0 算', async () => {
-  const noticeCalls = [];
-  const { env } = makeEnv({
-    db: (sql, args) => {
-      if (/FROM users WHERE token=/i.test(sql)) return USER_ROW;
-      if (/FROM app_notices/i.test(sql)) {
-        noticeCalls.push({ sql, args });
-        return /COUNT\(\*\)/i.test(sql) ? { c: 0 } : { all: [] };
+test('公告接收人(2.5.9): 四档可见性由一条 OR 查询判定, 未登录按游客 -1 算', async () => {
+  // 每次请求单独一个 env: 同一条可见性 SQL 被列表 / 计数 / 未读三处复用, 要能按"谁在看"分辨占位符
+  const runsFor = async (path, userRow) => {
+    const { env, calls } = makeEnv({
+      db: (sql) => {
+        if (/FROM users WHERE token=/i.test(sql)) return userRow;
+        if (/FROM app_notices/i.test(sql)) return /COUNT\(\*\)/i.test(sql) ? { c: 0 } : { all: [] };
+        if (/FROM app_notice_reads/i.test(sql)) return { all: [] };
+        return null;
       }
-      if (/FROM app_notice_reads/i.test(sql)) return { all: [] };
-      return null;
-    }
+    });
+    await getJson(path, env);
+    return calls.filter((call) => /FROM app_notices/i.test(call.sql));
+  };
+  // 0=所有用户 / 1=内部测试 / 2=普通用户 / 3=指定用户(target_user_id); 前两档按观看者档位判定
+  const VISIBLE = /\(receiver_type=0 OR \(receiver_type=1 AND \?=1\) OR \(receiver_type=2 AND \?=0\) OR \(receiver_type=3 AND target_user_id=\?\)\)/;
+
+  // 游客: 计数 + 列表两条都要带可见性条件; 档位 -1, 用户 id 0 —— 两个"按用户类型"的分支都命中不了
+  const guest = await runsFor('/content/get_notices?page=1&page_size=10', null);
+  assert.equal(guest.length, 2, '游客要查计数 + 列表两条');
+  guest.forEach((call) => {
+    assert.match(call.sql, VISIBLE, call.sql);
+    assert.deepEqual(call.args.slice(2, 4), [-1, -1], '游客档位 = -1(只看得到"所有用户"的公告)');
+    assert.equal(call.args[4], 0, '游客没有 user id, 按 0 算');
   });
 
-  await getJson('/content/get_notices?page=1&page_size=10', env);
-  await getJson('/content/get_notice_unread?token=tok-1', env);
+  // 普通用户: 两个档位占位符都是 0, 收件人 id 取 token 反查出的用户
+  const normal = await runsFor('/content/get_notice_unread?token=tok-1', USER_ROW);
+  assert.equal(normal.length, 1, '未读只查一条 id 列表');
+  assert.match(normal[0].sql, VISIBLE, normal[0].sql);
+  assert.deepEqual(normal[0].args.slice(2, 4), [0, 0], '普通用户档位 = 0');
+  assert.equal(normal[0].args[4], USER_ROW.id, '收件人只能是 token 解析出的用户');
+  assert.equal(normal[0].args[5], 200, '未读 id 列表仍封顶 200');
 
-  // 三条查询都要带上收件人条件 —— 少一条, 定向消息就会漏给别人或串到自己头上
-  assert.equal(noticeCalls.length, 3, '游客列表 / 游客计数 / 已登录未读列表');
-  noticeCalls.forEach((call) => {
-    assert.ok(/target_user_id IS NULL OR target_user_id = \?/.test(call.sql), call.sql);
-  });
-  // 占位符顺序: 生效区间(start_at/end_at) → 收件人; 未登录时收件人按 0 算(只可能命中全体公告)
-  const [countCall, listCall, unreadCall] = noticeCalls;
-  assert.ok(/COUNT\(\*\)/i.test(countCall.sql) && countCall.args[2] === 0, '游客计数: 收件人 0');
-  assert.ok(/LIMIT \? OFFSET \?/i.test(listCall.sql) && listCall.args[2] === 0, '游客列表: 收件人 0');
-  assert.ok(/SELECT id FROM app_notices/i.test(unreadCall.sql), '第三条是未读 id 查询');
-  assert.equal(unreadCall.args[2], USER_ROW.id, '已登录: 收件人是 token 解析出的用户');
-  assert.equal(unreadCall.args[3], 200, '未读 id 列表仍封顶 200');
+  // 内部测试用户: 档位 1 —— 不区分的话"仅内部测试可见"的公告永远发不出去
+  const trusted = await runsFor('/content/get_notice_unread?token=tok-trusted', TRUSTED_USER_ROW);
+  assert.deepEqual(trusted[0].args.slice(2, 4), [1, 1], '内部测试用户档位 = 1');
+  assert.equal(trusted[0].args[4], TRUSTED_USER_ROW.id);
 });
 
 test('应用配置: message 键 + timestamp, 表空时回退内置内容', async () => {

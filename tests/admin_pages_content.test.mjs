@@ -79,6 +79,74 @@ test('公告编辑: 保存成功时 link_type 由跳转地址派生, 时间归�
   assert.equal(insert.args[5], '2026-10-10 10:00:00', 'datetime-local 的 T 要归一(否则公告永不生效)');
 });
 
+test('公告列表(2.5.9): 接收人列显示发给谁, 可按接收人筛选', async () => {
+  const { env, state } = makeAdminEnv({
+    rows: {
+      app_notices: [
+        Object.assign({}, NOTICE, { id: 8, receiver_type: 0 }),
+        Object.assign({}, NOTICE, { id: 9, receiver_type: 3, target_user_id: 7 }),
+        Object.assign({}, NOTICE, { id: 10, receiver_type: 1 })
+      ],
+      users: [{ id: 7, nickname: '老王', username: 'wx_a' }]
+    },
+    counts: { app_notices: 3 }
+  });
+  const cookie = await loginCookie(env);
+  const html = await (await get('/admin/notice_manage?receiver=3', env, cookie)).text();
+  // 四种接收人都要出现在筛选按钮里, 缺一个就等于筛不出来
+  for (const label of ['所有用户', '内部测试用户', '普通用户', '指定用户']) {
+    assert.ok(html.includes(label), `筛选缺少「${label}」`);
+  }
+  assert.ok(html.includes('老王'), '「指定用户」的公告要显示发给谁(否则列表里看不出收件人)');
+  const count = findCall(state, /COUNT\(\*\) AS total FROM app_notices/i);
+  assert.ok(/receiver_type = \?/.test(count.sql), count.sql);
+  assert.deepEqual(count.args, [3]);
+});
+
+test('公告编辑(2.5.9): 接收人卡片仅超管可见, 选「指定用户」必须勾人', async () => {
+  const { env, state } = makeAdminEnv({
+    rows: { users: [{ id: 7, nickname: '老王', username: 'wx_a', avatar: '', is_trusted: 0 }] }
+  });
+  const cookie = await loginCookie(env);
+  const html = await (await get('/admin/notice_edit?id=0', env, cookie)).text();
+  assert.ok(html.includes('name="receiver_type"'), '超管可改接收人');
+  assert.ok(html.includes('name="target_user_id"'), '要能勾选具体用户');
+
+  // 选了「指定用户」却没勾人 → 拦下, 不落库(否则这条公告谁都收不到)
+  const bad = await post('/admin/notice_edit?id=0',
+    { title: '定向公告', level: 'info', receiver_type: '3', status: '1' }, env, cookie);
+  assert.equal(bad.status, 200);
+  assert.ok((await bad.text()).includes('必须选一位用户'));
+  assert.equal(findCall(state, /INSERT INTO app_notices/i), null);
+
+  const saved = await post('/admin/notice_edit?id=0',
+    { title: '定向公告', level: 'info', receiver_type: '3', target_user_id: '7', status: '1' }, env, cookie);
+  assert.equal(saved.status, 302);
+  const insert = findCall(state, /INSERT INTO app_notices/i);
+  assert.equal(insert.args[9], 3, 'receiver_type=3(指定用户)');
+  assert.equal(insert.args[10], 7, 'target_user_id = 勾选的用户');
+});
+
+test('公告编辑(2.5.9): 非超管改正文不会把定向公告重置成「所有用户」', async () => {
+  const { env, state } = makeAdminEnv({
+    // 非超管: 本项目的超管口径是 role 为 super/admin, 所以这里用 normal
+    role: 'normal',
+    db: (sql, args, kind) => (kind === 'first' && /FROM app_notices WHERE id = \?/i.test(sql)
+      ? Object.assign({}, NOTICE, { receiver_type: 3, target_user_id: 7 }) : undefined)
+  });
+  const cookie = await loginCookie(env);
+  const html = await (await get('/admin/notice_edit?id=8', env, cookie)).text();
+  assert.ok(!html.includes('name="receiver_type"'), '接收人只给超管改');
+  assert.ok(html.includes('接收人：指定用户'), '非超管也要看得到这条公告发给谁');
+
+  const res = await post('/admin/notice_edit?id=8',
+    { title: '改个标题', level: 'info', receiver_type: '0', status: '1' }, env, cookie);
+  assert.equal(res.status, 302);
+  const update = findCall(state, /UPDATE app_notices SET/i);
+  assert.equal(update.args[9], 3, '提交里塞了 receiver_type=0 也要保留库里的 3');
+  assert.equal(update.args[10], 7);
+});
+
 test('分类列表: 显示笔记数与首页引用, 并对未登记分类给黄框', async () => {
   const { env, state } = makeAdminEnv({
     rows: { app_categories: CATEGORY_ROWS },

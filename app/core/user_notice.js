@@ -1,7 +1,7 @@
 // 给某个用户发一条"定向公告"(系统消息) —— 全站唯一写入口(cfapi 2.5.7 / 小程序 4.5.1)
 //
 // 为什么不另建一张"系统消息"表: 公告页、未读红点、已读落库(app_notice_reads)都已经是现成的,
-// 定向消息只是把可见范围收窄到一个人(app_notices.target_user_id 非空);
+// 定向消息只是把可见范围收窄到一个人(2.5.9 起为 receiver_type=3 + app_notices.target_user_id);
 // 另建一张表就得在小程序里再写一套"列表 + 红点 + 已读", 与项目"单点维护"的约定相悖。
 import { beijingNow } from './timeutil.js';
 import { logError } from './logging.js';
@@ -30,11 +30,12 @@ export async function pushUserNotice(env, userId, notice) {
   try {
     const results = await env.DB.batch([
       // 删已读行用子查询而不是"先查 id 再拼 IN": 免去 D1"单条语句最多 100 个绑定参数"的坑
-      env.DB.prepare('DELETE FROM app_notice_reads WHERE notice_id IN (SELECT id FROM app_notices WHERE target_user_id=?)').bind(uid),
-      env.DB.prepare('DELETE FROM app_notices WHERE target_user_id=?').bind(uid),
+      env.DB.prepare('DELETE FROM app_notice_reads WHERE notice_id IN (SELECT id FROM app_notices WHERE receiver_type=3 AND target_user_id=?)').bind(uid),
+      env.DB.prepare('DELETE FROM app_notices WHERE receiver_type=3 AND target_user_id=?').bind(uid),
+      // receiver_type=3(指定用户, 2.5.9): 与后台"接收人=指定用户"同一套语义, 定向消息和普通公告从此共用一个字段判定
       env.DB.prepare(
-        'INSERT INTO app_notices (title, content, level, link_type, link_value, sort_order, status, target_user_id, create_time)'
-        + " VALUES (?,?,?,'','',0,1,?,?)"
+        'INSERT INTO app_notices (title, content, level, link_type, link_value, sort_order, status, receiver_type, target_user_id, create_time)'
+        + " VALUES (?,?,?,'','',0,1,3,?,?)"
       ).bind(title, String(payload.content || ''), LEVEL, uid, beijingNow())
     ]);
     const inserted = results && results[results.length - 1];
