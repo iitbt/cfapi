@@ -13,6 +13,27 @@ const LEVEL_TEXT = { info: '公告', warning: '提醒', important: '重要' };
 const BANNERS_CACHE_TTL_MS = 30 * 1000;
 //: 未读公告只要 id 列表, 封顶 200 条: 公告是运营内容, 不会同时上线几百条, 而改前没有 LIMIT
 const UNREAD_NOTICE_LIMIT = 200;
+// 公告可见性(2.5.7): 全体公告 + 只发给自己的定向消息; 未登录时 userId=0 → 只看全体
+// 用一条 OR 查询而不拆两次: 公告量很小(运营内容), 这样列表与计数口径一致, 也不会打乱分页
+const NOTICE_VISIBLE_SQL = '(target_user_id IS NULL OR target_user_id = ?)';
+// 生效中的公告(启用 + 在生效区间内), 占位符顺序: start_at, end_at
+const NOTICE_ACTIVE_SQL = "status=1 AND (start_at IS NULL OR start_at='' OR start_at<=?) AND (end_at IS NULL OR end_at='' OR end_at>=?)";
+
+/**
+ * 当前用户"看得到、还没读过"的公告 id(倒序, 封顶 UNREAD_NOTICE_LIMIT)。
+ * /content/get_notice_unread 与 /content/notice_read 共用这一份口径 ——
+ * 旧实现里 notice_read 回的是"全体公告数 - 我的已读行数", 有了定向公告后那个减法会把别人的消息算成我的未读。
+ */
+async function unreadNoticeIds(env, userId) {
+  const now = beijingNow();
+  const [rows, readRows] = await Promise.all([
+    all(env, `SELECT id FROM app_notices WHERE ${NOTICE_ACTIVE_SQL} AND ${NOTICE_VISIBLE_SQL} ORDER BY id DESC LIMIT ?`,
+      now, now, userId, UNREAD_NOTICE_LIMIT),
+    all(env, 'SELECT notice_id FROM app_notice_reads WHERE user_id=?', userId)
+  ]);
+  const readSet = new Set(readRows.map((row) => Number(row.notice_id)));
+  return rows.map((row) => Number(row.id)).filter((id) => !readSet.has(id));
+}
 const VIDEO_TABLES = ['outdoor_activities', 'motorcycle_trips'];
 const COLUMNS = {
   outdoor_activities: 'id,title,description,date,location,poster,videoUrl,created_at,updated_at',
@@ -109,13 +130,17 @@ export function registerContentRoutes(router) {
       let size = intOf(body.page_size || body.pageSize || body.limit, 10);
       if (size < 1) size = 10;
       if (size > 20) size = 20;
+      // 先认人再查列表: 可见性(定向消息)与 is_read 都要按"当前用户"算, 顺手避免 currentUser 查两遍
+      const token = tokenOf(request, body);
+      const user = token ? await currentUser(env, request, body) : null;
+      const userId = user ? (Number(user.id) || 0) : 0;
       const now = beijingNow();
-      const where = "status=1 AND (start_at IS NULL OR start_at='' OR start_at<=?) AND (end_at IS NULL OR end_at='' OR end_at>=?)";
-      const total = Number((await one(env, `SELECT COUNT(*) AS c FROM app_notices WHERE ${where}`, now, now)).c) || 0;
+      const where = `${NOTICE_ACTIVE_SQL} AND ${NOTICE_VISIBLE_SQL}`;
+      const total = Number((await one(env, `SELECT COUNT(*) AS c FROM app_notices WHERE ${where}`, now, now, userId)).c) || 0;
       const rows = await all(
         env,
         `SELECT id,title,content,level,link_type,link_value,create_time FROM app_notices WHERE ${where} ORDER BY sort_order ASC, id DESC LIMIT ? OFFSET ?`,
-        now, now, size, (page - 1) * size
+        now, now, userId, size, (page - 1) * size
       );
       const list = rows.map((row) => {
         const level = LEVEL_TEXT[row.level] ? row.level : 'info';
@@ -131,20 +156,16 @@ export function registerContentRoutes(router) {
           published_at: datePart(row.create_time)
         };
       });
-      // 有有效 token 时才追加 is_read(旧站行为: 否则键不存在)
-      const token = tokenOf(request, body);
-      if (token) {
-        const user = await currentUser(env, request, body);
-        if (user && list.length) {
-          const marks = list.map(() => '?').join(',');
-          const readRows = await all(
-            env,
-            `SELECT notice_id FROM app_notice_reads WHERE user_id=? AND notice_id IN (${marks})`,
-            user.id, ...list.map((item) => item.id)
-          );
-          const readSet = new Set(readRows.map((row) => Number(row.notice_id)));
-          list.forEach((item) => { item.is_read = readSet.has(Number(item.id)); });
-        }
+      // 有有效 token 时才追加 is_read(旧站行为: 否则键不存在); user 上面已经查过, 这里不再重复查
+      if (user && list.length) {
+        const marks = list.map(() => '?').join(',');
+        const readRows = await all(
+          env,
+          `SELECT notice_id FROM app_notice_reads WHERE user_id=? AND notice_id IN (${marks})`,
+          user.id, ...list.map((item) => item.id)
+        );
+        const readSet = new Set(readRows.map((row) => Number(row.notice_id)));
+        list.forEach((item) => { item.is_read = readSet.has(Number(item.id)); });
       }
       return okMessage({
         list,
@@ -167,19 +188,12 @@ export function registerContentRoutes(router) {
     if (!tokenOf(request, body)) return ok({ unread_count: 0, ids: [] }, '未登录');
     const user = await currentUser(env, request, body);
     if (!user) return fail(401, '登录已过期，请重新登录');
-    const now = beijingNow();
     try {
-      // 两条互不依赖 → 并发(少一次 D1 往返); 公告 id 列表封顶 200 条(见 UNREAD_NOTICE_LIMIT 说明)
-      const [rows, readRows] = await Promise.all([
-        all(env,
-          "SELECT id FROM app_notices WHERE status=1 AND (start_at IS NULL OR start_at='' OR start_at<=?) AND (end_at IS NULL OR end_at='' OR end_at>=?) ORDER BY id DESC LIMIT ?",
-          now, now, UNREAD_NOTICE_LIMIT),
-        all(env, 'SELECT notice_id FROM app_notice_reads WHERE user_id=?', user.id)
-      ]);
-      const readSet = new Set(readRows.map((row) => Number(row.notice_id)));
-      const ids = rows.map((row) => Number(row.id)).filter((id) => !readSet.has(id));
+      // 与 notice_read 共用 unreadNoticeIds: 两处口径必须一致, 否则红点会"消不掉"或"点了还在"
+      const ids = await unreadNoticeIds(env, Number(user.id) || 0);
       return ok({ unread_count: ids.length, ids }, '获取未读公告成功');
     } catch (error) {
+      logError('content.notice_unread_failed', error);
       return fail(500, '获取未读公告失败，请稍后重试');
     }
   });
@@ -201,13 +215,15 @@ export function registerContentRoutes(router) {
     } catch (error) {
       return fail(500, '操作失败，请稍后重试');
     }
-    const now = beijingNow();
-    const total = Number((await one(
-      env,
-      "SELECT COUNT(*) AS c FROM app_notices WHERE status=1 AND (start_at IS NULL OR start_at='' OR start_at<=?) AND (end_at IS NULL OR end_at='' OR end_at>=?)",
-      now, now
-    )).c) || 0;
-    const readCount = Number((await one(env, 'SELECT COUNT(*) AS c FROM app_notice_reads WHERE user_id=?', user.id)).c) || 0;
-    return ok({ notice_id: noticeId, unread_count: Math.max(0, total - readCount) }, '已标记为已读');
+    // 未读数按"可见且未读"重算(见 unreadNoticeIds): 改前用"全体公告数 - 我的已读行数",
+    // 有了定向公告后会把别人的定向消息算成我的未读, 红点永远消不掉
+    try {
+      const ids = await unreadNoticeIds(env, Number(user.id) || 0);
+      return ok({ notice_id: noticeId, unread_count: ids.length }, '已标记为已读');
+    } catch (error) {
+      logError('content.notice_read_count_failed', error);
+      // 标记本身已写入, 这里只是回不出准确未读数: 不报错, 让小程序先按"0"清红点, 下次进页面会重算
+      return ok({ notice_id: noticeId, unread_count: 0 }, '已标记为已读');
+    }
   });
 }

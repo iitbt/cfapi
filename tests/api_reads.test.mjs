@@ -187,6 +187,37 @@ test('公告未读: 未登录回 200+"未登录"(旧站口径); 标记已读需�
   assert.equal(read.data.unread_count, 1);
 });
 
+test('定向公告(2.5.7): 列表与未读数都按「全体 OR 只给我」过滤, 未登录按游客 0 算', async () => {
+  const noticeCalls = [];
+  const { env } = makeEnv({
+    db: (sql, args) => {
+      if (/FROM users WHERE token=/i.test(sql)) return USER_ROW;
+      if (/FROM app_notices/i.test(sql)) {
+        noticeCalls.push({ sql, args });
+        return /COUNT\(\*\)/i.test(sql) ? { c: 0 } : { all: [] };
+      }
+      if (/FROM app_notice_reads/i.test(sql)) return { all: [] };
+      return null;
+    }
+  });
+
+  await getJson('/content/get_notices?page=1&page_size=10', env);
+  await getJson('/content/get_notice_unread?token=tok-1', env);
+
+  // 三条查询都要带上收件人条件 —— 少一条, 定向消息就会漏给别人或串到自己头上
+  assert.equal(noticeCalls.length, 3, '游客列表 / 游客计数 / 已登录未读列表');
+  noticeCalls.forEach((call) => {
+    assert.ok(/target_user_id IS NULL OR target_user_id = \?/.test(call.sql), call.sql);
+  });
+  // 占位符顺序: 生效区间(start_at/end_at) → 收件人; 未登录时收件人按 0 算(只可能命中全体公告)
+  const [countCall, listCall, unreadCall] = noticeCalls;
+  assert.ok(/COUNT\(\*\)/i.test(countCall.sql) && countCall.args[2] === 0, '游客计数: 收件人 0');
+  assert.ok(/LIMIT \? OFFSET \?/i.test(listCall.sql) && listCall.args[2] === 0, '游客列表: 收件人 0');
+  assert.ok(/SELECT id FROM app_notices/i.test(unreadCall.sql), '第三条是未读 id 查询');
+  assert.equal(unreadCall.args[2], USER_ROW.id, '已登录: 收件人是 token 解析出的用户');
+  assert.equal(unreadCall.args[3], 200, '未读 id 列表仍封顶 200');
+});
+
 test('应用配置: message 键 + timestamp, 表空时回退内置内容', async () => {
   const { env } = makeEnv({ db: () => null });
   const body = await getJson('/config/get_app_config', env);

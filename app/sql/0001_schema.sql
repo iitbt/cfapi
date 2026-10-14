@@ -70,6 +70,8 @@ CREATE TABLE app_notices (
   end_at TEXT,                               -- 生效结束时间(空=不限)
   sort_order INTEGER NOT NULL DEFAULT 0,
   status INTEGER NOT NULL DEFAULT 1,
+  -- 定向公告(2.5.7): 非空 = 只发给这个用户(系统消息, 如"内部测试申请已通过"), NULL = 全体公告(与历史数据同义)
+  target_user_id INTEGER,
   create_time TEXT DEFAULT (datetime('now','+8 hours')),
   update_time TEXT
 );

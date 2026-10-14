@@ -1,6 +1,6 @@
 # 狼牙极限运动笔记 · 主后端（cfapi / Cloudflare Workers）
 
-> **版本**：`v2.5.6` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
+> **版本**：`v2.5.7` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
 > **主域名**：**https://lyjx.250036.xyz**（对外 API + `/admin` 管理后台同一域名）。
 > **素材域名**：**https://storage.250036.xyz**（R2 公开域，与接口域名分离）。
 > **定位**：微信小程序「狼牙极限运动笔记」的**主要后端**。今后小程序的开发、接口变更、联调、发版均以本工程为准；FastAPI 工程（`../fastapi/`）为**备用后端**。
@@ -142,6 +142,7 @@ cfapi/
 | `md5.js` | 自带 MD5（仅用于生成 `wx_<md5(openid)>` 用户名前缀） |
 | `media_scheme.js` | 素材地址拼装 `assetUrl`/`iconAssetUrl`/`putObject` |
 | `timeutil.js` | 全站东八区时间口径 |
+| `user_notice.js` | **定向公告（系统消息）唯一写入口** `pushUserNotice(env, userId, {title, content})`：给某个用户发一条只他可见的公告（`app_notices.target_user_id`），覆盖式（先删该用户旧的那条+它的已读行，再插新的，三条语句走一次 `batch`）。失败只记日志不抛 —— 公告只是通知，不能把管理员刚做完的身份变更报成失败 |
 | `wechat.js` | 微信 `code2session` / `access_token` 缓存（D1）/ 昵称安全送审 |
 | `sanitize.js` | 富文本白名单净化 + 图片与视频封面改绝对地址 |
 | `overview.js` | 表行数 / 核心计数唯一实现（须排除 D1 内部表，逐表 COUNT） |
@@ -204,7 +205,7 @@ cfapi/
 | `settings.js` | 管理员设置：改自己资料 / 改自己口令 |
 | `systemInfo.js` | 系统信息：运行环境 / 表数量 / 记录数 / 素材占用 |
 | `topics.js` | 专题精选（摩旅 / 户外）：聚合列表 / 编辑 / 预览 / 删除 |
-| `users.js` | 用户管理：列表（可按「仅已申请」筛选，类型列显示「已申请」徽章）/ 详情 / 设内部测试（同时清申请标记）/ 恢复 / 删除。**用户可自助撤回**：待审批撤回=徽章消失，已通过后撤回=「类型」列回到「普通 微信」，管理员无需清理 |
+| `users.js` | 用户管理：列表（可按「仅已申请」筛选，类型列显示「已申请」徽章）/ 详情 / 设内部测试（同时清申请标记）/ 恢复 / 删除。**用户可自助撤回**：待审批撤回=徽章消失，已通过后撤回=「类型」列回到「普通 微信」，管理员无需清理。**设/取消内部测试后自动给本人发一条定向公告**（「内部测试申请已通过」/「内部测试已取消」，走 `core/user_notice.js`）—— 用户在小程序「通知公告」页与公告红点处收到 |
 
 `static/js/`（页面脚本，全部打包进 `assets/static-assets.js`；引用一律走 `partials.js` 的 `staticScript`，带 `?v=<API_VERSION>`）：
 
@@ -248,6 +249,7 @@ cfapi/
 | `npm run schema:local` / `schema:remote` | 依次执行 5 个 `app/sql/*.sql` 建表（`0001`~`0005`，本地 / 远程 D1） |
 | `npm run schema:notnull` | **老库专用**：单独执行 `0006_news_notnull_rebuild.sql`（会重建 4 张表，**执行前先备份**，见该文件头）。**故意不并进 `schema:remote`** —— 它重建表，不能在普通部署里顺手带上 |
 | `npm run schema:testapply` | **老库专用（2.5.3 起）**：单独执行 `0007_user_test_applied.sql`，给 `users` 加 `test_applied` 列（`ALTER TABLE ADD COLUMN` **不幂等**，只跑一次；新建库已含该列，不用跑） |
+| `npm run schema:noticetarget` | **老库专用（2.5.7 起）**：单独执行 `0008_notice_target.sql`，给 `app_notices` 加 `target_user_id` 列（定向公告用；同样 **不幂等**，只跑一次；新建库已含该列，不用跑） |
 | `npm run secrets:put` | `wrangler secret bulk .secrets.json`（推 3 个密文） |
 | `npm run deploy` | `wrangler deploy` |
 
@@ -334,6 +336,12 @@ cfapi/
 > - 管理员在 `/admin/users` 看到「已申请」徽章（下拉可筛「仅已申请」）→ 点【设为内部测试】后 `is_trusted=1`、`test_applied=0`（申请已处理，徽章消失）；用户撤回后徽章同样消失、已通过后退回则「类型」列从「内部测试 微信」回到「普通 微信」（列表读的就是这两个字段，**管理员不需要做任何清理动作**）；
 > - `test_applied` 与 `is_trusted` 随 `/user/login`、`/user/get_user_info` 一起下发，小程序据此决定点【申请测试】后弹哪一条、显示哪张图标（菜单文案不变）。
 > - **身份状态不缓存（2.5.6 复核）**：`/user/get_user_info` 每次都按 token 直查 `users` 表（`app/api/helpers.js::userByToken`，`SELECT * FROM users WHERE token=?`，无内存/KV/CDN 缓存层），所以管理员在后台改完 `is_trusted` 后，端上只要重新拉一次资料就能拿到最新身份 —— **不需要刷新接口、不需要额外状态字段**。2.5.6 本身没有接口改动（仅版本号对齐 + 本条说明）；若日后给用户资料加服务端缓存，必须同时提供失效手段，否则端上会出现"重进/下拉也拉不到新身份"。
+> - **定向公告：管理员设/取消内部测试 → 本人收到一条系统消息（2.5.7）**：不新增接口、也不新增表 —— 复用 `app_notices`，用 `target_user_id` 表示"只发给这个用户"（NULL = 全体公告，与历史数据同义）。管理员点【设为内部测试】/【取消内部测试】后，后端经 `app/core/user_notice.js::pushUserNotice` 插入一条（级别 fixed `important`，标题「内部测试申请已通过」/「内部测试已取消」），用户在小程序「通知公告」页看到它，并在「我的」页公告菜单亮红点。要点：
+>   - **可见性与未读口径收窄**：`/content/get_notices`、`/content/get_notice_unread`、`/content/notice_read` 三条路径统一按 `target_user_id IS NULL OR target_user_id = 当前用户` 过滤（未登录按游客 `0` 算，只看全体公告）。改造前 `notice_read` 回的是"全体公告数 − 我的已读行数"，引入定向公告后那个减法会把**别人的**定向消息算成我的未读，红点永远消不掉 —— 2.5.7 起 `get_notice_unread` 与 `notice_read` 共用同一份口径 `unreadNoticeIds()`。
+>   - **覆盖式**：同一用户只保留最新一条定向消息（先删旧的那条 + 它的已读行，再插新的）。否则"已通过"和"已取消"会同时躺在公告页互相矛盾，反复设置还会越堆越多。
+>   - **发消息失败不回滚身份变更**：写公告的三条语句走一次 `batch`，失败只记 `notice.push_user_notice_failed` 日志。
+>   - **老库升级（2.5.7）**：先跑一次 `npm run schema:noticetarget` 给 `app_notices` 加列，否则公告相关接口与后台用户页会报 `no such column: target_user_id`。
+>   - **小程序侧（4.5.1）**：`app.js` 的公告"秒开"缓存原先**不按身份区分**，定向消息是私有内容，退出/换账号/掉线时已改为清空该缓存（`clearNoticeCache`），否则上一个账号的系统消息会显示给下一个人。
 
 **笔记类**
 
@@ -348,7 +356,7 @@ cfapi/
 | ANY | `/news/check_user_action` | 行为状态（4 个 bool + 计数）。**身份只认 token**：游客 / 失效 token 一律返回全 `false`，`body.user_id` 被忽略（不再拿客户端传来的 id 查库） |
 | POST | `/news/check_user_like_batch` | 批量点赞态（≤200 个）。必带 token（身份由它反查），只需 `news_ids`；旧客户端多传 `user_id` 仍兼容（与 token 用户不一致才 403） |
 
-**内容类（ANY）**：`/content/get_banners`、`/content/get_outdoor`、`/content/get_motorcycle`（户外/摩旅专题分页）、`/content/get_notices`（公告分页，带 `is_read`）、`/content/get_notice_unread`（未读数）、`/content/notice_read`（标记已读）。
+**内容类（ANY）**：`/content/get_banners`、`/content/get_outdoor`、`/content/get_motorcycle`（户外/摩旅专题分页）、`/content/get_notices`（公告分页，带 `is_read`；**按 token 过滤定向公告**）、`/content/get_notice_unread`（未读数；口径同上）、`/content/notice_read`（标记已读，回包里的 `unread_count` 与未读数接口同口径）。
 
 **配置类（ANY）**：`/config/get_app_config`（返回 `categories/home_sections/featured/version/texts/menu` + `timestamp`，用 `message` 键）。六块数据彼此无依赖，**并发查库**（耗时 ≈ 最慢的一条，而不是六条之和；失败仍各自回退内置兜底）。
 
@@ -369,7 +377,7 @@ cfapi/
 | --- | --- | --- |
 | 技术栈 | Cloudflare Workers + D1 + R2，零运行时依赖 | Python + FastAPI + SQLite/MySQL（双驱动） |
 | 域名 | `lyjx.250036.xyz` | `api0.250036.xyz`、`api.250036.xyz` |
-| 版本号 | `API_VERSION=2.5.6` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.5.0`） |
+| 版本号 | `API_VERSION=2.5.7` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.5.1`） |
 | 接口 | 34 条业务接口已全量实现并自测 | 历史「唯一后端」，接口同构可互切（**缺 `/user/apply_test` 与 `test_applied`**） |
 | 后台 | 17 页面（字符串拼 HTML） | 同样 17+ 模块（Jinja2 服务端渲染） |
 | 口令哈希 | PBKDF2-SHA256（Workers CPU 限制，不用 bcrypt） | bcrypt |
@@ -400,6 +408,8 @@ cfapi/
 7. **测试**：`npm test` 跑 `node --test`（桩模拟 D1/R2），不连外网；`tools/live_smoke.mjs` 跑真实数据端到端冒烟。
 8. **用户申请（或撤回）内部测试但群里没消息**：先看 `wrangler.toml` 的 `WXWORK_WEBHOOK_KEY` 是否配了（空 = 不发，且不报错）；再按 `user.test_apply_notify_rejected` / `user.test_apply_notify_failed` 日志排查（企业微信失败时 HTTP 仍是 200，错误在 `errcode`，日志带 `kind=apply|cancel`）。**通知发不出去不影响用户那边的结果**，后台照样能看到「已申请」徽章的出现与消失。
 9. **老库升级到 2.5.3**：先跑一次 `npm run schema:testapply` 加 `users.test_applied` 列，否则 `/user/apply_test` 与后台用户列表会报 `no such column`。该脚本不幂等，只跑一次。
+10. **老库升级到 2.5.7**：先跑一次 `npm run schema:noticetarget` 加 `app_notices.target_user_id` 列，否则公告接口（`/content/get_notices` 等）会报 `no such column: target_user_id`。同样不幂等，只跑一次。
+11. **用户说"设了内部测试但小程序里没收到消息"**：先看公告页是否拉到那一页（定向消息也占一条，排在 `sort_order` 相同的公告之前）、再看「我的」页公告红点；后端侧按 `notice.push_user_notice_failed` 日志排查，并确认老库已跑 `schema:noticetarget`。**发消息失败不影响身份变更本身**（列表里的「内部测试」徽章照样会出现）。
 8. **线上"又慢了"先看状态页的「D1 响应」**：它是一次真实 D1 往返的耗时（基线约 240ms）。接口/页面的耗时 ≈ **串行轮数 × 它**，所以"多了几百毫秒"基本都是多了一轮串行查询，而不是单条 SQL 变慢。
 9. **怎么量"串行轮数"**：本地用 `tests/stub.mjs` / `tests/admin_stub.mjs` 的桩，把每条 D1 语句包一层 `await sleep(240)`，再跑一次该页面/接口 —— `耗时 ÷ 240ms` 就是串行轮数（后台全部 GET 路径可从 `app/admin/pages/index.js` 的 `PAGE_ROUTES` 列出来）。2.5.2 的对照：控制面板 7 轮 → 2 轮、`/config/get_app_config` 6 轮 → 1 轮（命中缓存 0 轮）、`/news/list` 3 轮 → 1~2 轮、`/news/detail` 4 轮 → 2 轮。
 10. **配置类数据最多 30 秒延迟生效**：分类/首页板块/精选/文案/菜单/轮播图走 `core/ttlCache.js` 的 30 秒进程内缓存（跨 isolate 没法主动失效）。后台改完若在小程序侧没立刻看到，等半分钟或重启小程序再试。

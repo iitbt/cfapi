@@ -87,6 +87,33 @@ test('用户写操作: 设为内部测试 / 删除用户(级联) / 恢复账号'
   assert.ok(removed.headers.get('location').includes(encodeURIComponent('已全部删除')));
 });
 
+test('设/取消内部测试: 给本人发一条定向公告(覆盖式, 同一用户只留最新一条)', async () => {
+  const { env, state } = makeAdminEnv({
+    db: (sql, args, kind) => (kind === 'first' && /FROM users WHERE id = \?/i.test(sql) ? USER_ROW : undefined)
+  });
+  const cookie = await loginCookie(env);
+
+  const setRes = await post('/admin/users', { action: 'set_trusted', user_id: '7' }, env, cookie);
+  assert.equal(setRes.status, 302, '发公告失败也不能把身份变更报成失败');
+  // 先清旧的那条(连它的已读行) —— 否则"已通过"与"已取消"会同时躺在公告页里
+  assert.ok(findCall(state, /DELETE FROM app_notice_reads WHERE notice_id IN \(SELECT id FROM app_notices WHERE target_user_id=\?\)/i),
+    '要一并清掉旧定向消息的已读行(不然新消息的红点会被旧 id 的已读盖住)');
+  assert.ok(findCall(state, /DELETE FROM app_notices WHERE target_user_id=\?/i), '同一用户只保留最新一条');
+  const insert = findCall(state, /INSERT INTO app_notices/i);
+  assert.ok(insert, '要插入一条定向公告');
+  assert.match(insert.sql, /target_user_id/, '公告必须带上收件人');
+  assert.equal(insert.args[3], 7, '收件人 = 被操作的用户');
+  assert.equal(insert.args[2], 'important', '身份变更属于重要消息');
+  assert.ok(String(insert.args[0]).includes('内部测试申请已通过'), insert.args[0]);
+
+  // 取消内部测试 → 同样发一条(覆盖掉上一条)
+  const removeRes = await post('/admin/users', { action: 'remove_trusted', user_id: '7' }, env, cookie);
+  assert.equal(removeRes.status, 302);
+  const inserts = state.calls.filter((call) => /INSERT INTO app_notices/i.test(call.sql));
+  assert.equal(inserts.length, 2, '两次操作各发一条');
+  assert.ok(String(inserts[1].args[0]).includes('内部测试已取消'), inserts[1].args[0]);
+});
+
 test('用户详情: 缺 id 时给出明确文案', async () => {
   const { env } = makeAdminEnv();
   const cookie = await loginCookie(env);

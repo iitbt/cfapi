@@ -11,12 +11,27 @@ import { backButton, emptyRow, listShell, pagerScript, searchBar, searchInput, s
 import { json, redirect } from '../lib/http.js';
 import { listController } from '../lib/listPage.js';
 import {
-  PER_PAGE, auditLog, buildListUrl, clampPage, fmtDatetime, intOr, onceOrError, strOf
+  PER_PAGE, auditLog, buildListUrl, clampPage, fmtDatetime, intOr, invalidateEntityCache, onceOrError, strOf
 } from '../lib/utils.js';
+// 定向公告(4.5.1): 身份变更后给本人发一条系统消息(唯一写入口)
+import { pushUserNotice } from '../../core/user_notice.js';
 
 const MANAGE_URL = '/admin/users';
 const COLUMNS = ['ID', '用户', '昵称', '邮箱', '类型', '注册时间', '最近登录', '操作'];
 const TRUSTED_FILTERS = ['all', 'trusted', 'untrusted', 'applied'];
+
+// 身份变更回执文案(4.5.1): 管理员设/取消内部测试后, 用户在「通知公告」页收到的那条消息。
+// 写死在后端而不是让管理员手填 —— 这是"操作回执", 文案要全站一致, 也不能漏发。
+const TRUSTED_NOTICES = {
+  set_trusted: {
+    title: '内部测试申请已通过',
+    content: '管理员已通过你的内部测试申请。现在可以查看专题视频、留言免审，并使用「仅内部测试可见」的功能。'
+  },
+  remove_trusted: {
+    title: '内部测试已取消',
+    content: '管理员已取消你的内部测试身份。专题视频、留言免审与「仅内部测试可见」的功能将不再可用。'
+  }
+};
 
 // 账号状态: status!=0 → 已注销; status=0 且 deleted_at 非空 → 已恢复(曾被注销过)
 function accountStateOf(row) {
@@ -267,10 +282,15 @@ async function writeSubmit(ctx) {
     } else if (action === 'set_trusted') {
       // test_applied 一起清 0: 申请已处理, 列表不再显示「已申请」(用户端再点【申请测试】也就回到"申请"那条弹窗)
       await run(ctx.env, 'UPDATE users SET is_trusted = 1, test_applied = 0 WHERE id = ?', userId);
+      // 通知本人(4.5.1): 定向公告只发给这个用户; 发失败只记日志, 不回滚上面那次身份变更
+      await pushUserNotice(ctx.env, userId, TRUSTED_NOTICES.set_trusted);
+      invalidateEntityCache('notice');
       auditLog('admin.user.set_trusted', { user: ctx.session.username, user_id: userId });
       message = '已成功设置为内部测试用户';
     } else if (action === 'remove_trusted') {
       await run(ctx.env, 'UPDATE users SET is_trusted = 0 WHERE id = ?', userId);
+      await pushUserNotice(ctx.env, userId, TRUSTED_NOTICES.remove_trusted);
+      invalidateEntityCache('notice');
       auditLog('admin.user.remove_trusted', { user: ctx.session.username, user_id: userId });
       message = '已取消内部测试用户设置';
     } else if (action === 'restore_user') {
