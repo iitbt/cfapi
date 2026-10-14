@@ -160,15 +160,31 @@ test('列宽: .cell-title 是固定宽度(桌面 360 / 手机 200), 且生成物
   assert.ok(bundle.includes('.cell-title'), '生成物里要有这条样式(记得重跑 embed_admin_assets.mjs)');
 });
 
-test('公告收件人(2.6.0): 「指定用户」那段的显隐只写在 admin.css 一处, 且生成物里已带上', async () => {
+test('公告收件人(2.6.1): 「指定用户」那段的显隐只写在 admin.css 一处, 且生成物里已带上', async () => {
   const css = await readFile(new URL('../app/admin/static/css/admin.css', import.meta.url), 'utf8');
   // 显隐完全靠 radio 的兄弟选择器(见 pages/notices.js 的 receiverRadios): 规则一丢, 四档选哪个都会看到一个搜人框;
   // 把接收人换成下拉框也一样 —— select 的选中项命中不了 CSS 兄弟选择器, 所以这里必须钉住 radio 的写法
   assert.match(css, /\.notice-picker \{ display: none; \}/);
   assert.match(css, /#noticeReceiver3:checked ~ \.notice-picker \{ display: block; \}/);
+  // 平铺 radio 的两个补偿类: bootstrap 的 .form-check-input 带 float/margin-left(给 .form-check 容器留位置的),
+  // 没有这两条覆盖, radio 会浮到行外 —— 它们是"radio 与 .notice-picker 同级"这个前提的一部分
+  assert.match(css, /\.notice-radio \{ float: none;/);
+  assert.match(css, /\.notice-radio-label \{ margin-right: 1rem;/);
   // 改了 static/** 必须重跑 tools/embed_admin_assets.mjs, 否则线上拿到的还是旧样式
   const bundle = await readFile(new URL('../app/admin/assets/static-assets.js', import.meta.url), 'utf8');
-  assert.ok(bundle.includes('.notice-picker'), '生成物里要有这条样式(记得重跑 embed_admin_assets.mjs)');
+  assert.ok(bundle.includes('.notice-picker') && bundle.includes('.notice-radio'),
+    '生成物里要有这两条样式(记得重跑 embed_admin_assets.mjs)');
+});
+
+test('批量勾选脚本(2.6.1): 公告页与笔记页共用一份, 文案单位由表单的 data-unit 决定', async () => {
+  const batch = await readFile(new URL('../app/admin/static/js/news_batch.js', import.meta.url), 'utf8');
+  // 公告页没有"改状态"这类动作, 表单里不放 #batchAction —— 脚本必须容忍它缺失, 否则整段脚本在公告页报错后失效
+  assert.ok(batch.includes("getAttribute('data-unit')"), '文案单位要从表单读(data-unit), 不能写死"笔记"');
+  assert.ok(/if \(actionField\)/.test(batch), '公告页没有 #batchAction, 取不到时不能抛错');
+  assert.ok(batch.includes("form.submit()"), '仍走原生提交(不引入 fetch/AJAX)');
+  const bundle = await readFile(new URL('../app/admin/assets/static-assets.js', import.meta.url), 'utf8');
+  // 生成物是 JSON 字符串: 里面的单引号会被写成 \u0027, 所以只比对不带引号的片段
+  assert.ok(bundle.includes('data-unit'), '生成物要同步(记得重跑 embed_admin_assets.mjs)');
 });
 
 test('筛选组: 六个管理页共用 partials.filterButtons 一份实现(结构与留言管理页逐字一致)', async () => {

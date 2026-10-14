@@ -1,6 +1,6 @@
 # 狼牙极限运动笔记 · 主后端（cfapi / Cloudflare Workers）
 
-> **版本**：`v2.6.0` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
+> **版本**：`v2.6.1` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
 > **主域名**：**https://lyjx.250036.xyz**（对外 API + `/admin` 管理后台同一域名）。
 > **素材域名**：**https://storage.250036.xyz**（R2 公开域，与接口域名分离）。
 > **定位**：微信小程序「狼牙极限运动笔记」的**主要后端**。今后小程序的开发、接口变更、联调、发版均以本工程为准；FastAPI 工程（`../fastapi/`）为**备用后端**。
@@ -202,7 +202,7 @@ cfapi/
 | `media.js` | 素材上传 `POST /admin/image_upload` + 素材库 `GET /admin/media_library` |
 | `mediaGovern.js` | 素材库治理（R2 桶资源管理器：浏览/改名/复制/删除/引用检查，仅超管） |
 | `news.js` | 笔记管理：列表 / 发布编辑 / 预览 / 软删 / 复制 / 回收站 / 恢复 / 彻底删 |
-| `notices.js` | 通知公告：列表（可按接收人筛选）/ 编辑 / 删除。**接收人四档**（所有用户 / 内部测试用户 / 普通用户 / 指定用户）仅超管可改；选「指定用户」时用 `name=action value=search_user` 的普通提交按钮重画本页来搜人、用每位后面的「移除」按钮摘掉收件人（都不引入弹窗与接口），**2.6.0 起可一次指定多位**（同名多值 `target_user_id`，由 `app/admin/index.js` 的 `readForm` 拼成逗号串），非超管提交时保留库里的原接收人 |
+| `notices.js` | 通知公告：列表（可按接收人筛选 + **多选批量删除**，2.6.1）/ 编辑 / 删除。**接收人四档**（所有用户 / 内部测试用户 / 普通用户 / 指定用户）仅超管可改；选「指定用户」时用 `name=action value=search_user` 的普通提交按钮重画本页来搜人、用每位后面的「移除」按钮摘掉收件人（都不引入弹窗与接口），**2.6.0 起可一次指定多位**（同名多值 `target_user_id`，由 `app/admin/index.js` 的 `readForm` 拼成逗号串），非超管提交时保留库里的原接收人 |
 | `settings.js` | 管理员设置：改自己资料 / 改自己口令 |
 | `systemInfo.js` | 系统信息：运行环境 / 表数量 / 记录数 / 素材占用 |
 | `topics.js` | 专题精选（摩旅 / 户外）：聚合列表 / 编辑 / 预览 / 删除 |
@@ -231,7 +231,7 @@ cfapi/
 
 ### 6.6 `tests/` `tools/` `notes/` `out/`
 
-- **`tests/`**：`*.test.mjs`（约 299 条用例，`node --test`，桩模拟 D1/R2），含 `api_contract`/`api_reads`/`api_writes`、`admin_*`、`unit`、`sql_migrations` 与 `notice_visibility`（后两个用真实 SQLite）、`stub` 等。
+- **`tests/`**：`*.test.mjs`（约 301 条用例，`node --test`，桩模拟 D1/R2），含 `api_contract`/`api_reads`/`api_writes`、`admin_*`、`unit`、`sql_migrations` 与 `notice_visibility`（后两个用真实 SQLite）、`stub` 等。
   - `notice_visibility`（2.5.9 起）用**真实 SQLite**顶掉 D1 后走真接口，验证公告接收人四档："谁能看到哪条 / 未读数对得上 / 已读互不影响 / 游客只看得到「所有用户」"（2.6.0 起含"一条公告发给两位"的逗号列表）。为什么要真库：桩只能证明"SQL 长什么样"（`api_reads` 里那条断言），证明不了口径在真 SQL 上确实是这个结果 —— 例如 `?` 占位符顺序错位在桩里看不出来。
   - `frontend_notice_reddot`（2.5.8 起；4.5.3 起多一条"同一身份的资料刷新不许把红点抹掉 / 换账号必须归零"，4.5.4 起多一条"前台每 30 秒轮询公告、切后台必须停"）是**跨端守卫**：用桩顶掉 `getApp/wx/Page` 后直接 require 小程序的 `pages/profile/profile.js` 与 `subpackages/content/notices/notices.js`，真跑一遍"红点每次强制取服务端未读数 / 状态翻转才重渲染 / 已读补丁回写秒开缓存"。本机没有 `../xapp`（只部署后端）时自动跳过，也可用 `LYXJ_DIR=<xapp 路径>` 指定。
 - **`tools/`**：`diff_api.mjs`（新旧站 JSON 对拍）、`live_smoke.mjs`（真实数据端到端冒烟）、`cf_region.mjs`（R2/D1 区域迁移）、`embed_admin_assets.mjs`（打包静态资源）、`embed_favicon.mjs`（内联 favicon）、`export_sqlite.py`（旧库导出 seed）、`split_sql.py`（SQL 拆块便于控制台粘贴）、`verify_counts.py`（行数校验）、`media_to_r2.md`（素材搬 R2 说明）。
@@ -357,11 +357,13 @@ cfapi/
 >   - **为什么不拆成"先查接收人类型再查列表"**：公告是运营内容、总量极小，一条 OR 能保证**列表 / 计数 / 未读**三处口径逐字一致 —— 少一处就会出现"列表里有这条、红点却数不着"这种只能靠用户反馈才发现的问题。
 >   - **2.5.7 的定向系统消息并入同一列**：`pushUserNotice` 插入时固定 `receiver_type=3` + `target_user_ids=,<uid>,`。2.6.0 起不再有"删旧消息"这一步（改为每次新建），那条"删旧定向消息（连同已读行）"的语句随之消失 —— 系统消息与"管理员手动指定的定向公告"从此只是同一列里的两条记录，不会再互相删。
 >   - **非超管编辑公告**：接收人字段只读，且提交时保留库里的原值 —— 否则普通管理员改一次标题就把定向公告重置成"所有用户"（等于把私信发给了所有人）。收件人那两条校验（"必须至少选一位"/"最多 200 位"）也只对超管生效：非超管页面上根本没有这个控件，拿库里的脏数据把他拦住是说不通的。
->   - **指定用户怎么选（2.5.9 起，2.6.0 起可多选）**：候选用户是**一组同名复选框**（`name=target_user_id`），勾几位就提交几个同名值 —— `app/admin/index.js` 的 `readForm` 把同名多值按提交顺序拼成逗号串（全站只有这一处用多值字段，唯一 name 的页面拿到的东西一字不变）。已选清单里每人后面一个「移除」按钮（`name=remove_user_id`），搜索框配一个「搜索用户」按钮（`name=action value=search_user`）；三个都是普通提交按钮、都只带当前草稿重画本页，**不引入弹窗、不加 AJAX 接口、不加静态资源**。三个必须记住的细节：① **接收人类型不能用下拉框** —— 「指定用户」那一段的显隐靠纯 CSS（`#noticeReceiver3:checked ~ .notice-picker`，见 `admin.css`），而 `select` 的选中项命中不了 CSS 兄弟选择器；② **CSS 只是"看不见"**，隐藏起来的收件人控件照样会随表单提交，所以"类型不是指定用户时收件人一律清空"由后端在 `receiver_type≠3` 时忽略提交值来保证（不依赖前端"不提交"）；③ 已选但**不在当前候选列表**里的用户（刚搜了别的关键词）会用隐藏域一起提交，否则"搜一次人"就会让他们悄悄掉出收件人。一次最多指定 200 位（`MAX_TARGETS`）—— 收件人存成逗号串，没上限的话一条公告能把这列撑到几百 KB。公告只记 `users.id`，不会把 openid 写进公告或下发到小程序。
+>   - **指定用户怎么选（2.5.9 起，2.6.0 起可多选）**：候选用户是**一组同名复选框**（`name=target_user_id`），勾几位就提交几个同名值 —— `app/admin/index.js` 的 `readForm` 把同名多值按提交顺序拼成逗号串（全站只有这一处用多值字段，唯一 name 的页面拿到的东西一字不变）。已选清单里每人后面一个「移除」按钮（`name=remove_user_id`），搜索框配一个「搜索用户」按钮（`name=action value=search_user`）；三个都是普通提交按钮、都只带当前草稿重画本页，**不引入弹窗、不加 AJAX 接口、不加静态资源**。三个必须记住的细节：① **接收人类型不能用下拉框, 4 个 radio 也不许套容器** —— 「指定用户」那一段的显隐靠纯 CSS（`#noticeReceiver3:checked ~ .notice-picker`，见 `admin.css`）：`select` 的选中项命中不了 CSS 兄弟选择器，把 radio 包进 `.form-check` 之类容器又会隔一层，两种写法都会让那条 `~` 命不中（2.6.1 修的正是后者）；② **CSS 只是"看不见"**，隐藏起来的收件人控件照样会随表单提交，所以"类型不是指定用户时收件人一律清空"由后端在 `receiver_type≠3` 时忽略提交值来保证（不依赖前端"不提交"）；③ 已选但**不在当前候选列表**里的用户（刚搜了别的关键词）会用隐藏域一起提交，否则"搜一次人"就会让他们悄悄掉出收件人。一次最多指定 200 位（`MAX_TARGETS`）—— 收件人存成逗号串，没上限的话一条公告能把这列撑到几百 KB。公告只记 `users.id`，不会把 openid 写进公告或下发到小程序。
+>   - **「指定用户」控件显示不出来（2.6.1 修复，根因在 DOM 层级）**：2.6.0 把 4 个接收人 radio 各包进一个 `<div class="form-check">`，而「指定用户」那一段的显隐靠 `#noticeReceiver3:checked ~ .notice-picker` —— `~` 只认**同一父元素下的后续兄弟**，隔了一层就永远命不中，于是 `.notice-picker` 恒为 `display:none`：选「指定用户」什么都不出现。修法是让 radio/label **平铺**成 `.notice-picker` 的前兄弟（并在 `admin.css` 里抵消 bootstrap 给 `.form-check-input` 的 `float / margin-left`，那两条是给容器留位置用的）。为什么不用 `:has()` 或几行 JS：前者要求浏览器支持、后者违反本页"零新增 JS"，平铺是全浏览器都成立的最小改动。守卫在 `tests/admin_pages_content.test.mjs`：用一个小函数数"起点到终点之间 `<div` 与 `</div>` 的差"来断言四个 radio 与 `.notice-picker` **同级** —— **只断言 CSS 规则文本存在是没用的**（2.6.0 那条规则就在，功能却是坏的）。
+>   - **多选批量删除（2.6.1）**：列表首列是全选复选框、每行一个勾选框，勾完点「删除所选」→ `static/js/news_batch.js` 把选中 id 拼进隐藏域 `ids` → POST `/admin/notice_batch_delete`。**与笔记页共用同一份脚本**（同一套 id：`batchForm`/`batchIds`/`rowCheck`/`rowCheckAll`），文案单位由表单的 `data-unit` 决定（笔记页不传 = "笔记"，公告页传 "公告"），所以确认框会正确显示"确定删除选中的 N 条公告？"。服务端走 `purgeNotices(env, ids)`（**单条删除与批量删除共用的唯一实现**，以前单条删除会留下孤儿已读行）：一次 `DB.batch` 发两条，先 `DELETE FROM app_notice_reads WHERE notice_id IN (...)` 再 `DELETE FROM app_notices WHERE id IN (...)` —— **顺序不能反**（公告一删就再也查不出该清哪些 notice_id，留下的孤儿行会让将来同 id 的新公告"没读却已读"；`app_notice_reads` 没有外键，数据库不会替你拦）。勾了之后被别人删掉的 id 会被跳过并在提示里报数（`已删除 N 条公告，另有 M 条已不存在已跳过`），不做静默的部分成功；一次上限 `BATCH_MAX = 200`。删完按当时的筛选与页码回列表（`keyword`/`status`/`receiver`/`page` 随表单带回）。权限与单条删除同档（`entities.js` 的 `NORMAL_WRITE_PATHS`：登录即可，不额外限超管），审计动作 `admin.app_notice.batch_delete`，缓存失效走 `invalidateEntityCache('notice')`。触底加载出来的行同样带勾选框（列表页与 `/admin/notice_rows` 片段共用 `renderRows`），所以 `pagerScript` 要传 `rowMarker: 'rowCheck'`。
 >   - **`published_at` 给到秒**：`/content/get_notices` 由"只到日期"改为 `create_time` 的前 19 位（端上原样显示）。库里的字符串本来就是业务时区，**不要再做一次时区换算**（会多/少 8 小时）。
 >   - **索引：故意不新增**。公告是运营内容（几十条量级），现有 `idx_app_notices_active (status, sort_order, id)` 已经吃掉 `status=1` 这一段，再为 `receiver_type` / `target_user_ids` 单独建索引只会给每次后台发布加写入代价，收益是零；真涨到几千条再补也不迟（`ALTER TABLE ADD COLUMN` 本身只改元数据、O(1)，0009 / 0010 里真正的写操作只有那两条回填 `UPDATE`）。
 >   - **页面停着不动也要收到公告（2.5.10 复核：后端无需配合）**：原先只有"进页面 onShow / 下拉刷新"才调 `fetchNotices`，所以停在首页或「我的」页不动时，刚发的公告要退出重进才出现 —— 这是端上的调用时机问题，本版**没有接口/行为改动**（2.5.10 仅版本号对齐 + 本条结论 + 守卫落档）。修法见 `../xapp/README.md` 7.14：端上前台每 30 秒调一次 `fetchNotices`（它自带 60 秒静默刷新节流，所以真实请求仍是每 60 秒一次），内容真变了才由 `_emitNoticesUpdated` 通知首页公告条与我的页红点；后端这条读接口本来就是"可反复调的轻量 GET"，不需要任何配合。
->   - **自检覆盖**：`tests/notice_visibility.test.mjs` 用**真实 SQLite** 跑一遍四档（谁能看到哪条 / 未读数/红点对得上 / 已读互不影响 / 游客只看得到「所有用户」），其中 4 号公告的收件人是 `,7,9,` —— 顺便证明 `LIKE '%,9,%'` 能命中列表里的**第二位**（只测单值的话，SQL 写成 `=` 也看不出来）。`tests/api_reads.test.mjs` 另盯住三处复用的 SQL 形状与占位符顺序（收件人那条必须是 `LIKE ?` 且参数据是 `%,7,%`）；`tests/admin_pages_content.test.mjs` 覆盖"勾两位就存 `,7,9,`""类型改回所有用户时收件人必须清空"；`tests/sql_migrations.test.mjs` 在真 SQLite 上验证 0010 的折数与 `NOT NULL DEFAULT ''`；`tests/admin_submit_action.test.mjs` 钉住那条 CSS 显隐规则及生成物同步。
+>   - **自检覆盖**：`tests/notice_visibility.test.mjs` 用**真实 SQLite** 跑一遍四档（谁能看到哪条 / 未读数/红点对得上 / 已读互不影响 / 游客只看得到「所有用户」），其中 4 号公告的收件人是 `,7,9,` —— 顺便证明 `LIKE '%,9,%'` 能命中列表里的**第二位**（只测单值的话，SQL 写成 `=` 也看不出来）。`tests/api_reads.test.mjs` 另盯住三处复用的 SQL 形状与占位符顺序（收件人那条必须是 `LIKE ?` 且参数据是 `%,7,%`）；`tests/admin_pages_content.test.mjs` 覆盖"勾两位就存 `,7,9,`""类型改回所有用户时收件人必须清空"；`tests/sql_migrations.test.mjs` 在真 SQLite 上验证 0010 的折数与 `NOT NULL DEFAULT ''`；`tests/admin_submit_action.test.mjs` 钉住那条 CSS 显隐规则、平铺 radio 的两个补偿类、批量脚本的 `data-unit` 与三处生成物同步；`tests/admin_pages_content.test.mjs` 另用"数 div 开闭"的小函数断言四个 radio 与 `.notice-picker` 同级（2.6.1 起）。
 >   - **老库升级（2.5.9 / 2.6.0）**：依次跑 `npm run schema:noticereceiver`（加 `receiver_type` + 回填历史定向行为 `3`）、`npm run schema:noticetargets`（加 `target_user_ids` + 把老的单值折进去），漏跑的后果见第七节命令表。
 
 **笔记类**
@@ -386,7 +388,7 @@ cfapi/
 ### 9.2 管理后台路由（`/admin` 前缀，不计入对外 34 条）
 
 - 入口/鉴权：`/admin/login`、`/admin/logout`、`/admin/bootstrap`、`/admin/dashboard`、`/admin/status_update`（统一状态切换，全后台唯一写接口）。
-- 页面（GET）：用户管理 `/admin/users`(+`/users_rows`/`/user_detail`)、管理员 `/admin/admin_users`、笔记 `/admin/news_manage`(+`/news_manage_rows`/`/news_preview`/`/news_edit`/`/news_recycle`)、分类 `/admin/app_category_manage`、公告 `/admin/notice_manage`、留言 `/admin/comments_manage`、版本 `/admin/app_version_edit`、文案 `/admin/app_text_manage`、菜单 `/admin/app_menu_manage`、轮播 `/admin/banner_manage`、首页板块 `/admin/app_home_manage`、专题 `/admin/topics_manage`、设置 `/admin/settings`、系统信息 `/admin/system_info`、数据库管理 `/admin/db_tools`(+`/db_manage`)、素材库 `/admin/media_manage`(+`/media_library`)。
+- 页面（GET）：用户管理 `/admin/users`(+`/users_rows`/`/user_detail`)、管理员 `/admin/admin_users`、笔记 `/admin/news_manage`(+`/news_manage_rows`/`/news_preview`/`/news_edit`/`/news_recycle`)、分类 `/admin/app_category_manage`、公告 `/admin/notice_manage`(+`/notice_rows`/`/notice_edit`)、留言 `/admin/comments_manage`、版本 `/admin/app_version_edit`、文案 `/admin/app_text_manage`、菜单 `/admin/app_menu_manage`、轮播 `/admin/banner_manage`、首页板块 `/admin/app_home_manage`、专题 `/admin/topics_manage`、设置 `/admin/settings`、系统信息 `/admin/system_info`、数据库管理 `/admin/db_tools`(+`/db_manage`)、素材库 `/admin/media_manage`(+`/media_library`)。
 - 写入口权限由 `app/admin/lib/entities.js` 四份清单统一口径；未登记写入口一律 403 并记日志。
 - 后台是独立页面（同域名 `/admin` 前缀，HTML SPA + 原生 JS），与小程序前端无耦合；小程序通过微信「服务器域名」白名单访问 `lyjx.250036.xyz`。
 
@@ -398,7 +400,7 @@ cfapi/
 | --- | --- | --- |
 | 技术栈 | Cloudflare Workers + D1 + R2，零运行时依赖 | Python + FastAPI + SQLite/MySQL（双驱动） |
 | 域名 | `lyjx.250036.xyz` | `api0.250036.xyz`、`api.250036.xyz` |
-| 版本号 | `API_VERSION=2.6.0` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.5.4`） |
+| 版本号 | `API_VERSION=2.6.1` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.5.4`） |
 | 接口 | 34 条业务接口已全量实现并自测 | 历史「唯一后端」，接口同构可互切（**缺 `/user/apply_test` 与 `test_applied`**） |
 | 后台 | 17 页面（字符串拼 HTML） | 同样 17+ 模块（Jinja2 服务端渲染） |
 | 口令哈希 | PBKDF2-SHA256（Workers CPU 限制，不用 bcrypt） | bcrypt |

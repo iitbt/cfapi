@@ -190,6 +190,7 @@ export const NORMAL_WRITE_PATHS = [
   '/admin/app_menu_restore_missing', // 补齐内置菜单项(只新增, 不改已有行)
   '/admin/notice_edit',
   '/admin/notice_delete',
+  '/admin/notice_batch_delete',      // 批量删除公告(2.6.1; 与单条删除同档: 登录即可, 不额外限超管)
   '/admin/motorcycle_edit',
   '/admin/outdoor_edit',
   '/admin/status_update',            // 全后台统一状态切换(部分 kind 在接口内按 superOnly 再判)

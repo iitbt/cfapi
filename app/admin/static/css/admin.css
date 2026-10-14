@@ -252,11 +252,13 @@
 .col-actions-sm { width: 180px; }
 /* 详情表窄标签列 */
 .th-rowlabel-sm { width: 120px; }
-/* 公告编辑页「接收人=指定用户」那一段(搜人 + 已选清单)的显隐(2.6.0): 纯 CSS 跟着上方的单选按钮走。
-   为什么能这么写: 选中的那个 radio 是 .notice-picker 的**前面的兄弟节点**, 所以用 ~ 就能控制显隐, 一行 JS 都不用;
-   这也是接收人类型**必须用 radio 而不是下拉框**的原因 —— select 的选中项没法被 CSS 兄弟选择器命中(见 pages/notices.js)。
-   注意: CSS 只负责"看不见"。隐藏起来的控件**照样会随表单提交**,
-   所以"类型不是指定用户时收件人列表一律清空"这件事必须由后端兜(receiver_type≠3 时忽略提交上来的收件人)。 */
+/* 公告编辑页「接收人=指定用户」那一段(搜人 + 已选清单)的显隐: 纯 CSS 跟着上方的单选按钮走 ——
+   `~` 只认**同一父元素下的后续兄弟**, 所以 4 个 radio 必须与 .notice-picker 平铺同级(见 pages/notices.js 的 receiverRadios)。
+   2.6.0 把 radio 包进 .form-check 容器后就与 .notice-picker 隔了一层, 这两条规则名存实亡(选「指定用户」什么都不出现)。
+   平铺之后要抵消 bootstrap 给 .form-check-input 的 float / margin-left —— 那两条是给 .form-check 容器留位置用的,
+   这里没有那个容器, 不覆盖就会把 radio 浮到行外、label 反过来环绕它。 */
+.notice-radio { float: none; margin: 0 .25rem 0 0; vertical-align: middle; }
+.notice-radio-label { margin-right: 1rem; vertical-align: middle; }
 .notice-picker { display: none; }
 #noticeReceiver3:checked ~ .notice-picker { display: block; }
 /* 「接收人」控件里的三个小件(2.6.0): 页面里不写内联 style(见本文件抬头那段约定) */

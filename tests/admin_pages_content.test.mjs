@@ -9,6 +9,20 @@ const NOTICE = {
   link_type: 'page', link_value: '/pages/notice/notice?id=1', start_at: '2026-10-01 00:00:00',
   end_at: '2026-10-31 00:00:00', sort_order: 3, status: 1
 };
+/**
+ * from 到 to 之间有没有"跨层" —— 数 <div 与 </div> 的出现次数, 相等表示两者同级。
+ * 为什么需要它: 公告编辑页「指定用户」那一段的显隐靠 `#noticeReceiver3:checked ~ .notice-picker`,
+ * 而 `~` 只认**同一父元素下的后续兄弟**。只断言"CSS 规则文本存在"证明不了它命得中 ——
+ * 2.6.0 把 radio 包进 .form-check 容器后就隔了一层, 规则在、控件却永远不显示。
+ */
+function sameLevel(html, from, to) {
+  const start = html.indexOf(from);
+  const end = html.indexOf(to, start + from.length);
+  if (start < 0 || end < 0) return false;
+  const slice = html.slice(start + from.length, end);
+  return (slice.match(/<div\b/g) || []).length === (slice.match(/<\/div>/g) || []).length;
+}
+
 const CATEGORY_ROWS = [
   { id: 1, category_key: 'outdoor', name: '户外', sort_order: 10, status: 1, news_count: 12, home_ref_count: 1 },
   { id: 2, category_key: 'food', name: '聚餐', sort_order: 20, status: 0, news_count: 3, home_ref_count: 0 }
@@ -111,6 +125,12 @@ test('公告编辑(2.5.9): 接收人卡片仅超管可见, 选「指定用户」
   const html = await (await get('/admin/notice_edit?id=0', env, cookie)).text();
   assert.ok(html.includes('name="receiver_type"'), '超管可改接收人');
   assert.ok(html.includes('name="target_user_id"'), '要能勾选具体用户');
+  // 四个 radio 必须与 .notice-picker **平铺同级**, 否则 CSS 的 ~ 命不中, 选「指定用户」什么都不出现(2.6.1 修的就是它)。
+  // 终点取到 `<div class="notice-picker` 的**标签开头**: 只写到 class= 的话, 那个 <div 会被算进"起点到终点之间", 永远判成跨层
+  for (const value of [0, 1, 2, 3]) {
+    assert.ok(sameLevel(html, `id="noticeReceiver${value}"`, '<div class="notice-picker'),
+      `#noticeReceiver${value} 必须与 .notice-picker 同级(套了 .form-check 之类容器就隔了一层)`);
+  }
 
   // 选了「指定用户」却没勾人 → 拦下, 不落库(否则这条公告谁都收不到)
   const bad = await post('/admin/notice_edit?id=0',
@@ -136,6 +156,75 @@ test('公告编辑(2.5.9): 接收人卡片仅超管可见, 选「指定用户」
   const inserts = state.calls.filter((call) => /INSERT INTO app_notices/i.test(call.sql));
   assert.equal(inserts[inserts.length - 1].args[9], 0, 'receiver_type 落成「所有用户」');
   assert.equal(inserts[inserts.length - 1].args[10], '', '非「指定用户」时收件人列表必须清空');
+});
+
+test('公告批量删除(2.6.1): 一次删多条 + 连带清已读记录 + 筛选页码带回 + 失败项说明原因', async () => {
+  const { env, state } = makeAdminEnv({
+    rows: {
+      users: [{ id: 7, nickname: '老王', username: 'wx_a', avatar: '', is_trusted: 0 }],
+      app_notices: [Object.assign({}, NOTICE, { id: 8 }), Object.assign({}, NOTICE, { id: 9 })]
+    },
+    counts: { app_notices: 2 },
+    // 桩把"这条公告还在不在"固定成 8/9 还在: 999 用来验证"勾了之后被别人删掉"的跳过分支
+    db: (sql, args, kind) => (kind === 'all' && /SELECT id FROM app_notices WHERE id IN/i.test(sql)
+      ? [{ id: 8 }, { id: 9 }] : undefined)
+  });
+  const cookie = await loginCookie(env);
+
+  // 列表: 表头全选 + 每行勾选框 + 批量表单(与笔记页共用 static/js/news_batch.js, 靠 data-unit 换文案与确认语)
+  const listHtml = await (await get('/admin/notice_manage?receiver=3&keyword=维护&page=2', env, cookie)).text();
+  assert.ok(listHtml.includes('id="rowCheckAll"'), '表头要有全选');
+  assert.ok(listHtml.includes('class="form-check-input rowCheck" value="8"'), '行里要有勾选框');
+  assert.ok(listHtml.includes('action="/admin/notice_batch_delete"'), '批量表单要指向批量删除端点');
+  assert.ok(listHtml.includes('data-unit="公告"'), '文案单位由页面下发, 否则确认框会说"删除 2 条笔记"');
+  assert.ok(listHtml.includes('js/news_batch.js'), '要引入共用的批量勾选脚本');
+  assert.ok(listHtml.includes('name="receiver" value="3"'), '接收人筛选要随批次带回');
+  // 触底加载出来的行也要有勾选框, 否则翻页后的行根本选不了
+  const fragment = await (await get('/admin/notice_rows?page=1', env, cookie)).json();
+  assert.ok(String(fragment.rows).includes('rowCheck'), '分页片段里的行同样要能勾选');
+
+  const res = await post('/admin/notice_batch_delete',
+    { ids: '8,9', keyword: '维护', status: '1', receiver: '3', page: '2' }, env, cookie);
+  assert.equal(res.status, 302);
+  const location = res.headers.get('location') || '';
+  assert.ok(location.includes(encodeURIComponent('已删除 2 条公告')), location);
+  // 删完回到"当时的筛选 + 页码", 而不是把管理员扔回未筛选的第一页
+  const query = new URL(`${location.startsWith('http') ? '' : 'https://admin.test'}${location}`).searchParams;
+  assert.deepEqual(
+    [query.get('keyword'), query.get('status'), query.get('receiver'), query.get('page')],
+    ['维护', '1', '3', '2']);
+  // 已读记录必须先清: 公告删了就再也查不出该清哪些 notice_id, 留下的孤儿行会让将来同 id 的新公告"没读却已读"
+  const reads = findCall(state, /DELETE FROM app_notice_reads WHERE notice_id IN/i);
+  assert.ok(reads, '要连带清掉这些公告的已读记录');
+  assert.deepEqual(reads.args, [8, 9]);
+  const deleted = findCall(state, /DELETE FROM app_notices WHERE id IN/i);
+  assert.ok(deleted, '两条一起删');
+  assert.deepEqual(deleted.args, [8, 9]);
+
+  // 勾了之后被别人删掉的: 跳过并说明跳了几条 —— 不能谎报"已删除 3 条"
+  const partial = await post('/admin/notice_batch_delete', { ids: '8,9,999' }, env, cookie);
+  assert.equal(partial.status, 302);
+  assert.ok((partial.headers.get('location') || '').includes(encodeURIComponent('另有 1 条已不存在已跳过')),
+    partial.headers.get('location'));
+
+  // 一条都没勾 / ids 是垃圾: 不落任何 DELETE
+  const empty = await post('/admin/notice_batch_delete', { ids: '' }, env, cookie);
+  assert.equal(empty.status, 302);
+  assert.ok((empty.headers.get('location') || '').includes(encodeURIComponent('没有选中任何公告')));
+
+  // 单条删除也必须清已读记录(2.6.1 起两个入口共用 purgeNotices): 否则同样留下孤儿行
+  const single = await post('/admin/notice_delete', { id: '8' }, env, cookie);
+  assert.equal(single.status, 302);
+  const readPurges = state.calls.filter((call) => /DELETE FROM app_notice_reads WHERE notice_id IN \(/i.test(call.sql));
+  assert.deepEqual(readPurges[readPurges.length - 1].args, [8], '单条删除走的是同一个 purgeNotices');
+
+  // 全都不存在(比如列表页开着时别人清空了公告): 明确报错, 也不落 DELETE
+  const gone = makeAdminEnv({ db: (sql, args, kind) => (kind === 'all' && /SELECT id FROM app_notices WHERE id IN/i.test(sql) ? [] : undefined) });
+  const goneCookie = await loginCookie(gone.env);
+  const allGone = await post('/admin/notice_batch_delete', { ids: '8' }, gone.env, goneCookie);
+  assert.equal(allGone.status, 302);
+  assert.ok((allGone.headers.get('location') || '').includes(encodeURIComponent('都已不存在')));
+  assert.equal(findCall(gone.state, /DELETE FROM app_notices/i), null, '没有可删的就不该发 DELETE');
 });
 
 test('公告编辑(2.5.9): 非超管改正文不会把定向公告重置成「所有用户」', async () => {

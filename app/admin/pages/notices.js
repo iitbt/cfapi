@@ -8,7 +8,7 @@ import { assetUrl } from '../../core/media_scheme.js';
 import { adminLayout } from '../lib/layout.js';
 import {
   addButton, editShell, emptyRow, filterButtons, hiddenField, listShell, numberField, pagerScript, searchBar,
-  searchInput, searchSelect, selectField, switchField, textareaField, textField
+  searchInput, searchSelect, selectField, staticScript, switchField, textareaField, textField
 } from '../lib/partials.js';
 import { statusButtons, statusCell } from '../lib/status.js';
 import { listController } from '../lib/listPage.js';
@@ -35,7 +35,14 @@ const PICKER_COLUMNS = 'id,nickname,username,avatar,is_trusted';
 // 一次最多指定多少位收件人(2.6.0): 够运营用, 同时挡住"有人把全站用户都勾上"那种提交 ——
 // 收件人存成逗号串(见 core/notice_targets.js), 没有上限的话一条公告能把这列撑到几百 KB
 const MAX_TARGETS = 200;
-const COLUMNS = ['ID', '标题', '类型', '接收人', '生效时间', '排序', '状态', '操作'];
+// 批量删除(2.6.1): 一次最多删多少条 —— 与笔记页同一个上限(BATCH_MAX), 挡住"全库勾一遍"的提交
+const BATCH_MAX = 200;
+const BATCH_URL = '/admin/notice_batch_delete';
+// 首列是批量操作的"全选"复选框: 走 listShell 的 { html: true } 列, 否则会被转义成源码文本
+const COLUMNS = [
+  { label: '<input type="checkbox" id="rowCheckAll" aria-label="全选">', html: true },
+  'ID', '标题', '类型', '接收人', '生效时间', '排序', '状态', '操作'
+];
 
 // 页面路径前缀: 公告的"跳转页面"只接受小程序页面, 与旧站 catalog.is_page_path 同口径
 const PAGE_PREFIXES = ['/pages/', '/subpackages/'];
@@ -140,6 +147,7 @@ export function renderRows(ctx, rows, receivers) {
       ? `<div class="small text-muted text-truncate"><code>${escapeHtml(link)}</code> <i class="bi bi-box-arrow-up-right" aria-hidden="true"></i></div>`
       : '';
     return `<tr>
+  <td><input type="checkbox" class="form-check-input rowCheck" value="${row.id}" aria-label="选择公告 ${row.id}"></td>
   <td class="text-nowrap">${row.id}</td>
   <td><div class="text-truncate clamp-lg" title="${escapeHtml(row.title || '')}">${title}</div>${linkHtml}</td>
   <td class="text-nowrap"><span class="badge text-bg-${LEVEL_BADGES[level]}">${escapeHtml(LEVEL_LABELS[level])}</span></td>
@@ -150,6 +158,24 @@ export function renderRows(ctx, rows, receivers) {
   <td class="text-nowrap">${actionsCell(ctx, row)}</td>
 </tr>`;
   }).join('');
+}
+
+// 批量区(2.6.1): 勾选多行后按 action 提交, 同时把当前的筛选与页码带回 ——
+// 结构与笔记页的 batchBar 一致(同一套 id: batchForm/batchIds/rowCheck, 因此能共用 static/js/news_batch.js),
+// data-unit 只用于把脚本里的提示文案与二次确认换成"公告"(脚本拿不到该属性时默认按"笔记")。
+// 二次确认不写在这里的 onsubmit: 脚本是用 form.submit() 提交的, 那条路径**不触发** onsubmit, 确认由脚本自己做。
+function batchBar(ctx) {
+  const filters = parseFilters(ctx.query);
+  return `<form method="post" action="${BATCH_URL}" id="batchForm" data-unit="公告"
+  class="d-flex flex-wrap align-items-center gap-2 mb-3 border rounded p-2">
+  <input type="hidden" name="ids" id="batchIds">
+  <input type="hidden" name="keyword" value="${escapeHtml(filters.keyword)}">
+  <input type="hidden" name="status" value="${escapeHtml(filters.status)}">
+  <input type="hidden" name="receiver" value="${escapeHtml(filters.receiver)}">
+  <input type="hidden" name="page" value="${clampPage(ctx.query.page, null)}">
+  <span class="small text-muted">批量操作</span>
+  <button class="btn btn-sm btn-outline-danger" type="button" data-batch="delete">删除所选</button>
+</form>`;
 }
 
 async function managePage(ctx) {
@@ -174,7 +200,7 @@ async function managePage(ctx) {
     extra: { status: filters.status, keyword: filters.keyword },
     items: [['all', '全部接收人']].concat(RECEIVERS.map(([value, label]) => [String(value), label]))
   });
-  const content = listShell({
+  const content = batchBar(ctx) + listShell({
     title: '通知公告', columns: COLUMNS, rows: renderRows(ctx, rows, await receiversOf(ctx.env, rows)),
   tableAttrs: ' data-status-filter-param="status"',
     // 2.3.3 三行结构: ① 添加公告 ② 接收人筛选(2.5.9) ③ 搜索表单(关键字 + 状态下拉)
@@ -194,8 +220,9 @@ async function managePage(ctx) {
       rowsUrl: '/admin/notice_rows', currentPage: page, totalPages, total, perPage: PER_PAGE,
       unit: '条', hintId: 'noticeLoadedHint', announceLabel: '公告', baseUrl: MANAGE_URL,
       backTopId: 'noticeBackTopBtn', jumpBtnId: 'noticeJumpBtn', jumpInputId: 'noticeJumpInput',
-      version: ctx.version
-    })
+      // 触底加载靠"本页有没有 rowCheck"判断是不是空页: 公告列表也有勾选框了(2.6.1), 必须传
+      rowMarker: 'rowCheck', version: ctx.version
+    }) + staticScript('js/news_batch.js', ctx.version)
   });
 }
 
@@ -365,16 +392,16 @@ async function editPage(ctx) {
 // 接收人类型: **必须是单选按钮组, 不是下拉框** —— 「指定用户」那一段的显隐靠纯 CSS
 // (`#noticeReceiver3:checked ~ .notice-picker`, 见 admin.css), 而 select 的选中项没法被纯 CSS 的兄弟选择器命中。
 // 四个选项一眼看全也比下拉少一次点击。name/value 与 2.5.9 的下拉框完全一致(后端与筛选 UI 不用改)。
+// **这四组 radio/label 必须平铺**、不套 .form-check 容器: `~` 只认同一父元素下的后续兄弟,
+// 套一层容器就与 .notice-picker 隔了一层 —— 2.6.0 正是这么写的, 于是那条 CSS 永远命不中, 选「指定用户」什么都不出现。
 function receiverRadios(current, errorField) {
   const bad = errorField === 'receiver_type';
   return RECEIVERS.map(([value, label]) => {
     const id = `noticeReceiver${value}`;
     const checked = intOr(current, RECEIVER_ALL) === value;
-    return `<div class="form-check form-check-inline me-3">
-  <input class="form-check-input${bad ? ' is-invalid' : ''}" type="radio" name="receiver_type" id="${id}" value="${value}"${checked ? ' checked' : ''}>
-  <label class="form-check-label" for="${id}">${escapeHtml(label)}</label>
-</div>`;
-  }).join('');
+    return `<input class="form-check-input notice-radio${bad ? ' is-invalid' : ''}" type="radio" name="receiver_type" id="${id}" value="${value}"${checked ? ' checked' : ''}>
+<label class="form-check-label notice-radio-label" for="${id}">${escapeHtml(label)}</label>`;
+  }).join('\n');
 }
 
 // 头像小圆点: 没头像就用灰底占位(候选列表与已选清单共用, 免得"头像位忽大忽小")
@@ -487,6 +514,19 @@ function editView(ctx, { isNew, row, error, errorField, users, userQuery, picked
   });
 }
 
+// 删除公告的唯一实现(2.6.1): 先清已读记录、再删公告。
+// 顺序不能反 —— 公告一删就再也查不出该清哪些 notice_id, 留下的孤儿行会让**将来同 id 的新公告**"没读过却已是已读"。
+// 单条删除与批量删除都走这里: 各写一遍迟早有一处忘了清, 而 app_notice_reads 没有外键, 数据库不会替你拦。
+async function purgeNotices(env, ids) {
+  const list = (ids || []).filter((id) => id > 0);
+  if (!list.length) return;
+  const marks = list.map(() => '?').join(',');
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM app_notice_reads WHERE notice_id IN (${marks})`).bind(...list),
+    env.DB.prepare(`DELETE FROM app_notices WHERE id IN (${marks})`).bind(...list)
+  ]);
+}
+
 async function deleteSubmit(ctx) {
   const rawId = ctx.form.id;
   if (!positiveId(rawId)) {
@@ -496,7 +536,7 @@ async function deleteSubmit(ctx) {
   try {
     const row = await one(ctx.env, 'SELECT title FROM app_notices WHERE id = ?', intOr(rawId, 0));
     if (!row) return redirect(buildListUrl(MANAGE_URL, { error: '找不到该公告' }));
-    await run(ctx.env, 'DELETE FROM app_notices WHERE id = ?', intOr(rawId, 0));
+    await purgeNotices(ctx.env, [intOr(rawId, 0)]);
     auditLog('admin.app_notice.delete', { user: ctx.session.username, notice_id: intOr(rawId, 0), title: row.title || '' });
     invalidateEntityCache('notice');
     message = '公告已删除';
@@ -507,9 +547,47 @@ async function deleteSubmit(ctx) {
   return redirect(buildListUrl(MANAGE_URL, { message }));
 }
 
+// 批量删除(2.6.1): 与笔记页同一套做法(勾选 → 脚本把 id 拼进隐藏域 → 一个 POST 端点),
+// 但**多清一张表**: app_notice_reads 是"用户读过哪条公告"的附属记录(全库无外键, 必须应用层级联),
+// 不一起删就留下孤儿行 —— 同一条 notice_id 被将来的新公告复用时, 用户会看到"没读过却已是已读"。
+async function batchSubmit(ctx) {
+  const form = ctx.form;
+  const filters = { keyword: strOf(form.keyword), status: strOf(form.status), receiver: strOf(form.receiver) };
+  const page = strOf(form.page) || null;
+  // ids 是一个逗号串(不是同名多值: 隐藏域只有一个), 去重 + 丢非法值 + 封顶, 与笔记页同口径
+  const ids = Array.from(new Set(strOf(form.ids).split(',')
+    .map((item) => intOr(item.trim(), 0)).filter((id) => id > 0))).slice(0, BATCH_MAX);
+  if (!ids.length) {
+    return redirect(buildListUrl(MANAGE_URL, { error: '没有选中任何公告', filters, page }));
+  }
+  let message = '';
+  try {
+    // 先查一遍还在的 id: 勾了之后被别人删掉的那些要跳过, 否则 DELETE 的 changes 对不上, 也没法告诉用户跳了几条
+    const marks = ids.map(() => '?').join(',');
+    const found = await all(ctx.env, `SELECT id FROM app_notices WHERE id IN (${marks})`, ...ids);
+    const valid = found.map((item) => intOr(item.id, 0)).filter((id) => id > 0);
+    if (!valid.length) {
+      return redirect(buildListUrl(MANAGE_URL, { error: '选中的公告都已不存在（可能已被其他人删除）', filters, page }));
+    }
+    await purgeNotices(ctx.env, valid);
+    invalidateEntityCache('notice');
+    auditLog('admin.app_notice.batch_delete', {
+      user: ctx.session.username, count: valid.length, ids: valid.join(',')
+    });
+    message = `已删除 ${valid.length} 条公告`;
+    const missing = ids.length - valid.length;
+    if (missing > 0) message += `，另有 ${missing} 条已不存在已跳过`;
+  } catch (err) {
+    console.error('批量删除公告失败', err && err.stack ? err.stack : err);
+    return redirect(buildListUrl(MANAGE_URL, { error: '批量删除失败，请稍后重试', filters, page }));
+  }
+  return redirect(buildListUrl(MANAGE_URL, { message, filters, page }));
+}
+
 export const routes = [
   { methods: ['GET', 'HEAD'], path: MANAGE_URL, handler: managePage },
   { methods: ['GET', 'HEAD'], path: '/admin/notice_rows', handler: rowsFragment },
   { methods: ['GET', 'POST'], path: '/admin/notice_edit', handler: editPage },
-  { methods: ['POST'], path: '/admin/notice_delete', handler: deleteSubmit }
+  { methods: ['POST'], path: '/admin/notice_delete', handler: deleteSubmit },
+  { methods: ['POST'], path: BATCH_URL, handler: batchSubmit }
 ];

@@ -3,6 +3,9 @@
   (function () {
     var form = document.getElementById('batchForm');
     if (!form) return;
+    // 文案里的单位: 笔记页不写 data-unit(默认"笔记"), 公告页写 data-unit="公告" —— 同一份脚本两页共用(2.6.1)
+    var unit = form.getAttribute('data-unit') || '笔记';
+    var actionField = document.getElementById('batchAction');
     var all = document.getElementById('rowCheckAll');
     if (all) {
       all.addEventListener('change', function () {
@@ -12,14 +15,15 @@
     function selected() {
       return Array.prototype.filter.call(document.querySelectorAll('.rowCheck'), function (box) { return box.checked; });
     }
+    // 二次确认与数量提示都写在这里(不是表单的 onsubmit): 下面用 form.submit() 提交, 那条路径不触发 onsubmit
     Array.prototype.forEach.call(form.querySelectorAll('[data-batch]'), function (btn) {
       btn.addEventListener('click', function () {
         var boxes = selected();
-        if (!boxes.length) { alert('请先勾选要操作的笔记'); return; }
+        if (!boxes.length) { alert('请先勾选要操作的' + unit); return; }
         var action = btn.getAttribute('data-batch');
-        if (action === 'delete' && !confirm('确定删除选中的 ' + boxes.length + ' 条笔记？')) return;
+        if (action === 'delete' && !confirm('确定删除选中的 ' + boxes.length + ' 条' + unit + '？此操作不可恢复。')) return;
         document.getElementById('batchIds').value = boxes.map(function (box) { return box.value; }).join(',');
-        document.getElementById('batchAction').value = action;
+        if (actionField) actionField.value = action;
         form.submit();
       });
     });
