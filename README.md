@@ -1,6 +1,6 @@
 # 狼牙极限运动笔记 · 主后端（cfapi / Cloudflare Workers）
 
-> **版本**：`v2.5.3` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
+> **版本**：`v2.5.4` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
 > **主域名**：**https://lyjx.250036.xyz**（对外 API + `/admin` 管理后台同一域名）。
 > **素材域名**：**https://storage.250036.xyz**（R2 公开域，与接口域名分离）。
 > **定位**：微信小程序「狼牙极限运动笔记」的**主要后端**。今后小程序的开发、接口变更、联调、发版均以本工程为准；FastAPI 工程（`../fastapi/`）为**备用后端**。
@@ -204,7 +204,7 @@ cfapi/
 | `settings.js` | 管理员设置：改自己资料 / 改自己口令 |
 | `systemInfo.js` | 系统信息：运行环境 / 表数量 / 记录数 / 素材占用 |
 | `topics.js` | 专题精选（摩旅 / 户外）：聚合列表 / 编辑 / 预览 / 删除 |
-| `users.js` | 用户管理：列表（可按「仅已申请」筛选，类型列显示「已申请」徽章）/ 详情 / 设内部测试（同时清申请标记）/ 恢复 / 删除 |
+| `users.js` | 用户管理：列表（可按「仅已申请」筛选，类型列显示「已申请」徽章）/ 详情 / 设内部测试（同时清申请标记，用户撤回也会让徽章消失）/ 恢复 / 删除 |
 
 `static/js/`（页面脚本，全部打包进 `assets/static-assets.js`；引用一律走 `partials.js` 的 `staticScript`，带 `?v=<API_VERSION>`）：
 
@@ -323,9 +323,14 @@ cfapi/
 | `/user/user_favorites` | 是 | 收藏列表 / 增删 |
 | `/user/user_likes` | 是 | 点赞列表 / 增删 |
 | `/user/user_view_history` | 是 | 浏览历史 / 增删 |
-| `/user/apply_test` | 是 | 申请内部测试（**2.5.3 起**）：置 `test_applied=1` 并通知管理员。只能提交一次 —— 已是内部测试用户或已有待处理申请都返回 409；身份只认 token |
+| `/user/apply_test` | 是 | 申请 / 撤回内部测试（**2.5.3 起**；2.5.4 补撤回）：`action=apply`（默认）置 `test_applied=1`；`action=cancel` 清 0。两者都通知管理员，身份只认 token |
 
-> **内部测试申请流程（2.5.3 起）**：小程序「我的 → 申请测试」调 `/user/apply_test` → `users.test_applied` 置 1（条件更新 `WHERE id=? AND test_applied=0`，双击/并发只有一条能成功）→ 同时用企业微信机器人给管理员发一条文本（含昵称、ID、用户名、申请时间；`WXWORK_WEBHOOK_KEY` 没配就跳过，**发送失败只记日志，不影响用户的提交结果**）→ 管理员在 `/admin/users` 看到「已申请」徽章（下拉可筛「仅已申请」）→ 点【设为内部测试】后 `is_trusted=1`、`test_applied=0`（申请已处理，徽章消失）。`test_applied` 会随 `/user/login`、`/user/get_user_info` 一起下发（小程序据此把菜单显示成「等待通过」）。
+> **内部测试申请 / 撤回流程（2.5.3 起，撤回 2.5.4 起）**：小程序「我的 → 申请测试」调 `/user/apply_test`：
+> - `action=apply`：`users.test_applied` 置 1（条件更新 `WHERE id=? AND test_applied=0`，双击/并发只有一条能成功，重复提交 409；已是内部测试用户也 409）；
+> - `action=cancel`：清回 0（条件 `WHERE id=? AND test_applied=1`，没有待处理申请时 409），**不碰 `is_trusted`** —— 内部测试身份仍只能由后台给/收；
+> - 两种动作都用企业微信机器人给管理员发一条文本（含昵称、ID、用户名、时间；撤回那条写明"上一条申请通知可忽略"——**机器人消息发出去撤不回**，所以撤回要再提醒一次，否则管理员可能白去点一次「设为内部测试」）。`WXWORK_WEBHOOK_KEY` 没配就跳过，**发送失败只记日志，不影响用户那边的提交/撤回结果**；
+> - 管理员在 `/admin/users` 看到「已申请」徽章（下拉可筛「仅已申请」）→ 点【设为内部测试】后 `is_trusted=1`、`test_applied=0`（申请已处理，徽章消失）；用户撤回后徽章同样消失（列表读的就是这一个字段，**不需要额外的删除动作**）；
+> - `test_applied` 随 `/user/login`、`/user/get_user_info` 一起下发，小程序据此决定点【申请测试】后弹"申请"还是"撤回申请"（菜单文案不变）。
 
 **笔记类**
 
@@ -361,7 +366,7 @@ cfapi/
 | --- | --- | --- |
 | 技术栈 | Cloudflare Workers + D1 + R2，零运行时依赖 | Python + FastAPI + SQLite/MySQL（双驱动） |
 | 域名 | `lyjx.250036.xyz` | `api0.250036.xyz`、`api.250036.xyz` |
-| 版本号 | `API_VERSION=2.5.3` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.4.7`） |
+| 版本号 | `API_VERSION=2.5.4` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.4.8`） |
 | 接口 | 34 条业务接口已全量实现并自测 | 历史「唯一后端」，接口同构可互切（**缺 `/user/apply_test` 与 `test_applied`**） |
 | 后台 | 17 页面（字符串拼 HTML） | 同样 17+ 模块（Jinja2 服务端渲染） |
 | 口令哈希 | PBKDF2-SHA256（Workers CPU 限制，不用 bcrypt） | bcrypt |
@@ -390,7 +395,7 @@ cfapi/
 5. **`api.250036.xyz` 指向待确认**：`xapp` 侧线路三标注「待确认」，以实际 DNS 解析为准。
 6. **本地联调微信登录**：设 `DEV_WECHAT_MOCK="1"` 可用任意 code 登录（需本地 dev 环境）。
 7. **测试**：`npm test` 跑 `node --test`（桩模拟 D1/R2），不连外网；`tools/live_smoke.mjs` 跑真实数据端到端冒烟。
-8. **用户申请了内部测试但群里没消息**：先看 `wrangler.toml` 的 `WXWORK_WEBHOOK_KEY` 是否配了（空 = 不发，且不报错）；再按 `user.test_apply_notify_rejected` / `user.test_apply_notify_failed` 日志排查（企业微信失败时 HTTP 仍是 200，错误在 `errcode`）。**通知发不出去不影响用户的提交结果**，后台照样能看到「已申请」。
+8. **用户申请（或撤回）内部测试但群里没消息**：先看 `wrangler.toml` 的 `WXWORK_WEBHOOK_KEY` 是否配了（空 = 不发，且不报错）；再按 `user.test_apply_notify_rejected` / `user.test_apply_notify_failed` 日志排查（企业微信失败时 HTTP 仍是 200，错误在 `errcode`，日志带 `kind=apply|cancel`）。**通知发不出去不影响用户那边的结果**，后台照样能看到「已申请」徽章的出现与消失。
 9. **老库升级到 2.5.3**：先跑一次 `npm run schema:testapply` 加 `users.test_applied` 列，否则 `/user/apply_test` 与后台用户列表会报 `no such column`。该脚本不幂等，只跑一次。
 8. **线上"又慢了"先看状态页的「D1 响应」**：它是一次真实 D1 往返的耗时（基线约 240ms）。接口/页面的耗时 ≈ **串行轮数 × 它**，所以"多了几百毫秒"基本都是多了一轮串行查询，而不是单条 SQL 变慢。
 9. **怎么量"串行轮数"**：本地用 `tests/stub.mjs` / `tests/admin_stub.mjs` 的桩，把每条 D1 语句包一层 `await sleep(240)`，再跑一次该页面/接口 —— `耗时 ÷ 240ms` 就是串行轮数（后台全部 GET 路径可从 `app/admin/pages/index.js` 的 `PAGE_ROUTES` 列出来）。2.5.2 的对照：控制面板 7 轮 → 2 轮、`/config/get_app_config` 6 轮 → 1 轮（命中缓存 0 轮）、`/news/list` 3 轮 → 1~2 轮、`/news/detail` 4 轮 → 2 轮。

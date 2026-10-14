@@ -389,3 +389,45 @@ test('申请内部测试: 配了企业微信 webhook 就发通知(含用户标�
     globalThis.fetch = realFetch;
   }
 });
+
+test('撤回申请(2.5.4): 有待处理申请才能撤 / 撤回后置 0 可再申请 / 再发一条「可忽略上一条」通知 / 不碰内部测试身份', async () => {
+  const realFetch = globalThis.fetch;
+  const sent = [];
+  globalThis.fetch = async (url, init) => { sent.push({ url, init }); return { ok: true, json: async () => ({ errcode: 0 }) }; };
+  // 已申请的用户行(撤回前)
+  const appliedDb = (sql, args, kind) => (/FROM users WHERE token=/i.test(sql)
+    ? Object.assign({}, USER_ROW, { test_applied: 1 }) : baseDb()(sql, args, kind));
+  try {
+    const cancel = makeEnv({ db: appliedDb, vars: { WXWORK_WEBHOOK_KEY: 'k-1' } });
+    const body = await postJson('/user/apply_test', { token: 'tok-1', action: 'cancel' }, cancel.env);
+    assert.equal(body.code, 200);
+    assert.deepEqual(body.data, { test_applied: 0 });
+    const write = cancel.calls.find((item) => /UPDATE users SET test_applied=0 WHERE id=\? AND test_applied=1/i.test(item.sql));
+    assert.ok(write && write.args[0] === 7, '撤回也要带 test_applied=1 的条件(没申请过就撤不动)');
+    assert.equal(cancel.calls.some((item) => /is_trusted/i.test(item.sql)), false, '撤回只清申请标记, 不碰内部测试身份');
+    assert.equal(sent.length, 1, '撤回要再通知一次(机器人消息撤不回)');
+    const content = JSON.parse(sent[0].init.body).text.content;
+    assert.ok(content.includes('已撤回') && content.includes('可忽略'), content);
+    assert.match(content, /撤回时间：\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/);
+
+    // 没有待处理申请: 409, 且不写库、不发通知
+    sent.length = 0;
+    const none = makeEnv({
+      db: (sql, args, kind) => (/UPDATE users SET test_applied=0/i.test(sql) ? { changes: 0 } : baseDb()(sql, args, kind)),
+      vars: { WXWORK_WEBHOOK_KEY: 'k-1' }
+    });
+    assert.equal((await postJson('/user/apply_test', { token: 'tok-1', action: 'cancel' }, none.env)).code, 409);
+    assert.equal(sent.length, 0);
+
+    // 撤回后状态回到未申请: 可以重新提交
+    const reapply = makeEnv({ db: baseDb() });
+    assert.equal((await postJson('/user/apply_test', { token: 'tok-1' }, reapply.env)).code, 200);
+
+    // 未知 action: 400(不会误当成申请或撤回)
+    const bogus = makeEnv({ db: baseDb() });
+    assert.equal((await postJson('/user/apply_test', { token: 'tok-1', action: 'x' }, bogus.env)).msg, '操作类型错误');
+    assert.equal(bogus.calls.some((item) => /UPDATE users SET test_applied/i.test(item.sql)), false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

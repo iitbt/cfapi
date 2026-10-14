@@ -265,7 +265,7 @@ async function writeSubmit(ctx) {
     if (!row) {
       error = '用户不存在或已被删除';
     } else if (action === 'set_trusted') {
-      // test_applied 一起清 0: 申请已处理, 列表不再显示「已申请」(用户端「等待通过」也随新资料回到「申请测试」)
+      // test_applied 一起清 0: 申请已处理, 列表不再显示「已申请」(用户端再点【申请测试】也就回到"申请"那条弹窗)
       await run(ctx.env, 'UPDATE users SET is_trusted = 1, test_applied = 0 WHERE id = ?', userId);
       auditLog('admin.user.set_trusted', { user: ctx.session.username, user_id: userId });
       message = '已成功设置为内部测试用户';
