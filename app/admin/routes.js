@@ -100,16 +100,26 @@ export async function dashboardPage(ctx) {
   let latestNews = [];
   let latestComments = [];
   let error = '';
+  // 单条失败只让那一块空着, 不影响其它卡片(与改前串行版"部分成功"的观感一致)
+  const soft = (promise, fallback) => promise.catch((err) => {
+    console.error('统计数据加载失败', err && err.message);
+    error = '部分统计数据加载失败，以下数字可能不完整。请刷新重试。';
+    return fallback;
+  });
   try {
-    counts = await collectCounts(ctx.env, windows);
-    trendUsers = await trend(ctx.env, 'users', 'create_time');
-    trendNews = await trend(ctx.env, 'news', 'publish_time', ' AND deleted_at IS NULL');
-    latestUsers = await all(ctx.env, 'SELECT id, username, nickname, create_time FROM users ORDER BY id DESC LIMIT 8');
-    latestNews = await all(ctx.env,
-      'SELECT id, title, category, publish_time FROM news WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 8');
-    latestComments = await all(ctx.env,
-      'SELECT c.id, c.content, c.status, u.nickname FROM news_comments c LEFT JOIN users u ON c.user_id = u.id '
-      + 'ORDER BY c.id DESC LIMIT 8');
+    // 6 条查询互不依赖 → 一次并发发出: 总耗时 ≈ 最慢的一条, 而不是 6 条之和
+    // (状态页实测一次 D1 往返约 240ms, 串行就是 1.4 秒 —— 这是控制面板"打开慢"的主因)
+    [counts, trendUsers, trendNews, latestUsers, latestNews, latestComments] = await Promise.all([
+      soft(collectCounts(ctx.env, windows), {}),
+      soft(trend(ctx.env, 'users', 'create_time'), [0, 0, 0, 0, 0, 0, 0]),
+      soft(trend(ctx.env, 'news', 'publish_time', ' AND deleted_at IS NULL'), [0, 0, 0, 0, 0, 0, 0]),
+      soft(all(ctx.env, 'SELECT id, username, nickname, create_time FROM users ORDER BY id DESC LIMIT 8'), []),
+      soft(all(ctx.env,
+        'SELECT id, title, category, publish_time FROM news WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 8'), []),
+      soft(all(ctx.env,
+        'SELECT c.id, c.content, c.status, u.nickname FROM news_comments c LEFT JOIN users u ON c.user_id = u.id '
+        + 'ORDER BY c.id DESC LIMIT 8'), [])
+    ]);
   } catch (err) {
     console.error('统计数据加载失败', err && err.stack ? err.stack : err);
     error = '统计数据加载失败，以下数字可能不完整。请查看 Workers 日志或稍后刷新重试。';

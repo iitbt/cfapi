@@ -6,8 +6,13 @@ import { currentUser, tokenOf } from './helpers.js';
 import { clampPage } from './schemas.js';
 import { beijingNow, datePart } from '../core/timeutil.js';
 import { logError } from '../core/logging.js';
+import { cacheOnce } from '../core/ttlCache.js';
 
 const LEVEL_TEXT = { info: '公告', warning: '提醒', important: '重要' };
+//: 轮播图几乎不变, 却每次进首页都要查一次: 按 isolate 缓存 30 秒(代价: 后台上新图后最多 30 秒小程序侧才看到)
+const BANNERS_CACHE_TTL_MS = 30 * 1000;
+//: 未读公告只要 id 列表, 封顶 200 条: 公告是运营内容, 不会同时上线几百条, 而改前没有 LIMIT
+const UNREAD_NOTICE_LIMIT = 200;
 const VIDEO_TABLES = ['outdoor_activities', 'motorcycle_trips'];
 const COLUMNS = {
   outdoor_activities: 'id,title,description,date,location,poster,videoUrl,created_at,updated_at',
@@ -45,11 +50,12 @@ export function registerContentRoutes(router) {
     try {
       const position = str(body.position, 'news') || 'news';
       const limit = limitOf(body.limit, 5, 50);
-      const rows = await all(
+      // 缓存键含 position/limit: 不同取法各存一份, 命中时这页少一次 D1 往返
+      const rows = await cacheOnce(`api:banners:${position}:${limit}`, BANNERS_CACHE_TTL_MS, () => all(
         env,
         'SELECT id,title,image_url,link_url FROM banner_images WHERE position=? AND status=1 ORDER BY sort_order ASC, id DESC LIMIT ?',
         position, limit === 0 ? 200 : limit
-      );
+      ));
       const data = rows.map((row) => ({
         id: row.id,
         title: row.title === undefined ? null : row.title,
@@ -163,12 +169,13 @@ export function registerContentRoutes(router) {
     if (!user) return fail(401, '登录已过期，请重新登录');
     const now = beijingNow();
     try {
-      const rows = await all(
-        env,
-        "SELECT id FROM app_notices WHERE status=1 AND (start_at IS NULL OR start_at='' OR start_at<=?) AND (end_at IS NULL OR end_at='' OR end_at>=?) ORDER BY id DESC",
-        now, now
-      );
-      const readRows = await all(env, 'SELECT notice_id FROM app_notice_reads WHERE user_id=?', user.id);
+      // 两条互不依赖 → 并发(少一次 D1 往返); 公告 id 列表封顶 200 条(见 UNREAD_NOTICE_LIMIT 说明)
+      const [rows, readRows] = await Promise.all([
+        all(env,
+          "SELECT id FROM app_notices WHERE status=1 AND (start_at IS NULL OR start_at='' OR start_at<=?) AND (end_at IS NULL OR end_at='' OR end_at>=?) ORDER BY id DESC LIMIT ?",
+          now, now, UNREAD_NOTICE_LIMIT),
+        all(env, 'SELECT notice_id FROM app_notice_reads WHERE user_id=?', user.id)
+      ]);
       const readSet = new Set(readRows.map((row) => Number(row.notice_id)));
       const ids = rows.map((row) => Number(row.id)).filter((id) => !readSet.has(id));
       return ok({ unread_count: ids.length, ids }, '获取未读公告成功');

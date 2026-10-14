@@ -80,17 +80,15 @@ test('公告编辑: 保存成功时 link_type 由跳转地址派生, 时间归�
 });
 
 test('分类列表: 显示笔记数与首页引用, 并对未登记分类给黄框', async () => {
-  const { env } = makeAdminEnv({
+  const { env, state } = makeAdminEnv({
     rows: { app_categories: CATEGORY_ROWS },
-    // 关联计数是一次 GROUP BY 取回后在页面里合并(不再逐行子查询), 所以桩按新形状喂数
+    // 关联计数与"未登记分类"都取自同一条 GROUP BY(不再逐行子查询、也不再单独扫一遍 news), 所以桩按新形状喂数:
+    // GROUP BY 的结果本身就是"news 里出现过的分类标识 + 各有多少篇", 空值也在里面
     db: (sql, args, kind) => {
       if (kind === 'first' && /COUNT\(\*\) AS c FROM app_categories/i.test(sql)) return { c: 2 };
       if (kind === 'all' && /FROM app_categories ORDER BY/i.test(sql)) return CATEGORY_ROWS;
-      if (kind === 'all' && /NOT IN \(SELECT category_key/i.test(sql)) {
-        return [{ category: 'legacy_x', total: 2 }, { category: '', total: 1 }];
-      }
       if (kind === 'all' && /GROUP BY category/i.test(sql)) {
-        return [{ category: 'outdoor', total: 12 }, { category: 'legacy_x', total: 2 }];
+        return [{ category: 'outdoor', total: 12 }, { category: 'legacy_x', total: 2 }, { category: '', total: 1 }];
       }
       if (kind === 'all' && /GROUP BY item_id/i.test(sql)) return [{ item_id: 'outdoor', total: 1 }];
       return undefined;
@@ -102,6 +100,8 @@ test('分类列表: 显示笔记数与首页引用, 并对未登记分类给黄�
   assert.ok(html.includes('>12<'), '显示笔记数');
   assert.ok(html.includes('发现 2 个未登记的分类'));
   assert.ok(html.includes('legacy_x') && html.includes('（空值）'));
+  // 2.5.2: 未登记分类从那条 GROUP BY 里挑, 页面不该再为它单独扫一遍 news
+  assert.equal(findCall(state, /NOT IN \(SELECT category_key/i), null, '不能再单独扫一遍 news');
 });
 
 test('分类编辑: 标识格式与占用都要拦下', async () => {

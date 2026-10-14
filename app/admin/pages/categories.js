@@ -46,15 +46,6 @@ function renderRows(rows) {
 </tr>`).join('');
 }
 
-// 脏数据体检: 库里引用了"分类表里没有"的标识(历史数据)时, 页面顶部给黄框提示
-async function unknownCategories(env) {
-  return await all(env,
-    "SELECT category, COUNT(*) AS total FROM news "
-    + "WHERE deleted_at IS NULL AND (category IS NULL OR category='' "
-    + 'OR category NOT IN (SELECT category_key FROM app_categories)) '
-    + 'GROUP BY category ORDER BY total DESC').catch(() => []);
-}
-
 async function managePage(ctx) {
   let rows = [];
   let total = 0;
@@ -64,12 +55,12 @@ async function managePage(ctx) {
     // 四条互不依赖 → 一起发。
     // 两个"关联计数"从**逐行子查询**改成一次 GROUP BY 再在 JS 里合并: 逐行子查询是"2 × 分类数"次扫描,
     // 分类一多(上限 200)就是几百次子查询, 而这里只要两条 GROUP BY。
-    const [counted, categories, newsCounts, homeCounts, unknownRows] = await Promise.all([
+    // "未登记分类"体检也从那条 GROUP BY 的结果里挑, 不再为它单独再扫一遍 news(改前这一页要扫两次 news)
+    const [counted, categories, newsCounts, homeCounts] = await Promise.all([
       one(ctx.env, 'SELECT COUNT(*) AS c FROM app_categories'),
       all(ctx.env, 'SELECT * FROM app_categories ORDER BY sort_order ASC, id ASC LIMIT ?', CONTROLLED_LIST_LIMIT),
       all(ctx.env, 'SELECT category, COUNT(*) AS total FROM news WHERE deleted_at IS NULL GROUP BY category'),
-      all(ctx.env, 'SELECT item_id, COUNT(*) AS total FROM app_home_sections GROUP BY item_id'),
-      unknownCategories(ctx.env)
+      all(ctx.env, 'SELECT item_id, COUNT(*) AS total FROM app_home_sections GROUP BY item_id')
     ]);
     total = intOr(counted && counted.c, 0);
     const newsMap = new Map(newsCounts.map((item) => [strOf(item.category), intOr(item.total, 0)]));
@@ -78,7 +69,12 @@ async function managePage(ctx) {
       news_count: newsMap.get(strOf(row.category_key)) || 0,
       home_ref_count: homeMap.get(strOf(row.category_key)) || 0
     }));
-    unknown = unknownRows;
+    // 脏数据体检: 分类标识为空(NULL/空串)或不在分类表里的, 都算"未登记"(计数沿用上面那条 GROUP BY, 按篇数倒序)
+    const knownKeys = new Set(categories.map((row) => strOf(row.category_key)));
+    unknown = newsCounts
+      .filter((item) => { const key = strOf(item.category); return !key || !knownKeys.has(key); })
+      .map((item) => ({ category: item.category, total: intOr(item.total, 0) }))
+      .sort((a, b) => b.total - a.total);
   } catch (err) {
     console.error('获取分类列表失败', err && err.message);
     rows = [];

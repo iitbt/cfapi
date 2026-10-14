@@ -1,6 +1,6 @@
 # 狼牙极限运动笔记 · 主后端（cfapi / Cloudflare Workers）
 
-> **版本**：`v2.5.0` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
+> **版本**：`v2.5.2` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
 > **主域名**：**https://lyjx.250036.xyz**（对外 API + `/admin` 管理后台同一域名）。
 > **素材域名**：**https://storage.250036.xyz**（R2 公开域，与接口域名分离）。
 > **定位**：微信小程序「狼牙极限运动笔记」的**主要后端**。今后小程序的开发、接口变更、联调、发版均以本工程为准；FastAPI 工程（`../fastapi/`）为**备用后端**。
@@ -66,6 +66,7 @@
 | 幂等防重单点 | 后台写操作的防重一律走 `app/admin/lib/utils.js` 的 `onceOrError(ctx, action, parts)`（命中就返回可直接回显的文案），不再各页手拼 `idemKey` + `isDuplicateSubmit` |
 | 页面脚本不内联 | 页面脚本一律放 `app/admin/static/js/*.js`，模板里最多注入配置（`window.__xxxCfg`）—— 大段脚本写在模板字符串里会被吃掉反斜杠、被反引号截断（2026-10-10 两次教训） |
 | 静态资源内联 | `app/admin/assets/static-assets.js`（自有 css/js 内联，由 `tools/embed_admin_assets.mjs` 打包 `app/admin/static/**` 生成）随代码提交但**不是手改文件**；`static/vendor/`（wangEditor / 图标字体 / bootstrap）**不内联**，从 R2 的 `admin/` 前缀直出（见 `DEPLOY.md` 第 7.5 步） |
+| 往返优先（性能） | 线上主要成本是 **D1 往返次数**（一次实测约 240ms，见状态页）：① 互不依赖的查询一律 `Promise.all` 并发发出；② 非关键写库（如浏览量 +1）用 `ctx.waitUntil` 交给后台，不挡响应；③ 几乎不变的配置数据走 `app/core/ttlCache.js` 的 30 秒进程内缓存 |
 | 时间口径 | 全站东八区，集中在 `app/core/timeutil.js`（`beijingNow`/`windowStart`/`toEpoch`） |
 | 安全 | 日志键名/文本双重脱敏（`app/core/logging.js`），后台审计 `auditLog` |
 
@@ -145,6 +146,7 @@ cfapi/
 | `sanitize.js` | 富文本白名单净化 + 图片与视频封面改绝对地址 |
 | `overview.js` | 表行数 / 核心计数唯一实现（须排除 D1 内部表，逐表 COUNT） |
 | `favicon.js` | 站点图标内联字节（约 65KB 生成物，按需解码直出） |
+| `ttlCache.js` | 进程内短 TTL 缓存 `cacheOnce(key, ttlMs, loader)`：只给"几乎不变、却每个请求都要查一次"的配置数据用（分类/首页板块/精选/文案/菜单/轮播图，TTL 30 秒）。跨 isolate 无法主动失效，所以靠 TTL 兜底 —— 后台改完最多 30 秒生效 |
 
 ### 6.4 `app/admin/`（管理后台，前缀 `/admin`）
 
@@ -227,7 +229,7 @@ cfapi/
 
 ### 6.6 `tests/` `tools/` `notes/` `out/`
 
-- **`tests/`**：`*.test.mjs`（约 279 条用例，`node --test`，桩模拟 D1/R2），含 `api_contract`/`api_reads`/`api_writes`、`admin_*`、`unit`、`sql_migrations`（用真实 SQLite 跑迁移脚本）、`stub` 等。
+- **`tests/`**：`*.test.mjs`（约 281 条用例，`node --test`，桩模拟 D1/R2），含 `api_contract`/`api_reads`/`api_writes`、`admin_*`、`unit`、`sql_migrations`（用真实 SQLite 跑迁移脚本）、`stub` 等。
 - **`tools/`**：`diff_api.mjs`（新旧站 JSON 对拍）、`live_smoke.mjs`（真实数据端到端冒烟）、`cf_region.mjs`（R2/D1 区域迁移）、`embed_admin_assets.mjs`（打包静态资源）、`embed_favicon.mjs`（内联 favicon）、`export_sqlite.py`（旧库导出 seed）、`split_sql.py`（SQL 拆块便于控制台粘贴）、`verify_counts.py`（行数校验）、`media_to_r2.md`（素材搬 R2 说明）。
 - **`notes/`**：`api-inventory.md`（对外接口台账）、`structure-map.md`（fastapi↔cfapi 结构与机制对照）、`limits-design.md`（限流方案）、`ops-sql.md`（运营改数 SQL）。
 - **`out/`**：**生成物**（已被 `.gitignore` 忽略）：`seed.sql`（全量数据）+ 拆块 `schema/`、`seed/`、`schema-big/`、`seed-big/`，供控制台逐块粘贴建表/导数据。
@@ -354,7 +356,7 @@ cfapi/
 | --- | --- | --- |
 | 技术栈 | Cloudflare Workers + D1 + R2，零运行时依赖 | Python + FastAPI + SQLite/MySQL（双驱动） |
 | 域名 | `lyjx.250036.xyz` | `api0.250036.xyz`、`api.250036.xyz` |
-| 版本号 | `API_VERSION=2.5.0` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.4.0`） |
+| 版本号 | `API_VERSION=2.5.2` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.4.0`） |
 | 接口 | 33 条业务接口已全量实现并自测 | 历史「唯一后端」，接口同构可互切 |
 | 后台 | 17 页面（字符串拼 HTML） | 同样 17+ 模块（Jinja2 服务端渲染） |
 | 口令哈希 | PBKDF2-SHA256（Workers CPU 限制，不用 bcrypt） | bcrypt |
@@ -367,7 +369,7 @@ cfapi/
 
 1. 口令哈希 bcrypt → **PBKDF2-SHA256**（Workers 免费套餐 CPU 仅 10ms/请求，bcrypt 会 Error 1102）；迭代数保持 10000 并用可选 pepper 补强度（见 `lib/password.js` 顶部注释）。
 2. 缩略图整体移除（接口/前端引用全删）；存量 `_thumb/` 对象清理**待确认**（见 `tools/media_to_r2.md`）。
-3. 无进程内缓存；限流改 D1 计数表 + Cron 清理；模板 Jinja2 → 字符串拼 HTML；access_token 缓存改存 D1（`wechat_tokens`）；gzip 交 Cloudflare 边缘。
+3. 业务数据无缓存（替代旧站 SharedCache）；2.5.2 起**配置类**数据有 30 秒进程内短 TTL 缓存（`core/ttlCache.js`）；限流改 D1 计数表 + Cron 清理；模板 Jinja2 → 字符串拼 HTML；access_token 缓存改存 D1（`wechat_tokens`）；gzip 交 Cloudflare 边缘。
 4. 表行数统计必须排除 D1 内部表（`sqlite_%`/`_cf_%`/`d1_migrations`），且用 `batch()` 逐表 COUNT（旧站一条 `UNION ALL` 在 D1 上会失败）。
 
 **备用用途**：当主后端（本工程）出现异常时，小程序可在「我的 → 线路切换」切到线路二 `api0.250036.xyz`（fastapi）回滚；线路三 `api.250036.xyz` 为备用（指向待确认，见 `xapp` README 第 7.1 节）。
@@ -383,4 +385,7 @@ cfapi/
 5. **`api.250036.xyz` 指向待确认**：`xapp` 侧线路三标注「待确认」，以实际 DNS 解析为准。
 6. **本地联调微信登录**：设 `DEV_WECHAT_MOCK="1"` 可用任意 code 登录（需本地 dev 环境）。
 7. **测试**：`npm test` 跑 `node --test`（桩模拟 D1/R2），不连外网；`tools/live_smoke.mjs` 跑真实数据端到端冒烟。
+8. **线上"又慢了"先看状态页的「D1 响应」**：它是一次真实 D1 往返的耗时（基线约 240ms）。接口/页面的耗时 ≈ **串行轮数 × 它**，所以"多了几百毫秒"基本都是多了一轮串行查询，而不是单条 SQL 变慢。
+9. **怎么量"串行轮数"**：本地用 `tests/stub.mjs` / `tests/admin_stub.mjs` 的桩，把每条 D1 语句包一层 `await sleep(240)`，再跑一次该页面/接口 —— `耗时 ÷ 240ms` 就是串行轮数（后台全部 GET 路径可从 `app/admin/pages/index.js` 的 `PAGE_ROUTES` 列出来）。2.5.2 的对照：控制面板 7 轮 → 2 轮、`/config/get_app_config` 6 轮 → 1 轮（命中缓存 0 轮）、`/news/list` 3 轮 → 1~2 轮、`/news/detail` 4 轮 → 2 轮。
+10. **配置类数据最多 30 秒延迟生效**：分类/首页板块/精选/文案/菜单/轮播图走 `core/ttlCache.js` 的 30 秒进程内缓存（跨 isolate 没法主动失效）。后台改完若在小程序侧没立刻看到，等半分钟或重启小程序再试。
 8. **`notes/`、`out/` 已被 `.gitignore` 忽略**：`notes/` 是迁移/运维笔记，`out/` 是生成物，不要手动提交。

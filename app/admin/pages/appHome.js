@@ -59,24 +59,24 @@ async function managePage(ctx) {
   let featuredRows = [];
   let error = '';
   try {
-    // 两块内容互不依赖 → 并发(各占一次 D1 往返); 只查当前可见的那几块
-    const [home, featured] = await Promise.all([
+    // 三块数据互不依赖 → 并发(各占一次 D1 往返); 只查当前可见的那几块。
+    // 分类名实时取自分类表(分类改名后列表立即跟随), 一起并发发出, 不再多等一轮
+    const [home, featured, nameMap] = await Promise.all([
       homeKeys.length
         ? all(ctx.env,
           `SELECT * FROM app_home_sections WHERE section_key IN (${homeKeys.map(() => '?').join(',')})`,
           ...homeKeys)
         : [],
-      wantFeatured ? all(ctx.env, 'SELECT * FROM app_featured_items') : []
+      wantFeatured ? all(ctx.env, 'SELECT * FROM app_featured_items') : [],
+      getNameMap(ctx.env)
     ]);
     homeRows = home;
     featuredRows = featured;
+    ctx.nameMap = nameMap;
   } catch (err) {
     console.error('获取首页内容失败', err && err.message);
     error = '读取数据失败，请稍后重试';
   }
-  // 分类名实时取自分类表(分类改名后列表立即跟随)
-  ctx.nameMap = await getNameMap(ctx.env);
-
   const cards = visible.map((spec) => {
     const source = spec.table === 'app_home_sections'
       ? homeRows.filter((row) => String(row.section_key || '') === spec.key)

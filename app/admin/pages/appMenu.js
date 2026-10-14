@@ -80,11 +80,15 @@ async function managePage(ctx) {
   let error = '';
   try {
     // 只查两次: 一次拿全表(key/status, 用于总数/启用数/已有 key), 一次拿展示行
-    const allRows = await all(ctx.env, 'SELECT menu_key, status FROM app_menu_items');
+    // 两条互不依赖 → 并发(各占一次 D1 往返, 状态页实测一次约 240ms)
+    const [allRows, listRows] = await Promise.all([
+      all(ctx.env, 'SELECT menu_key, status FROM app_menu_items'),
+      all(ctx.env, 'SELECT * FROM app_menu_items ORDER BY sort_order ASC, id ASC LIMIT ?', CONTROLLED_LIST_LIMIT)
+    ]);
     total = allRows.length;
     enabledCount = allRows.filter((item) => intOr(item.status, 0) === 1).length;
     existingKeys = allRows.map((item) => strOf(item.menu_key));
-    rows = await all(ctx.env, 'SELECT * FROM app_menu_items ORDER BY sort_order ASC, id ASC LIMIT ?', CONTROLLED_LIST_LIMIT);
+    rows = listRows;
   } catch (err) {
     console.error('获取我的页菜单失败', err && err.message);
     rows = [];

@@ -7,14 +7,22 @@ import { MAX_BATCH_NEWS_IDS, MAX_COMMENT_LENGTH, PAGE_MAX, clampPage } from './s
 import { absolutizeMedia, sanitizeHtml } from '../core/sanitize.js';
 import { beijingNow } from '../core/timeutil.js';
 import { QUOTAS, checkQuota, quotaStatement, userKey } from '../core/ratelimit.js';
+import { cacheOnce } from '../core/ttlCache.js';
+import { logError } from '../core/logging.js';
 
 const LIST_COLUMNS = 'id,title,desc,image,video_url,category,type,status,publish_time,activity_time,view_count,likes,favorites,shares,user_id';
 // 留言长度 / 批量上限 / 分页夹取的口径统一在 api/schemas.js(对照旧站 app/api/schemas.py)
 
+//: 分类表只有十来行, 却每次列表请求都要查一次: 缓存 30 秒, 命中时整条列表少一次 D1 往返
+//: (代价: 后台改分类的启用状态后, 最多 30 秒小程序侧才生效)
+const ACTIVE_CATEGORIES_TTL_MS = 30 * 1000;
+
 async function activeCategories(env) {
   try {
-    const rows = await all(env, 'SELECT category_key FROM app_categories WHERE status=1');
-    return new Set(rows.map((row) => str(row.category_key).toLowerCase()));
+    return await cacheOnce('api:active_categories', ACTIVE_CATEGORIES_TTL_MS, async () => {
+      const rows = await all(env, 'SELECT category_key FROM app_categories WHERE status=1');
+      return new Set(rows.map((row) => str(row.category_key).toLowerCase()));
+    });
   } catch (error) {
     return new Set(['outdoor', 'motorcycle', 'fitness', 'skateboard', 'football', 'swimming', 'diving', 'food', 'other']);
   }
@@ -51,20 +59,24 @@ export function registerNewsRoutes(router) {
       }
 
       if (page <= 0) {
-        const rows = await all(env,
-          `SELECT ${LIST_COLUMNS} FROM news WHERE ${where} ORDER BY publish_time DESC, id DESC LIMIT ?`,
-          ...params, MAX_BATCH_NEWS_IDS);
-        const viewer = await currentUser(env, request, body);
+        // 取行与"看身份"互不依赖 → 并发: 少一次串行就少一次 D1 往返(状态页实测一次约 240ms)
+        const [rows, viewer] = await Promise.all([
+          all(env, `SELECT ${LIST_COLUMNS} FROM news WHERE ${where} ORDER BY publish_time DESC, id DESC LIMIT ?`,
+            ...params, MAX_BATCH_NEWS_IDS),
+          currentUser(env, request, body)
+        ]);
         const liked = await likedIds(env, viewer, rows);
         return json({ code: 200, data: rows.map((row) => withLiked(mapListRow(row, env), liked)) });
       }
 
-      const total = Number((await one(env,
-        `SELECT COUNT(*) AS c FROM news WHERE ${where}`, ...params)).c) || 0;
-      const rows = await all(env,
-        `SELECT ${LIST_COLUMNS} FROM news WHERE ${where} ORDER BY publish_time DESC, id DESC LIMIT ? OFFSET ?`,
-        ...params, size, (page - 1) * size);
-      const viewer = await currentUser(env, request, body);
+      // 总数、取行、看身份三条互不依赖 → 并发发出(改前是三次串行等待, 每次约 240ms)
+      const [counted, rows, viewer] = await Promise.all([
+        one(env, `SELECT COUNT(*) AS c FROM news WHERE ${where}`, ...params),
+        all(env, `SELECT ${LIST_COLUMNS} FROM news WHERE ${where} ORDER BY publish_time DESC, id DESC LIMIT ? OFFSET ?`,
+          ...params, size, (page - 1) * size),
+        currentUser(env, request, body)
+      ]);
+      const total = Number(counted.c) || 0;
       const liked = await likedIds(env, viewer, rows);
       // 2.4.0: 不再探测/下发 image_thumb(缩略图功能整体移除) —— 小程序侧本来就"没有这个键就回退原图",
       // 所以老版本客户端拿到的是原图地址, 不需要跟着改。
@@ -80,7 +92,7 @@ export function registerNewsRoutes(router) {
   });
 
   // ---------------- 详情 ----------------
-  router.get('/news/detail', async (request, env) => {
+  router.get('/news/detail', async (request, env, ctx) => {
     const url = new URL(request.url);
     const body = Object.fromEntries(url.searchParams.entries());
     const id = intOf(body.id);
@@ -96,14 +108,24 @@ export function registerNewsRoutes(router) {
 
       const viewerId = Number(item.viewer_id) || 0;
       const authorId = Number(item.user_id) || 0;
-      // 浏览量自增: 作者自己不计数, 同一访客 60 秒内只计一次
-      const view = viewerId
-        ? await one(env, 'SELECT id, created_at FROM news_view_history WHERE news_id=? AND user_id=?', id, viewerId)
-        : null;
+      // 两件事互不依赖 → 并发: ①「同一访客 60 秒内只计一次」要查浏览历史; ②「我的互动状态」要查点赞/收藏/分享/浏览。
+      // 改前是两轮串行 D1 往返(状态页实测一轮约 240ms)
+      const [view, state] = await Promise.all([
+        viewerId
+          ? one(env, 'SELECT id, created_at FROM news_view_history WHERE news_id=? AND user_id=?', id, viewerId)
+          : null,
+        userActionState(env, viewerId, id)
+      ]);
       const recentlyViewed = !!(view && view.created_at
         && (Date.now() - new Date(`${String(view.created_at).replace(' ', 'T')}+08:00`).getTime()) < 60000);
       if (viewerId !== authorId && !recentlyViewed) {
-        await run(env, 'UPDATE news SET view_count=COALESCE(view_count,0)+1 WHERE id=?', id);
+        // 浏览量自增(作者自己不计数, 同一访客 60 秒内只计一次): 这一条 UPDATE 也要一次 D1 往返,
+        // 但详情页没必要等它写完才返回 → 交给 waitUntil 后台落库, 失败只记日志
+        // (改前是 await, 写失败还会把整个详情接口变成 500)
+        const increment = run(env, 'UPDATE news SET view_count=COALESCE(view_count,0)+1 WHERE id=?', id)
+          .catch((error) => logError('news.view_count_failed', error));
+        if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(increment);
+        else await increment;
         item.view_count = (Number(item.view_count) || 0) + 1;
       }
 
@@ -126,7 +148,6 @@ export function registerNewsRoutes(router) {
         data.is_admin = true;
       }
 
-      const state = await userActionState(env, viewerId, id);
       Object.assign(data, state);
       return json({ code: 200, msg: '获取成功', data });
     } catch (error) {
@@ -339,14 +360,11 @@ export function registerNewsRoutes(router) {
     if (!auth.ok) return fail(auth.code, auth.message);
     try {
       // 一次最多 200 个 id, 但 D1 单条语句只能绑 100 个参数 → 必须分批(否则整条语句报错, 接口直接 500)
-      const liked = [];
-      for (const chunk of chunkIds(ids)) {
-        const rows = await all(env,
-          `SELECT news_id FROM news_likes WHERE user_id=? AND news_id IN (${marksOf(chunk)})`,
-          auth.userId, ...chunk);
-        liked.push(...rows);
-      }
-      return ok({ liked_news_ids: liked.map((row) => Number(row.news_id)) });
+      // 分批之间互不依赖 → 并发(200 个 id = 3 批, 改前是 3 次串行等待)
+      const parts = await Promise.all(chunkIds(ids).map((chunk) => all(env,
+        `SELECT news_id FROM news_likes WHERE user_id=? AND news_id IN (${marksOf(chunk)})`,
+        auth.userId, ...chunk)));
+      return ok({ liked_news_ids: parts.flat().map((row) => Number(row.news_id)) });
     } catch (error) {
       return fail(500, '服务器错误，请稍后重试');
     }
@@ -357,14 +375,11 @@ async function likedIds(env, viewer, rows) {
   if (!viewer || !rows.length) return new Set();
   try {
     // 不分页的那次列表最多回 200 条(MAX_BATCH_NEWS_IDS), 超过 D1 的 100 个绑定参数上限 → 分批查
-    const found = [];
-    for (const chunk of chunkIds(rows.map((row) => row.id))) {
-      const part = await all(env,
-        `SELECT news_id FROM news_likes WHERE user_id=? AND news_id IN (${marksOf(chunk)})`,
-        viewer.id, ...chunk);
-      found.push(...part);
-    }
-    return new Set(found.map((row) => Number(row.news_id)));
+    // 分批之间互不依赖 → 并发(不分页那次最多 200 条 = 3 批, 改前是 3 次串行等待)
+    const parts = await Promise.all(chunkIds(rows.map((row) => row.id)).map((chunk) => all(env,
+      `SELECT news_id FROM news_likes WHERE user_id=? AND news_id IN (${marksOf(chunk)})`,
+      viewer.id, ...chunk)));
+    return new Set(parts.flat().map((row) => Number(row.news_id)));
   } catch (error) {
     return new Set();
   }

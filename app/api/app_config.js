@@ -4,6 +4,7 @@ import { okMessageWithTimestamp } from '../core/response.js';
 import { all, one, str } from '../core/db.js';
 import { assetUrl, iconAssetUrl } from '../core/media_scheme.js';
 import { nowEpoch } from '../core/timeutil.js';
+import { cacheOnce } from '../core/ttlCache.js';
 
 const NOTE_CATEGORIES = [
   { id: 'outdoor', name: '户外' }, { id: 'motorcycle', name: '摩旅' }, { id: 'fitness', name: '健身' },
@@ -67,18 +68,27 @@ async function safeAll(env, sql, ...args) {
   }
 }
 
+//: 这六块数据几乎不变, 却是小程序每次启动都要查一遍的聚合接口。
+//: 按 isolate 缓存 30 秒: 命中时整段查库都省掉(状态页实测一次 D1 往返约 240ms);
+//: 代价是后台改文案/分类/菜单后最多 30 秒才对小程序生效 —— 后台与接口通常不在同一个 isolate 里,
+//: 写操作清不掉别人的缓存(见 admin/lib/utils.js 的 invalidateEntityCache 说明)。
+const CONFIG_CACHE_TTL_MS = 30 * 1000;
+
+/** 六块配置的取数: 彼此无依赖 → 并发(耗时 ≈ 最慢的一条而不是六条之和); 单块查库失败各自回退 null, 由下面用内置常量兜底。 */
+function loadConfigRows(env) {
+  return cacheOnce('api:app_config_rows', CONFIG_CACHE_TTL_MS, () => Promise.all([
+    safeAll(env, 'SELECT category_key, name FROM app_categories WHERE status=1 ORDER BY sort_order ASC, id ASC'),
+    safeAll(env, 'SELECT section_key,item_id,image_url,status FROM app_home_sections ORDER BY section_key ASC, sort_order ASC, id ASC'),
+    safeAll(env, 'SELECT item_key,name,image_url,page_path,status FROM app_featured_items ORDER BY sort_order ASC, id ASC'),
+    one(env, 'SELECT latest_version,min_version,update_tip,update_content FROM app_version_config WHERE id=1').catch(() => null),
+    safeAll(env, 'SELECT text_key,content,status FROM app_texts ORDER BY group_name ASC, sort_order ASC, id ASC'),
+    safeAll(env, 'SELECT menu_key,title,icon,link_type,link_value,need_login,trusted_only,status FROM app_menu_items ORDER BY sort_order ASC, id ASC')
+  ]));
+}
+
 export function registerAppConfigRoutes(router) {
   router.any('/config/get_app_config', async (request, env) => {
-    // 六块数据之间没有依赖(只有 nameOf 是内存里拼出来的): 并发查库, 接口耗时 ≈ 最慢的那一条而不是六条之和 ——
-    // 首屏的分类/首页板块/精选都在等这个聚合接口, 串行查六次会把它们的等待叠起来
-    const [categoryRows, sectionRows, featuredRows, versionRow, textRows, menuRows] = await Promise.all([
-      safeAll(env, 'SELECT category_key, name FROM app_categories WHERE status=1 ORDER BY sort_order ASC, id ASC'),
-      safeAll(env, 'SELECT section_key,item_id,image_url,status FROM app_home_sections ORDER BY section_key ASC, sort_order ASC, id ASC'),
-      safeAll(env, 'SELECT item_key,name,image_url,page_path,status FROM app_featured_items ORDER BY sort_order ASC, id ASC'),
-      one(env, 'SELECT latest_version,min_version,update_tip,update_content FROM app_version_config WHERE id=1').catch(() => null),
-      safeAll(env, 'SELECT text_key,content,status FROM app_texts ORDER BY group_name ASC, sort_order ASC, id ASC'),
-      safeAll(env, 'SELECT menu_key,title,icon,link_type,link_value,need_login,trusted_only,status FROM app_menu_items ORDER BY sort_order ASC, id ASC')
-    ]);
+    const [categoryRows, sectionRows, featuredRows, versionRow, textRows, menuRows] = await loadConfigRows(env);
 
     // 分类: 表空/异常回退内置
     const categories = (categoryRows && categoryRows.length ? categoryRows : NOTE_CATEGORIES)

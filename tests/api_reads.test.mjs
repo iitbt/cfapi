@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { FAVICON_LINK } from '../app/core/html.js';
+import worker from '../main.js';
 import { TRUSTED_USER_ROW, USER_ROW, get, getJson, makeEnv } from './stub.mjs';
 
 const noteRow = {
@@ -202,6 +203,39 @@ test('应用配置: message 键 + timestamp, 表空时回退内置内容', async
   assert.equal(data.menu[0].need_login, true);
   assert.equal(data.version.update_tip, '发现新版本，更新后体验更好');
   assert.equal(data.texts['login.prompt'].length > 0, true);
+});
+
+test('配置接口(2.5.2): 第二次请求走 isolate 内缓存, 一次库都不查', async () => {
+  // 30 秒 TTL 的进程内缓存: 小程序每次启动都调这个聚合接口, 命中时整段查库都省掉
+  const { env, calls } = makeEnv({ db: () => null });
+  const first = await getJson('/config/get_app_config', env);
+  const afterFirst = calls.length;
+  const second = await getJson('/config/get_app_config', env);
+  assert.deepEqual(second.data, first.data, '缓存命中时数据与首次一致');
+  assert.equal(calls.length - afterFirst, 0, '第二次请求不该再查库');
+});
+
+test('笔记详情(2.5.2): 浏览量自增交给 waitUntil —— 写库卡住也不影响响应', async () => {
+  const row = {
+    id: 1, user_id: 9, title: '标题', desc: '', content: '<p>正文</p>', image: '', video_url: '',
+    category: 'outdoor', type: 'admin_users', status: 'approved', publish_time: '2026-10-01 10:00:00',
+    activity_time: '', view_count: 5, likes: 0, favorites: 0, shares: 0, deleted_at: null,
+    author: 'admin', author_nickname: '管理员', viewer_id: 3
+  };
+  const { env } = makeEnv({
+    db: (sql, args, kind) => {
+      if (/FROM news n LEFT JOIN/i.test(sql)) return row;
+      // 自增那条 UPDATE 永远不落库, 用来证明响应没有在等它
+      if (kind === 'run' && /UPDATE news SET view_count/i.test(sql)) return new Promise(() => {});
+      return null;
+    }
+  });
+  const pending = [];
+  const res = await worker.fetch(new Request('https://api.test/news/detail?id=1'), env,
+    { waitUntil: (promise) => pending.push(promise) });
+  assert.equal(res.status, 200);
+  assert.equal(pending.length, 1, '自增要交给 waitUntil');
+  assert.equal((await res.json()).data.view_count, 6, '响应里的计数照样 +1');
 });
 
 test('笔记列表: 不带 page 没有 msg 键; 带 page 有 total 与 has_more', async () => {

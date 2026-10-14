@@ -187,10 +187,15 @@ async function rowsFragment(ctx) {
   const where = listWhere(ctx.query);
   const page = clampPage(ctx.query.page, null);
   let rows = [];
+  let nameMap = null;
   try {
-    rows = await all(ctx.env,
-      `SELECT ${LIST_COLUMNS} FROM news${where.sql} ORDER BY publish_time DESC, id DESC LIMIT ? OFFSET ?`,
-      ...where.args, PER_PAGE + 1, (page - 1) * PER_PAGE);
+    // 取行与分类名互不依赖 → 并发(片段里改前是两轮串行等待)
+    [rows, nameMap] = await Promise.all([
+      all(ctx.env,
+        `SELECT ${LIST_COLUMNS} FROM news${where.sql} ORDER BY publish_time DESC, id DESC LIMIT ? OFFSET ?`,
+        ...where.args, PER_PAGE + 1, (page - 1) * PER_PAGE),
+      getNameMap(ctx.env)
+    ]);
   } catch (err) {
     console.error('获取笔记分页数据失败', err && err.message);
     return json({ success: false, message: '加载失败，请稍后重试' });
@@ -199,7 +204,7 @@ async function rowsFragment(ctx) {
   rows = rows.slice(0, PER_PAGE);
   if (!rows.length) return json({ success: true, rows: '', has_more: false });
   // 触底加载的片段也要显示分类名称(与首屏同一套渲染)
-  ctx.nameMap = await getNameMap(ctx.env);
+  ctx.nameMap = nameMap;
   return json({ success: true, rows: renderRows(ctx, rows), has_more: hasMore });
 }
 

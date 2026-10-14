@@ -65,11 +65,17 @@ async function managePage(ctx) {
   let allKeys = [];
   let error = '';
   try {
-    total = intOr((await one(ctx.env, `SELECT COUNT(*) AS c FROM app_texts${where}`, ...args)).c, 0);
-    rows = await all(ctx.env,
-      `SELECT * FROM app_texts${where} ORDER BY sort_order ASC, id ASC LIMIT ?`, ...args, CONTROLLED_LIST_LIMIT);
-    // 缺内置文案必须按**全表**判断: 用被 LIMIT 截断的 rows 会把"排在 200 条之后"的误报成缺失
-    allKeys = (await all(ctx.env, 'SELECT text_key FROM app_texts')).map((item) => strOf(item.text_key));
+    // 三条互不依赖 → 并发(改前是三次串行等待, 每次约 240ms)
+    const [counted, listRows, keyRows] = await Promise.all([
+      one(ctx.env, `SELECT COUNT(*) AS c FROM app_texts${where}`, ...args),
+      all(ctx.env,
+        `SELECT * FROM app_texts${where} ORDER BY sort_order ASC, id ASC LIMIT ?`, ...args, CONTROLLED_LIST_LIMIT),
+      // 缺内置文案必须按**全表**判断: 用被 LIMIT 截断的 rows 会把"排在 200 条之后"的误报成缺失
+      all(ctx.env, 'SELECT text_key FROM app_texts')
+    ]);
+    total = intOr(counted && counted.c, 0);
+    rows = listRows;
+    allKeys = keyRows.map((item) => strOf(item.text_key));
   } catch (err) {
     console.error('获取运营文案失败', err && err.message);
     rows = [];
