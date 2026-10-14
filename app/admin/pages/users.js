@@ -25,11 +25,11 @@ const TRUSTED_FILTERS = ['all', 'trusted', 'untrusted', 'applied'];
 const TRUSTED_NOTICES = {
   set_trusted: {
     title: '内部测试申请已通过',
-    content: '管理员已通过你的内部测试申请。现在可以查看专题视频、留言免审，并使用「仅内部测试可见」的功能。'
+    content: '管理员已通过你的内部测试申请。现在可以查看更多测试内容，并使用「仅内部测试可见」的功能。'
   },
   remove_trusted: {
     title: '内部测试已取消',
-    content: '管理员已取消你的内部测试身份。专题视频、留言免审与「仅内部测试可见」的功能将不再可用。'
+    content: '管理员已取消你的内部测试身份。更多测试内容与「仅内部测试可见」的功能将不再可用。'
   }
 };
 
@@ -68,7 +68,7 @@ function actionsCell(ctx, row) {
     ? `<form method="post" class="d-inline">${base}<input type="hidden" name="action" value="remove_trusted"><button class="btn btn-sm btn-outline-secondary" type="submit"
          onclick="return confirm('取消该用户的内部测试身份？取消后将失去专题视频查看、留言免审与「仅内部测试可见」菜单。')">取消内部测试</button></form>`
     : `<form method="post" class="d-inline">${base}<input type="hidden" name="action" value="set_trusted"><button class="btn btn-sm btn-outline-secondary" type="submit"
-         onclick="return confirm('设为内部测试用户？设置后可查看专题视频、留言免审，并看到「仅内部测试可见」的菜单。')">设为内部测试</button></form>`;
+         onclick="return confirm('设为内部测试用户？设置后可查看更多测试内容，并看到「仅内部测试可见」的菜单。')">设为内部测试</button></form>`;
   const restore = intOr(row.status, 0) !== 0
     ? `<form method="post" class="d-inline">${base}<input type="hidden" name="action" value="restore_user"><button class="btn btn-sm btn-outline-success" type="submit"
          onclick="return confirm('恢复该账号？恢复后他可以正常登录。')">恢复账号</button></form>`
