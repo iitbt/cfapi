@@ -7,7 +7,7 @@ import { findCall, get, HOST, loginCookie, makeAdminEnv, post } from './admin_st
 
 const USER_ROW = {
   id: 7, username: 'wx_abc', nickname: '老王', email: '', avatar: 'avatar_uploads/a.png',
-  login_type: 'wechat', is_trusted: 0, status: 0, create_time: '2026-09-01 10:00:00',
+  login_type: 'wechat', is_trusted: 0, test_applied: 0, status: 0, create_time: '2026-09-01 10:00:00',
   last_login_time: '2026-09-30 20:00:00', deleted_at: null, raw_nickname: '老王'
 };
 const NEWS_ROW = {
@@ -27,6 +27,27 @@ test('用户列表: 搜索与内部测试筛选进 SQL, 昵称直读库字段', 
   assert.ok(/username LIKE \?/.test(count.sql) && /is_trusted = 0/.test(count.sql));
 });
 
+test('用户列表(4.4.7): 已申请的用户显示「已申请」徽章, 也能按「仅已申请」筛出来', async () => {
+  const applied = Object.assign({}, USER_ROW, { test_applied: 1 });
+  const { env, state } = makeAdminEnv({
+    rows: { users: [applied, USER_ROW, Object.assign({}, USER_ROW, { id: 8, is_trusted: 1, test_applied: 1 })] },
+    counts: { users: 3 }
+  });
+  const cookie = await loginCookie(env);
+  const html = await (await get('/admin/users', env, cookie)).text();
+  assert.ok(html.includes('普通') && html.includes('微信'), '类型列照旧拼「普通 微信」');
+  assert.ok(html.includes('<span class="badge text-bg-warning">已申请</span>'), '已申请要有徽章');
+  // 已是内部测试的用户即便残留申请标记也不显示「已申请」(管理员处理过就该回到「内部测试 微信」)
+  assert.equal((html.match(/已申请<\/span>/g) || []).length, 1, '只给"待处理"的那一条打徽章');
+
+  const filtered = await (await get('/admin/users?trusted=applied', env, cookie)).text();
+  assert.ok(filtered.includes('>仅已申请<'), '筛选下拉要有这一项');
+  // 取**最后一次**用户表计数: 前面那次未筛选的 GET 也在 state.calls 里
+  const counts = state.calls.filter((call) => /COUNT\(\*\) AS total FROM users/i.test(call.sql));
+  const last = counts[counts.length - 1];
+  assert.ok(last && /test_applied = 1 AND is_trusted = 0/.test(last.sql), '「仅已申请」要真的进 SQL');
+});
+
 test('用户列表: 非超管看不到敏感操作按钮', async () => {
   const { env } = makeAdminEnv({ role: 'normal', rows: { users: [USER_ROW] }, counts: { users: 1 } });
   const cookie = await loginCookie(env);
@@ -43,6 +64,9 @@ test('用户写操作: 设为内部测试 / 删除用户(级联) / 恢复账号'
   const trusted = await post('/admin/users', { action: 'set_trusted', user_id: '7' }, env, cookie);
   assert.equal(trusted.status, 302);
   assert.ok(trusted.headers.get('location').includes(encodeURIComponent('已成功设置为内部测试用户')));
+  // 4.4.7: 设为内部测试的同时清掉申请标记(申请已处理, 列表不再显示「已申请」)
+  const setTrusted = findCall(state, /UPDATE users SET is_trusted = 1/i);
+  assert.ok(/test_applied = 0/.test(setTrusted.sql), setTrusted.sql);
 
   // 列表里的两个按钮都要能提交, 且先弹确认(超管才看得到)
   const listEnv = makeAdminEnv({ rows: { users: [USER_ROW] }, counts: { users: 1 } });

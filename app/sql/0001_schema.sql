@@ -191,7 +191,10 @@ CREATE TABLE "users" (
   "create_time" TEXT DEFAULT (datetime('now','+8 hours')),
   "last_login_time" TEXT,
   "is_trusted" INTEGER NOT NULL DEFAULT 0
-, status INTEGER NOT NULL DEFAULT 0, deleted_at TEXT, orig_nickname TEXT, orig_avatar TEXT, nickname_modified INTEGER NOT NULL DEFAULT 0, raw_nickname TEXT);
+, status INTEGER NOT NULL DEFAULT 0, deleted_at TEXT, orig_nickname TEXT, orig_avatar TEXT, nickname_modified INTEGER NOT NULL DEFAULT 0, raw_nickname TEXT
+-- 内部测试申请标记(4.4.7): 1 = 用户已在小程序「我的 → 申请测试」提交, 后台用户列表显示「已申请」;
+-- 管理员点「设为内部测试」时连同 is_trusted 一起清 0(申请已处理, 不再重复显示)
+, test_applied INTEGER NOT NULL DEFAULT 0);
 CREATE UNIQUE INDEX app_categories_key ON app_categories (category_key);
 CREATE UNIQUE INDEX app_featured_items_uniq
   ON app_featured_items (item_key);

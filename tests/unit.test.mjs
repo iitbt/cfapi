@@ -409,11 +409,11 @@ test('IN 分片: 按 D1 的 100 个绑定参数上限切批, 顺带去重与过�
   chunks.forEach((chunk) => assert.equal(marksOf(chunk), chunk.map(() => '?').join(',')));
 });
 
-test('路由表就是计划里的 33 条对外接口(静态页不计入)', () => {
+test('路由表就是计划里的 34 条对外接口(静态页不计入)', () => {
   const expected = [
     '/user/login', '/user/get_user_info', '/user/update_profile', '/user/upload_avatar',
     '/user/delete_account', '/user/deleted_account_action', '/user/user_favorites',
-    '/user/user_likes', '/user/user_view_history',
+    '/user/user_likes', '/user/user_view_history', '/user/apply_test',
     '/news/list', '/news/detail', '/news/like', '/news/favorite', '/news/share',
     '/news/add_comment', '/news/get_comments', '/news/check_user_action', '/news/check_user_like_batch',
     '/content/get_banners', '/content/get_outdoor', '/content/get_motorcycle', '/content/get_notices',
@@ -423,7 +423,7 @@ test('路由表就是计划里的 33 条对外接口(静态页不计入)', () =>
     '/health', '/health/ready', '/metrics'
   ];
   const paths = new Set(routeTable().filter((key) => !key.includes('/pages/')).map((key) => key.split(' ')[1]));
-  assert.equal(expected.length, 33);
+  assert.equal(expected.length, 34);
   const missing = expected.filter((path) => !paths.has(path));
   assert.deepEqual(missing, []);
 });

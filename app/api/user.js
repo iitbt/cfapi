@@ -11,6 +11,7 @@ import { md5Hex } from '../core/md5.js';
 import { beijingNow, nowEpoch, toEpoch } from '../core/timeutil.js';
 import { code2Session, nicknameAllowed } from '../core/wechat.js';
 import { LOGIN_LIMIT, QUOTAS, checkQuota, loginClearStatement, loginFailStatement, loginLockState, quotaStatement, userKey } from '../core/ratelimit.js';
+import { logError, logWarn } from '../core/logging.js';
 
 const DEFAULT_AVATAR = '/images/user.jpg';
 const COMMENT_LIKE_COLUMNS = 'n.id,n.title,n.desc,n.image,n.video_url,n.category,n.type,n.status,n.publish_time,n.activity_time,n.view_count,n.likes,n.favorites,n.shares,n.user_id';
@@ -84,8 +85,55 @@ function publicUser(env, row) {
     avatar: assetUrl(env, row.avatar || DEFAULT_AVATAR),
     login_type: str(row.login_type) || 'wechat',
     is_trusted: Number(row.is_trusted) || 0,
+    // 内部测试申请标记(4.4.7): 小程序「我的」页据此把「申请测试」显示成「等待通过」
+    test_applied: Number(row.test_applied) || 0,
     token: row.token === undefined || row.token === null ? null : String(row.token)
   };
+}
+
+// ---------------- 内部测试申请通知(企业微信机器人) ----------------
+const WXWORK_WEBHOOK_URL = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=';
+
+/** 通知正文: 管理员照着就能在后台定位到人(昵称 + ID + 用户名 + 申请时间)。 */
+function testApplyNoticeText(user) {
+  return [
+    '【内部测试申请】',
+    `用户：${str(user.nickname) || str(user.username) || '-'}（ID ${user.id}／${str(user.username) || '-'}）`,
+    `登录方式：${str(user.login_type) === 'wechat' ? '微信' : '账号'}`,
+    `申请时间：${beijingNow()}`,
+    '处理：管理后台 → 用户 → 设为内部测试'
+  ].join('\n');
+}
+
+/**
+ * 发通知给管理员(企业微信机器人)。
+ *
+ * 两条纪律:
+ *   ① **不阻塞、不影响用户提交结果** —— 有 ctx.waitUntil 就丢给它, 通知失败只记日志(用户那边照样"申请已提交");
+ *   ② 没配 key(本地开发 / 单测)直接跳过, 不往外部发请求。
+ * 企业微信失败时 HTTP 仍是 200, 错误在 body.errcode 里, 所以必须看 errcode, 否则"以为发了其实没发"。
+ */
+async function notifyTestApply(env, ctx, user) {
+  const key = settings(env).wxworkWebhookKey;
+  if (!key) return;
+  const task = fetch(`${WXWORK_WEBHOOK_URL}${encodeURIComponent(key)}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ msgtype: 'text', text: { content: testApplyNoticeText(user) } }),
+    signal: AbortSignal.timeout(5000)
+  }).then(async (response) => {
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || (payload && Number(payload.errcode) !== 0)) {
+      logWarn('user.test_apply_notify_rejected',
+        { status: response.status, errcode: payload && payload.errcode, user_id: user.id });
+    }
+  }).catch((error) => logError('user.test_apply_notify_failed', error, { user_id: user.id }));
+  if (ctx && typeof ctx.waitUntil === 'function') {
+    ctx.waitUntil(task);
+    return;
+  }
+  // 没有 waitUntil 的调用环境(单测/其它入口): 等这次尽力发送, 但 task 内部已兜住异常, 不会把接口拖失败
+  await task;
 }
 
 async function userByOpenId(env, openid) {
@@ -219,6 +267,31 @@ export function registerUserRoutes(router) {
     } catch (error) {
       return fail(503, '服务繁忙，请稍后重试');
     }
+  });
+
+  // ---------------- 内部测试申请(4.4.7) ----------------
+  // 只能提交一次: 已是内部测试用户 / 已有待处理申请都直接拒掉(重复点击不会再发通知)。
+  // 处理入口仍在后台「用户 → 设为内部测试」, 申请只负责"让管理员知道有人想进来"。
+  router.post('/user/apply_test', async (request, env, ctx, args) => {
+    const body = args.body || {};
+    const token = tokenOf(request, body);
+    if (!token) return fail(401, AUTH_MESSAGES.needLogin);
+    const user = await currentUser(env, request, body);
+    if (!user) return fail(401, AUTH_MESSAGES.expired);
+    if (Number(user.is_trusted) === 1) return fail(409, '你已是内部测试用户，无需申请');
+    if (Number(user.test_applied) === 1) return fail(409, '申请已提交，请耐心等待管理员处理');
+    try {
+      // 条件更新当"锁": 双击/并发时只有一条能把 0 改成 1, changes=0 就是重复提交
+      const result = await run(env, 'UPDATE users SET test_applied=1 WHERE id=? AND test_applied=0', user.id);
+      if (!result || !result.meta || Number(result.meta.changes) < 1) {
+        return fail(409, '申请已提交，请耐心等待管理员处理');
+      }
+    } catch (error) {
+      return fail(500, '服务器错误，请稍后重试');
+    }
+    // 通知管理员(失败只记日志, 不影响下面这条成功结果)
+    await notifyTestApply(env, ctx, user);
+    return ok({ test_applied: 1 }, '申请已提交，管理员会尽快处理');
   });
 
   router.post('/user/update_profile', async (request, env, ctx, args) => {

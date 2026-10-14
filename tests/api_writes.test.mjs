@@ -314,3 +314,78 @@ test('收藏/点赞/历史列表: 时间转 Unix 秒, has_more 按行数判定',
   const unauthorized = await postJson('/user/user_likes', {}, env);
   assert.equal(unauthorized.code, 401);
 });
+
+test('申请内部测试(4.4.7): 未登录 401 / 首次置位 / 重复与已是内部测试 409 / 重复点击不再发通知', async () => {
+  const anon = makeEnv({ db: baseDb() });
+  assert.equal((await postJson('/user/apply_test', {}, anon.env)).msg, '未授权，请先登录');
+
+  const first = makeEnv({ db: baseDb() });
+  const applied = await postJson('/user/apply_test', { token: 'tok-1' }, first.env);
+  assert.equal(applied.code, 200);
+  assert.deepEqual(applied.data, { test_applied: 1 });
+  const write = first.calls.find((item) => /UPDATE users SET test_applied=1 WHERE id=\? AND test_applied=0/i.test(item.sql));
+  assert.ok(write, '置位要带 test_applied=0 的条件(双击/并发时只有一条能改成功)');
+  assert.equal(write.args[0], 7);
+
+  // 已有待处理申请: 409, 且不再写库、不再发通知
+  const dup = makeEnv({
+    db: (sql, args, kind) => (/FROM users WHERE token=/i.test(sql)
+      ? Object.assign({}, USER_ROW, { test_applied: 1 }) : baseDb()(sql, args, kind))
+  });
+  assert.equal((await postJson('/user/apply_test', { token: 'tok-1' }, dup.env)).code, 409);
+  assert.equal(dup.calls.some((item) => /UPDATE users SET test_applied/i.test(item.sql)), false);
+
+  // 已是内部测试用户: 409(不改动内部测试身份的既有语义)
+  const trusted = makeEnv({ db: baseDb() });
+  const already = await postJson('/user/apply_test', { token: 'tok-trusted' }, trusted.env);
+  assert.equal(already.code, 409);
+  assert.equal(already.msg, '你已是内部测试用户，无需申请');
+});
+
+test('申请内部测试: 配了企业微信 webhook 就发通知(含用户标识与申请时间), 发送失败不影响提交结果', async () => {
+  const realFetch = globalThis.fetch;
+  const sent = [];
+  globalThis.fetch = async (url, init) => {
+    sent.push({ url, init });
+    return { ok: true, json: async () => ({ errcode: 0 }) };
+  };
+  try {
+    const { env } = makeEnv({ db: baseDb(), vars: { WXWORK_WEBHOOK_KEY: 'k-1' } });
+    const okBody = await postJson('/user/apply_test', { token: 'tok-1' }, env);
+    assert.equal(okBody.code, 200);
+    assert.equal(sent.length, 1, '一次成功申请只发一条通知');
+    assert.ok(sent[0].url.startsWith('https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=k-1'), sent[0].url);
+    const content = JSON.parse(sent[0].init.body).text.content;
+    assert.ok(content.includes('老王') && content.includes('ID 7'), '通知要带用户标识');
+    assert.match(content, /申请时间：\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/, '通知要带申请时间');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  // 通知这条路坏掉时: 用户那边照样是"申请已提交"(通知不是提交结果的一部分)
+  for (const brokenFetch of [
+    async () => { throw new Error('network down'); },
+    async () => ({ ok: true, json: async () => ({ errcode: 93000 }) })
+  ]) {
+    globalThis.fetch = brokenFetch;
+    try {
+      const { env } = makeEnv({ db: baseDb(), vars: { WXWORK_WEBHOOK_KEY: 'k-1' } });
+      const body = await postJson('/user/apply_test', { token: 'tok-1' }, env);
+      assert.equal(body.code, 200);
+      assert.equal(body.msg, '申请已提交，管理员会尽快处理');
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  // 没配 key(本地/测试默认): 一个外部请求都不发
+  const quiet = makeEnv({ db: baseDb() });
+  sent.length = 0;
+  globalThis.fetch = async (url) => { sent.push(url); return { ok: true, json: async () => ({ errcode: 0 }) }; };
+  try {
+    assert.equal((await postJson('/user/apply_test', { token: 'tok-1' }, quiet.env)).code, 200);
+    assert.equal(sent.length, 0);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

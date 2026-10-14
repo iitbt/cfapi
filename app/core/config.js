@@ -49,6 +49,9 @@ export function settings(env) {
     // 1 = 开放"数据库工具 / 数据库管理"页(默认关) —— 与旧站 ENABLE_SQL_TOOL 同口径:
     // 能浏览全表数据、能执行 SQL 的入口不长期暴露
     enableSqlTool: str(e.ENABLE_SQL_TOOL || '0') === '1',
+    // 企业微信机器人 webhook key(明文, 见 wrangler.toml 的 WXWORK_WEBHOOK_KEY):
+    // 用户提交「申请测试」时给管理员发一条文本通知。**空 = 不发**(本地开发 / 单测默认就是空, 不碰外网)
+    wxworkWebhookKey: str(e.WXWORK_WEBHOOK_KEY),
     // CORS 白名单(逗号分隔); '*' = 放开(默认, 与迁移前一致), 填域名后只回白名单内的 Origin
     allowedOrigins: str(e.ALLOWED_ORIGINS) || '*'
   };

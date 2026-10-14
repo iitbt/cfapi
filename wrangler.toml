@@ -45,6 +45,9 @@ ALLOWED_ORIGINS = "https://lyjx.250036.xyz"
 # 1 = 开放"数据库工具 / 数据库管理"页(**出厂 0**, 与旧站 ENABLE_SQL_TOOL 同口径: 能看全库数据、能执行 SQL 的页不长期暴露)
 # 要用时临时改成 "1" 重新部署, 用完改回 "0" —— 别把这个开关长期留在 1
 ENABLE_SQL_TOOL = "0"
+# 企业微信机器人 webhook key: 用户在小程序「我的 → 申请测试」提交时, 给管理员群发一条文本通知
+# (key 换新只改这一行, 不用动代码; 留空 = 不发通知, 提交接口照常成功)
+WXWORK_WEBHOOK_KEY = "982b21d8-48d1-4382-9401-f8695898c4fd"
 # 管理后台(/admin): 管理员账号在 D1 的 admin_users 表(建表见 app/sql/0004_admin.sql),
 # 登录态是 HMAC 签名的 Cookie(与旧站"签名 Cookie 会话"同一套, 无服务端状态)。
 # 会话密钥 ADMIN_SESSION_SECRET 属于密文, 不写在这个文件里 —— 到 Cloudflare 控制台的

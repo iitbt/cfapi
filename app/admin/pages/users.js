@@ -16,7 +16,7 @@ import {
 
 const MANAGE_URL = '/admin/users';
 const COLUMNS = ['ID', '用户', '昵称', '邮箱', '类型', '注册时间', '最近登录', '操作'];
-const TRUSTED_FILTERS = ['all', 'trusted', 'untrusted'];
+const TRUSTED_FILTERS = ['all', 'trusted', 'untrusted', 'applied'];
 
 // 账号状态: status!=0 → 已注销; status=0 且 deleted_at 非空 → 已恢复(曾被注销过)
 function accountStateOf(row) {
@@ -30,6 +30,11 @@ function typeBadges(row) {
     ? '<span class="badge text-bg-danger">内部测试</span>'
     : '<span class="badge text-bg-secondary">普通</span>');
   if (strOf(row.login_type) === 'wechat') badges.push('<span class="badge text-bg-info">微信</span>');
+  // 已申请(4.4.7): 用户在小程序提交过申请且**还没被处理** —— 管理员点过「设为内部测试」后
+  // test_applied 会被清成 0, 徽章随之消失(类型回到「内部测试 微信」)
+  if (intOr(row.is_trusted, 0) !== 1 && intOr(row.test_applied, 0) === 1) {
+    badges.push('<span class="badge text-bg-warning">已申请</span>');
+  }
   const state = accountStateOf(row);
   if (state === '已注销') badges.push('<span class="badge text-bg-dark">已注销</span>');
   if (state === '已恢复') badges.push('<span class="badge text-bg-info">已恢复</span>');
@@ -88,10 +93,12 @@ function filtersOf(source) {
   }
   if (trusted === 'trusted') clauses.push('is_trusted = 1');
   if (trusted === 'untrusted') clauses.push('is_trusted = 0');
+  // 已申请待处理: 有申请标记且还不是内部测试(处理后就清标记, 自然从这份"待办"里消失)
+  if (trusted === 'applied') clauses.push('test_applied = 1 AND is_trusted = 0');
   return { search, trusted, sql: clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '', args };
 }
 
-const LIST_COLUMNS = 'id, username, nickname, email, avatar, login_type, is_trusted, status, '
+const LIST_COLUMNS = 'id, username, nickname, email, avatar, login_type, is_trusted, test_applied, status, '
   + 'create_time, last_login_time, deleted_at, orig_nickname, orig_avatar, nickname_modified';
 
 async function managePage(ctx) {
@@ -106,7 +113,7 @@ async function managePage(ctx) {
     action: MANAGE_URL,
     body: searchSelect({
       name: 'trusted', value: filters.trusted,
-      items: [['all', '全部用户'], ['trusted', '仅内部测试'], ['untrusted', '仅普通用户']]
+      items: [['all', '全部用户'], ['trusted', '仅内部测试'], ['untrusted', '仅普通用户'], ['applied', '仅已申请']]
     }) + searchInput({ name: 'search', value: filters.search, placeholder: '按用户名或邮箱搜索' })
   });
   const content = listShell({
@@ -178,6 +185,7 @@ async function detailPage(ctx) {
       <h4 class="mb-1">${escapeHtml(strOf(user.nickname) || strOf(user.username) || '-')}</h4>
       <div class="d-flex flex-wrap gap-1">
         <span class="badge text-bg-${intOr(user.is_trusted, 0) === 1 ? 'danger' : 'secondary'}">${intOr(user.is_trusted, 0) === 1 ? '内部测试用户' : '普通用户'}</span>
+        ${intOr(user.is_trusted, 0) !== 1 && intOr(user.test_applied, 0) === 1 ? '<span class="badge text-bg-warning">已申请内部测试</span>' : ''}
         <span class="badge text-bg-secondary">${strOf(user.login_type) === 'wechat' ? '微信登录' : '账号登录'}</span>
         <span class="badge ${stateBadge}">${escapeHtml(state)}</span>
       </div>
@@ -257,7 +265,8 @@ async function writeSubmit(ctx) {
     if (!row) {
       error = '用户不存在或已被删除';
     } else if (action === 'set_trusted') {
-      await run(ctx.env, 'UPDATE users SET is_trusted = 1 WHERE id = ?', userId);
+      // test_applied 一起清 0: 申请已处理, 列表不再显示「已申请」(用户端「等待通过」也随新资料回到「申请测试」)
+      await run(ctx.env, 'UPDATE users SET is_trusted = 1, test_applied = 0 WHERE id = ?', userId);
       auditLog('admin.user.set_trusted', { user: ctx.session.username, user_id: userId });
       message = '已成功设置为内部测试用户';
     } else if (action === 'remove_trusted') {
