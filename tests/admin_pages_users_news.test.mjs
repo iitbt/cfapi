@@ -74,7 +74,8 @@ test('用户写操作: 设为内部测试 / 删除用户(级联) / 恢复账号'
   const listHtml = await (await get('/admin/users', listEnv.env, listCookie)).text();
   assert.ok(listHtml.includes('name="action" value="set_trusted"'), '按钮要把 action 提交上去');
   assert.ok(listHtml.includes('onclick="return confirm('), '设为/取消内部测试都要先确认');
-  assert.ok(listHtml.includes('设为内部测试用户？设置后可查看专题视频'), '确认文案要写清权限范围');
+  // 文案以当前源码为准(2026-10-15 后台把"专题视频、留言免审"改成"更多测试内容"): 这条守的是"要写清权限范围", 不是逐字
+  assert.ok(listHtml.includes('设为内部测试用户？设置后可查看更多测试内容'), '确认文案要写清权限范围');
 
   const restored = await post('/admin/users', { action: 'restore_user', user_id: '7' }, env, cookie);
   assert.ok(restored.headers.get('location').includes(encodeURIComponent('账号已恢复')));

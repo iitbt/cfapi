@@ -1,6 +1,6 @@
 # 狼牙极限运动笔记 · 主后端（cfapi / Cloudflare Workers）
 
-> **版本**：`v2.5.7` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
+> **版本**：`v2.5.8` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
 > **主域名**：**https://lyjx.250036.xyz**（对外 API + `/admin` 管理后台同一域名）。
 > **素材域名**：**https://storage.250036.xyz**（R2 公开域，与接口域名分离）。
 > **定位**：微信小程序「狼牙极限运动笔记」的**主要后端**。今后小程序的开发、接口变更、联调、发版均以本工程为准；FastAPI 工程（`../fastapi/`）为**备用后端**。
@@ -87,7 +87,7 @@ cfapi/
 │   ├── api/                 # 对外 JSON 接口（6 个路由文件 + 2 个辅助）
 │   ├── admin/               # 管理后台（index/routes/auth + lib/ + pages/ + assets/ + static/）
 │   ├── core/                # 平台能力（db/response/router/middleware/storage/ratelimit/...）
-│   └── sql/                 # 建表脚本（0001~0006，按序执行）
+│   └── sql/                 # 建表脚本（0001~0008；0006/0007/0008 属"老库专用"，见 §7.2）
 ├── tests/                   # *.test.mjs（node --test，桩模拟 D1/R2）
 ├── tools/                   # 运维脚本（对拍/冒烟/区域迁移/资源内联/导出）
 ├── notes/                   # 迁移与运维笔记（api-inventory/structure-map/limits-design/ops-sql）
@@ -230,7 +230,8 @@ cfapi/
 
 ### 6.6 `tests/` `tools/` `notes/` `out/`
 
-- **`tests/`**：`*.test.mjs`（约 281 条用例，`node --test`，桩模拟 D1/R2），含 `api_contract`/`api_reads`/`api_writes`、`admin_*`、`unit`、`sql_migrations`（用真实 SQLite 跑迁移脚本）、`stub` 等。
+- **`tests/`**：`*.test.mjs`（约 289 条用例，`node --test`，桩模拟 D1/R2），含 `api_contract`/`api_reads`/`api_writes`、`admin_*`、`unit`、`sql_migrations`（用真实 SQLite 跑迁移脚本）、`stub` 等。
+  - `frontend_notice_reddot`（2.5.8 起）是**跨端守卫**：用桩顶掉 `getApp/wx/Page` 后直接 require 小程序的 `pages/profile/profile.js` 与 `subpackages/content/notices/notices.js`，真跑一遍"红点每次强制取服务端未读数 / 状态翻转才重渲染 / 已读补丁回写秒开缓存"。本机没有 `../xapp`（只部署后端）时自动跳过，也可用 `LYXJ_DIR=<xapp 路径>` 指定。
 - **`tools/`**：`diff_api.mjs`（新旧站 JSON 对拍）、`live_smoke.mjs`（真实数据端到端冒烟）、`cf_region.mjs`（R2/D1 区域迁移）、`embed_admin_assets.mjs`（打包静态资源）、`embed_favicon.mjs`（内联 favicon）、`export_sqlite.py`（旧库导出 seed）、`split_sql.py`（SQL 拆块便于控制台粘贴）、`verify_counts.py`（行数校验）、`media_to_r2.md`（素材搬 R2 说明）。
 - **`notes/`**：`api-inventory.md`（对外接口台账）、`structure-map.md`（fastapi↔cfapi 结构与机制对照）、`limits-design.md`（限流方案）、`ops-sql.md`（运营改数 SQL）。
 - **`out/`**：**生成物**（已被 `.gitignore` 忽略）：`seed.sql`（全量数据）+ 拆块 `schema/`、`seed/`、`schema-big/`、`seed-big/`，供控制台逐块粘贴建表/导数据。
@@ -342,6 +343,9 @@ cfapi/
 >   - **发消息失败不回滚身份变更**：写公告的三条语句走一次 `batch`，失败只记 `notice.push_user_notice_failed` 日志。
 >   - **老库升级（2.5.7）**：先跑一次 `npm run schema:noticetarget` 给 `app_notices` 加列，否则公告相关接口与后台用户页会报 `no such column: target_user_id`。
 >   - **小程序侧（4.5.1）**：`app.js` 的公告"秒开"缓存原先**不按身份区分**，定向消息是私有内容，退出/换账号/掉线时已改为清空该缓存（`clearNoticeCache`），否则上一个账号的系统消息会显示给下一个人。
+>   - **红点为什么"不立即亮"（2.5.8 复核：后端无需配合）**：定向通知与普通公告**同表同接口**（都落在 `app_notices`，都走 `/content/get_notice_unread` 的 `unreadNoticeIds` 口径），所以未读统计**天然涵盖**这两条内部测试通知 —— 本版**没有接口/行为改动**（2.5.8 仅版本号对齐 + 本条结论）。不生效的原因全在端上：`app.fetchNoticeUnread` 有 30 秒内存缓存，而「我的」页 onShow 与下拉刷新都没强制取最新值（修法见 `../xapp/README.md` 7.12）。修完后红点的亮灭只由这一个服务端数字决定：`unread_count > 0` 亮、`= 0` 灭，公告页条目红点读的是同一份服务端状态（列表里的 `is_read`），两处不再各判一套。
+>
+>   排查入口：`POST /content/get_notice_unread`（带 token）→ `{unread_count, ids}`。它**就是**端上红点的唯一来源；`ids` 里能直接看到定向消息的 id（未登录恒为 `{0, []}`）。
 
 **笔记类**
 
@@ -377,7 +381,7 @@ cfapi/
 | --- | --- | --- |
 | 技术栈 | Cloudflare Workers + D1 + R2，零运行时依赖 | Python + FastAPI + SQLite/MySQL（双驱动） |
 | 域名 | `lyjx.250036.xyz` | `api0.250036.xyz`、`api.250036.xyz` |
-| 版本号 | `API_VERSION=2.5.7` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.5.1`） |
+| 版本号 | `API_VERSION=2.5.8` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.5.2`） |
 | 接口 | 34 条业务接口已全量实现并自测 | 历史「唯一后端」，接口同构可互切（**缺 `/user/apply_test` 与 `test_applied`**） |
 | 后台 | 17 页面（字符串拼 HTML） | 同样 17+ 模块（Jinja2 服务端渲染） |
 | 口令哈希 | PBKDF2-SHA256（Workers CPU 限制，不用 bcrypt） | bcrypt |
@@ -410,6 +414,7 @@ cfapi/
 9. **老库升级到 2.5.3**：先跑一次 `npm run schema:testapply` 加 `users.test_applied` 列，否则 `/user/apply_test` 与后台用户列表会报 `no such column`。该脚本不幂等，只跑一次。
 10. **老库升级到 2.5.7**：先跑一次 `npm run schema:noticetarget` 加 `app_notices.target_user_id` 列，否则公告接口（`/content/get_notices` 等）会报 `no such column: target_user_id`。同样不幂等，只跑一次。
 11. **用户说"设了内部测试但小程序里没收到消息"**：先看公告页是否拉到那一页（定向消息也占一条，排在 `sort_order` 相同的公告之前）、再看「我的」页公告红点；后端侧按 `notice.push_user_notice_failed` 日志排查，并确认老库已跑 `schema:noticetarget`。**发消息失败不影响身份变更本身**（列表里的「内部测试」徽章照样会出现）。
+12. **用户说"红点不亮 / 亮了不消失"**：先确认端上版本 —— 小程序 **≤4.5.1** 进「我的」页会吃 `fetchNoticeUnread` 的 30 秒内存缓存（管理员刚改完的这段时间里红点不动），**4.5.2 起**改为每次 onShow / 下拉刷新都强制取最新值。后端侧只需确认 `POST /content/get_notice_unread` 返回的 `unread_count` 正确：它同时统计**全体公告 + 只发给本人的定向通知**，`> 0` 红点亮、`= 0` 灭。
 8. **线上"又慢了"先看状态页的「D1 响应」**：它是一次真实 D1 往返的耗时（基线约 240ms）。接口/页面的耗时 ≈ **串行轮数 × 它**，所以"多了几百毫秒"基本都是多了一轮串行查询，而不是单条 SQL 变慢。
 9. **怎么量"串行轮数"**：本地用 `tests/stub.mjs` / `tests/admin_stub.mjs` 的桩，把每条 D1 语句包一层 `await sleep(240)`，再跑一次该页面/接口 —— `耗时 ÷ 240ms` 就是串行轮数（后台全部 GET 路径可从 `app/admin/pages/index.js` 的 `PAGE_ROUTES` 列出来）。2.5.2 的对照：控制面板 7 轮 → 2 轮、`/config/get_app_config` 6 轮 → 1 轮（命中缓存 0 轮）、`/news/list` 3 轮 → 1~2 轮、`/news/detail` 4 轮 → 2 轮。
 10. **配置类数据最多 30 秒延迟生效**：分类/首页板块/精选/文案/菜单/轮播图走 `core/ttlCache.js` 的 30 秒进程内缓存（跨 isolate 没法主动失效）。后台改完若在小程序侧没立刻看到，等半分钟或重启小程序再试。

@@ -66,7 +66,7 @@ function actionsCell(ctx, row) {
   // 两个方向都改用户能看到的范围, 与"恢复账号"一样先确认再提交
   const trusted = intOr(row.is_trusted, 0) === 1
     ? `<form method="post" class="d-inline">${base}<input type="hidden" name="action" value="remove_trusted"><button class="btn btn-sm btn-outline-secondary" type="submit"
-         onclick="return confirm('取消该用户的内部测试身份？取消后将失去专题视频查看、留言免审与「仅内部测试可见」菜单。')">取消内部测试</button></form>`
+         onclick="return confirm('取消该用户的内部测试身份？取消后将失去查看更多测试内容与「仅内部测试可见」菜单。')">取消内部测试</button></form>`
     : `<form method="post" class="d-inline">${base}<input type="hidden" name="action" value="set_trusted"><button class="btn btn-sm btn-outline-secondary" type="submit"
          onclick="return confirm('设为内部测试用户？设置后可查看更多测试内容，并看到「仅内部测试可见」的菜单。')">设为内部测试</button></form>`;
   const restore = intOr(row.status, 0) !== 0
