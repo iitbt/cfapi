@@ -949,19 +949,22 @@ test('素材库(2.4.1): 图片与视频两个独立入口(各带文件/文件夹
   assert.equal(kept.kind, 'image');
 });
 
-test('素材库(2.4.3/2.4.4/2.6.5): 目标路径可选项 = 根目录 + 本入口根 + 全桶所有目录(含多层级) + 手动兜底', async () => {
+test('素材库(2.4.3/2.4.4/2.6.6): 目标路径可选项 = 根目录 + 桶根下的一级子目录 + 手动兜底', async () => {
   const { env } = makeAdminEnv({
     role: 'super',
     mediaObjects: [
       { key: 'image/素材/相册/图.png', size: 100, uploaded: '2026-10-09T00:00:00Z' },
       { key: 'video/活动/子/片.mp4', size: 100, uploaded: '2026-10-09T00:00:00Z' },
+      { key: 'news_uploads/2026-10/图.png', size: 100, uploaded: '2026-10-09T00:00:00Z' },
+      { key: 'avatar/u.png', size: 10, uploaded: '2026-10-09T00:00:00Z' },
+      { key: 'images/icon.png', size: 10, uploaded: '2026-10-09T00:00:00Z' },
       { key: 'logo.png', size: 10, uploaded: '2026-10-09T00:00:00Z' }
     ],
     rows: mediaRows
   });
   const cookie = await loginCookie(env);
-  // 2.6.5: 可选项由 listAllDirs 扫全桶(含多层级), 不再只给"当前浏览层"的子目录 ——
-  // 站在 image/ 也能选到 image/素材/相册/ 与 video/ 那边的目录(手填新目录仍走「其它」)
+  // 2.6.6: 可选项只取"桶根下的一级子目录"(一次 listLevel 列一层) —— 不再扫全桶;
+  // 2.6.5 曾把各级目录全列出来, 站在 image/ 也能选到 image/素材/相册/, 选项太长所以收回; 更深的目录走「其它」手填
   const html = await (await get('/admin/media_manage?prefix=image%2F', env, cookie)).text();
   const script = await readFile(MEDIA_GOVERN_SCRIPT, 'utf8');
 
@@ -970,19 +973,20 @@ test('素材库(2.4.3/2.4.4/2.6.5): 目标路径可选项 = 根目录 + 本入�
   assert.ok(html.includes('id="mediaUploadImageDirManual"') && html.includes('id="mediaUploadVideoDirManual"'),
     '各带一个手动填写的兜底输入框');
   assert.ok(html.includes('data-root="image/"') && html.includes('data-root="video/"'), '根目录随控件一起下发');
-  // 可选项: 根目录 → 本入口根目录(默认选中) → 桶里所有目录(缩进表示层级) → 其它(手动填写)
+  // 可选项: 根目录 → 本入口根目录(默认选中) → 桶根下的一级子目录 → 其它(手动填写)
   const imageOptions = (html.match(/<select[^>]*id="mediaUploadImageDir"[\s\S]*?<\/select>/) || [])[0] || '';
   const videoOptions = (html.match(/<select[^>]*id="mediaUploadVideoDir"[\s\S]*?<\/select>/) || [])[0] || '';
   assert.ok(imageOptions.includes('value="/">根目录（存储桶最外层）'), '有根目录选项');
   assert.ok(imageOptions.includes('value="image/" selected'), '默认仍是 image/(不操作时行为不变)');
-  assert.ok(imageOptions.includes('value="image/素材/"'), '桶里的目录作为可选项');
-  assert.ok(imageOptions.includes('value="image/素材/相册/"'), '多层级目录也要列出来(2.6.5 前站在 image/ 只给下一层)');
-  assert.ok(imageOptions.includes('value="video/活动/子/"'), '桶内其它顶层目录一样可选(校验放宽后不再自相矛盾)');
-  assert.ok(imageOptions.includes('&nbsp;&nbsp;') && imageOptions.includes('value="__manual">其它（手动填写）'),
-    '层级用缩进表示, 另有手动填写兜底');
+  assert.ok(imageOptions.includes('value="video/"') && imageOptions.includes('value="news_uploads/"'),
+    '桶根下的一级子目录都作为可选项');
+  assert.ok(!imageOptions.includes('image/素材/') && !imageOptions.includes('video/活动/'),
+    '更深层级不再列出来(2.6.5 会列, 2.6.6 收回, 只给一级)');
+  assert.ok(!imageOptions.includes('&nbsp;'), '一层目录不需要缩进');
+  assert.ok(imageOptions.includes('value="__manual">其它（手动填写）'), '另有手动填写兜底');
   assert.ok(!imageOptions.includes('avatar/') && !imageOptions.includes('images/'),
     '站内自有目录(头像/站点图标)不是素材, 不进下拉(手填仍可写)');
-  assert.ok(videoOptions.includes('value="video/" selected') && videoOptions.includes('value="image/素材/相册/"'),
+  assert.ok(videoOptions.includes('value="video/" selected') && videoOptions.includes('value="image/"'),
     '两条下拉的目录集合一致, 只有默认项不同');
   // 提交与校验
   assert.ok(script.includes("data.set('target_dir', target)"), '提交时带上目标路径');
@@ -1210,6 +1214,9 @@ test('上传接口(2.4.3/2.6.5): 目标路径可以是任意干净相对目录, 
   const nested = await upload({ purpose: 'cover', target_dir: 'image/2026-10/', name_mode: 'keep', rel_path: '素材/图.png' });
   assert.equal(nested.url, 'image/2026-10/素材/图.png', 'target_dir 当根, 子目录结构照带');
   assert.equal(state.objects.has('image/2026-10/素材/图.png'), true, '真写进了桶');
+  // 2.6.6: 下拉里能选的"桶根一级子目录"(如 news_uploads/) 照旧能写进去
+  const topDir = await upload({ purpose: 'cover', target_dir: 'news_uploads/', name_mode: 'keep' });
+  assert.equal(topDir.url, 'news_uploads/图.png', '选一级子目录: 文件直接落在它下面');
 
   // 2.6.5: 「其它（手动填写）」不再被"必须以 image/ 开头"挡住 —— 干净的相对目录写哪落哪
   const manual = await upload({ purpose: 'cover', target_dir: 'news_uploads/2026-10/', name_mode: 'keep' });

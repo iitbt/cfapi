@@ -145,7 +145,7 @@
         data.set('name_mode', mode());
         // 2.4.2: 目录结构两种命名模式都保留 → rel_path 不再只在"保留原名"时发
         if (item.rel) data.set('rel_path', item.rel);
-        // 2.4.3: 目标路径(默认 image/ 或 video/); 2.6.5 起下拉里是桶内全部目录、也可手填任意合法相对目录; 不填就不发, 服务端用默认
+        // 2.4.3: 目标路径(默认 image/ 或 video/); 下拉里是桶根下的一级子目录(2.6.6), 也可手填任意合法相对目录; 不填就不发, 服务端用默认
         var target = dirOf(item.purpose);
         if (target) data.set('target_dir', target);
         var xhr = new XMLHttpRequest();

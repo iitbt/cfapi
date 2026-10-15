@@ -118,47 +118,6 @@ export async function listLevel(env, prefix = '', options = {}) {
   return { folders, objects, truncated: Boolean(listed && listed.truncated) };
 }
 
-//: 全桶目录清单的默认上限(2.6.5): 每层一次 R2 list(免费套餐单请求 50 次子请求), 30 个目录够选、又不至于打穿预算
-export const MAX_DIR_SCAN = 30;
-
-/**
- * 全桶目录清单(2.6.5, 上传卡片的「目标路径」下拉用): 逐层 `delimiter: '/'` 列举, 广度优先, 含多层级。
- * 目录不是实体, 只有"里面还有对象"的前缀才会出现 —— 这正是要展示的"R2 实际目录"。
- * `max` 封顶后不再往下走(下拉少几个选项而已, 手填「其它」照旧能写到任意合法目录)。
- */
-export async function listAllDirs(env, options = {}) {
-  const max = Math.min(200, Math.max(1, Number(options.max) || MAX_DIR_SCAN));
-  const bucket = settings(env).storage;
-  const found = [];
-  let level = [''];
-  while (level.length && found.length < max) {
-    // 同一层的列举互不依赖 → 并发(每个目录一次子请求, 串行会白等好几轮 RTT)
-    const listed = await Promise.all(level.map((prefix) => bucket.list({ prefix, delimiter: '/', limit: 1000 })
-      .catch((error) => {
-        console.error('列举目录失败', prefix, error && error.message);
-        return null;
-      })));
-    const next = [];
-    listed.forEach((result, index) => {
-      const base = level[index];
-      const dirs = ((result && result.delimitedPrefixes) || []).map((one) => String(one));
-      // 兜一道"delimiter 不给 commonPrefixes"的实现: 从这一层对象键里补出目录名(与 listNewsMedia 同一手法)
-      for (const object of (result && result.objects) || []) {
-        const key = String(object.key || '');
-        const at = key.indexOf('/', base.length);
-        if (at > 0) dirs.push(key.slice(0, at + 1));
-      }
-      for (const dir of dirs) {
-        if (!dir || dir === base || dir === '/' || found.includes(dir)) continue;
-        found.push(dir);
-        next.push(dir);
-      }
-    });
-    level = next;
-  }
-  return found.slice(0, max);
-}
-
 //: 站内自有目录(2.4.5): Worker 直出的站点图标与用户头像, **不是素材** —— 它们既不该进素材库清单,
 //  也不该被当成"根目录素材"(否则根目录那一档会被头像/图标刷满)
 export const INTERNAL_PREFIXES = [AVATAR_PREFIX, LEGACY_AVATAR_PREFIX, 'images/'];

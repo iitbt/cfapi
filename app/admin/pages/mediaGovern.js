@@ -33,7 +33,10 @@
 //     `2018.jpg` 判成"被引用"。现在按"整段路径相等"判(唯一实现在 core/storage.js 的 relPathsIn, 见那里的说明),
 //     列表列/「查看引用」/详情/删除前复查仍共用 scanReferences 一处。
 //   · **目标路径可选项** —— 原先只列"当前浏览层"的子目录, 站在 image/food/ 连 image/ 的兄弟目录都选不到;
-//     现在由 listAllDirs 扫全桶(含多层级)喂给下拉。
+//     2.6.5 改成扫全桶后又把各级目录全列出来(选项太长), 2.6.6 定为**只列桶根下的一级子目录**(列一层, 见 listPage)。
+// 2.6.6 变化:
+//   · 目标路径下拉只给桶根下的一级子目录(根目录选项、各入口默认项、手填入口都不变), 更深的目录仍用「其它（手动填写）」写;
+//     少扫几十层目录, 素材库页也就少几十次 R2 子请求。
 //   · **目录按钮** —— 原先写死 存储桶根目录/image//video//news_uploads/ 五个; 现在跟着当前位置动态一层
 //     (常态 = 存储桶根目录 + 根下子目录, 进了子目录就换成它的子目录), 返回上一层仍用面包屑或「上一级」。
 import { escapeHtml } from '../../core/html.js';
@@ -42,7 +45,7 @@ import { all } from '../../core/db.js';
 import { fmtBytes } from '../../core/overview.js';
 import {
   CACHE_CONTROL_MEDIA, IMAGE_PREFIX, INTERNAL_PREFIXES, MEDIA_PREFIXES, VIDEO_PREFIX,
-  checkObjectKey, copyObject, extOf, isRootTreePath, kindOfExt, listAllDirs, listLevel, listUnder,
+  checkObjectKey, copyObject, extOf, isRootTreePath, kindOfExt, listLevel, listUnder,
   mediaPrefixOf, moveObject, relPathsIn, removeObjects
 } from '../../core/storage.js';
 import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES } from '../lib/mediaUpload.js';
@@ -364,14 +367,14 @@ function uploadCard(dirs = []) {
   // 2.4.3: 每个入口多一个「目标路径」下拉 —— 原生 select 给"桶里已存在的目录", 也可以手填新目录。
   const pickers = ({ tab, title, icon, dir, purpose, accept, limit, unit }) => {
     const root = `${dir}/`;
-    // 可选项(2.6.5): 根目录 → 本入口根目录(默认) → 桶里**所有**已有目录(缩进表示层级) → 「其它（手动填写）」兜底。
-    // 2.4.4 只列"本入口根下面的子目录", 于是站在 image/food/ 时连 image/ 的兄弟目录都选不到 —— 现在由 listAllDirs 扫全桶。
-    // 站内自有目录(avatar/、images/ 这些不是素材)不进下拉; 缩进用 &nbsp;(option 里的普通空白会被折叠), 目录名照旧转义。
+    // 可选项(2.6.6): 根目录 → 本入口根目录(默认) → 桶根下的一级子目录 → 「其它（手动填写）」兜底。
+    // 只给一级子目录是刻意的: 更深层级用「其它」手填(下拉选项太多反而难选), 见 listPage 处的说明。
+    // 站内自有目录(avatar/、images/ 这些不是素材)不进下拉; 目录名照旧转义。
     const others = dirs.filter((one) => one !== root && !INTERNAL_PREFIXES.some((prefix) => one.startsWith(prefix)));
-    const options = [[ROOT_DIR, '', '根目录（存储桶最外层）'], [root, '', `${root}（默认）`]]
-      .concat(others.map((one) => [one, '&nbsp;&nbsp;'.repeat(one.split('/').length - 2), one]))
-      .map(([value, indent, text]) => `<option value="${escapeHtml(value)}"${value === root ? ' selected' : ''}>`
-        + `${indent}${escapeHtml(text)}</option>`)
+    const options = [[ROOT_DIR, '根目录（存储桶最外层）'], [root, `${root}（默认）`]]
+      .concat(others.map((one) => [one, one]))
+      .map(([value, text]) => `<option value="${escapeHtml(value)}"${value === root ? ' selected' : ''}>`
+        + `${escapeHtml(text)}</option>`)
       .join('');
     return `<div class="col-lg-6">
         <span class="form-label d-block" id="mediaUpload${tab}Label">
@@ -395,7 +398,7 @@ function uploadCard(dirs = []) {
         </select>
         <input class="form-control form-control-sm mt-1 d-none" type="text" id="mediaUpload${tab}DirManual"
                placeholder="如 ${escapeHtml(root)}2026-10/" aria-label="手动填写${title}上传的目标路径">
-        <div class="form-text">默认 <code>${root}</code>；下拉里是根目录 + 桶里已有的各级目录，要归档到新目录就选「其它」手填（
+        <div class="form-text">默认 <code>${root}</code>；下拉里是根目录 + 桶根下的一级子目录，要归档到更深层或新目录就选「其它」手填（
           相对目录即可，不能有 <code>..</code> 或以 <code>/</code> 开头）。</div>
       </div>`;
   };
@@ -419,8 +422,8 @@ function uploadCard(dirs = []) {
           「自动生成」只把文件名换成 <code>&lt;用途&gt;_时间戳.ext</code>。空文件夹不会被保留（R2 没有目录，浏览器也不会把空目录列出来）。
           <br><strong>目标路径</strong>默认就是各入口的 <code>image/</code> 与 <code>video/</code>，下拉里可选的还有
           <strong>根目录</strong>（存储桶最外层，不带任何前缀；选文件夹时目录结构会直接铺在根下，如
-          <code>素材/子/图.png</code> —— 这些内容素材库列表与素材选择器同样能看到，列表里「目录」列显示"根目录"）与桶里已有的各级目录；
-          要归档到一个新目录就选「其它」手填（如 <code>image/2026-10/</code>）。
+          <code>素材/子/图.png</code> —— 这些内容素材库列表与素材选择器同样能看到，列表里「目录」列显示"根目录"）与桶根下的一级子目录；
+          要归档到更深层或新目录就选「其它」手填（如 <code>image/2026-10/</code>）。
           <strong>2.6.5 起手填目录不再要求以 <code>image/</code> 或 <code>video/</code> 开头</strong>，只要是干净的相对目录就行
           （不能有 <code>..</code>、不能以 <code>/</code> 开头）；代价是写进"素材库不扫的目录"（比如把图片写进 <code>video/</code>）时，
           那些对象在素材库列表与素材选择器里列不出来（公开域直读不受影响）。文件落在该路径下面，文件夹结构也在它下面继续保留。
@@ -575,8 +578,9 @@ function folderRows(folders, currentUrl) {
 
 async function listPage(ctx) {
   if (!isSuper(ctx)) return denied(ctx);
-  // 全桶目录清单(上传卡片的「目标路径」下拉)与当前层取数互不依赖 → 一起发
-  const [data, dirs] = await Promise.all([browseQuery(ctx), listAllDirs(ctx.env)]);
+  // 上传卡片的「目标路径」下拉与当前层取数互不依赖 → 一起发; 下拉只要桶根那一层(2.6.6), 一次列举搞定
+  const [data, rootLevel] = await Promise.all([browseQuery(ctx), listLevel(ctx.env, '')]);
+  const dirs = rootLevel.folders.map((one) => one.key);
   const rows = folderRows(data.folders, data.currentUrl) + levelRows(data.pageItems, data);
 
   // 筛选组: 与留言管理页同一套(共用 filterButtons); 切筛选/切目录都回到第 1 页(不带页码)
