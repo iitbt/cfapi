@@ -10,10 +10,10 @@
 app/admin/
 ├── index.js            # 入口: /admin 前缀分发 + 静态资源 + 写路径权限拦截
 ├── routes.js           # 控制面板(13 卡 + 趋势 + 最新列表)
-├── pages/              # 19 个页面模块(不含 index.js), 每模块导出 { methods, path, handler } 的 routes 数组
+├── pages/              # 17 个页面模块(不含 index.js), 每模块导出 { methods, path, handler } 的 routes 数组
 │   ├── index.js        # 汇总成 PAGE_ROUTES 交给入口分发
 │   ├── banners.js notices.js categories.js appHome.js
-│   ├── appVersion.js appText.js appMenu.js topics.js
+│   ├── appVersion.js appText.js topics.js
 │   ├── users.js adminUsers.js news.js comments.js
 │   ├── settings.js systemInfo.js media.js(上传与素材库弹窗)
 │   ├── dbTools.js      # 数据库工具 / 数据库管理(表浏览 + SQL 执行, ENABLE_SQL_TOOL 开关)
@@ -23,11 +23,10 @@ app/admin/
 │   └── auth.js         # 登录 / 登出 / 首次初始化
 ├── lib/
 │   ├── entities.js     # 实体注册表 + 四份写权限清单 + classifyWritePath
-│   ├── controlled.js   # 受控表 CRUD 工厂(字段声明 → 统一流程)
 │   ├── status.js       # 状态切换注册表(12 个 kind) + applyStatus
 │   ├── listPage.js     # 列表页取数+分页骨架 listController(7 个列表页共用)
 │   ├── utils.js        # 分页/回跳/幂等(onceOrError)/时间归一/localtime 等唯一实现
-│   ├── catalog.js      # 文案分组/内置菜单/动作/可见性/页面前缀等常量
+│   ├── catalog.js      # 文案分组/内置文案 key/版本默认值等常量
 │   ├── categorySource.js # 分类真值来源(名称映射/启用集合/下拉选项)
 │   ├── newsContent.js  # 正文视频 <wx-video> ↔ <video> 转换 + 摘要
 │   ├── mediaUpload.js  # 上传校验(白名单+内容嗅探) + R2 写入 + 素材库列举
@@ -47,7 +46,7 @@ app/admin/
 
 | 分类 | 页面 | 说明 |
 |---|---|---|
-| **已迁移（17）** | 控制面板、用户管理、管理员管理、笔记管理（含编辑/预览/回收站/批量）、留言管理、分类管理、轮播图、通知公告、首页板块（含原「首页精选」，见下）、专题精选（摩旅/户外）、版本配置、运营文案、我的页菜单、管理员设置、系统信息、**数据库工具 / 数据库管理**、**素材库管理** | 与旧站同路由、同文案、同口径（平台差异见第四节） |
+| **已迁移（16）** | 控制面板、用户管理、管理员管理、笔记管理（含编辑/预览/回收站/批量）、留言管理、分类管理、轮播图、通知公告、首页板块（含原「首页精选」，见下）、专题精选（摩旅/户外）、版本配置、运营文案、管理员设置、系统信息、**数据库工具 / 数据库管理**、**素材库管理** | 与旧站同路由、同文案、同口径（平台差异见第四节） |
 
 两页"超管工具位"的实现口径：
 
@@ -122,7 +121,7 @@ DELETE FROM admin_users;   -- 清掉全部管理员(通常只有 1 个)
 | **版本号只有一个来源**：`main.js` 的 `API_VERSION`；入口用 `handleAdmin(request, env, { version })` 注入，侧栏 `.ver` 与静态资源 `?v=` 都读它 | 版本号若各页自己读 env/配置，就会出现"首页正常、后台侧栏只显示一个 v"这种不一致（2026-10-06 的线上故障就是入口漏传参） | `main.js`（注入）；`lib/layout.js`（版本为空时**不渲染** `.ver`，宁可没有也不留裸 `v`） |
 | **表头要放真 HTML 必须显式声明**：`listShell` 的列支持 `{ label, html: true }`，其余一律转义 | 默认转义是安全底线；笔记列表的"全选"复选框曾因此被显示成 `&lt;input …&gt;` 源码文本 | `lib/partials.js` 的 `listShell`；调用方如 `pages/news.js` 的 `COLUMNS` |
 | **列表页取数/分页只有一个入口**：`lib/listPage.js` 的 `listController(ctx, { table, from, where, columns, orderBy, parallel, label })`（7 个列表页共用，页面只给表名/筛选/排序/行渲染；带 JOIN 的留言页用 `from`+`columns`，笔记页的分类下拉用 `parallel` 与 COUNT/取行一起并发） | 这 7 页原先各写一份 `COUNT → firstScreenLimit → LIMIT 取行`，分页边界与口径的修复要同步 7 处（历史上的越界/跳页就是这么分散修的），且各页写法已经开始分叉（有的按当前页取行、有的按首屏上限取行再裁） | `lib/listPage.js`；调用方 `pages/{news,users,comments,banners,notices,topics,adminUsers}.js` |
-| **写操作防重只有一个入口**：`lib/utils.js` 的 `onceOrError(ctx, action, parts, ttl)` —— 命中重复提交时返回可直接回显的文案，正常放行返回空串（会话 id 由它自己拼进 key） | 同一段 `idemKey` + `isDuplicateSubmit` + 同一句文案原先在 15 个写操作里各写一份，改文案或换口径必漏；`parts` 里再拼会话 id 也容易各页写法不一 | `lib/utils.js`（含唯一文案常量 `DUPLICATE_SUBMIT`）；`lib/controlled.js` 与各页写入口 |
+| **写操作防重只有一个入口**：`lib/utils.js` 的 `onceOrError(ctx, action, parts, ttl)` —— 命中重复提交时返回可直接回显的文案，正常放行返回空串（会话 id 由它自己拼进 key） | 同一段 `idemKey` + `isDuplicateSubmit` + 同一句文案原先在 15 个写操作里各写一份，改文案或换口径必漏；`parts` 里再拼会话 id 也容易各页写法不一 | `lib/utils.js`（含唯一文案常量 `DUPLICATE_SUBMIT`）与各页写入口 |
 | **页面脚本不许写进模板字符串**：脚本一律放 `static/js/*.js`，引用走 `partials.js` 的 `staticScript(file, version)`，模板里最多注入配置（如 `window.__mediaGovernCfg`） | 模板字符串里写脚本会被求值吃掉反斜杠、被反引号截断（2026-10-10 两次教训）；搬成真文件后才有语法检查，`tests/admin_pages_config.test.mjs` / `admin_pages_tools.test.mjs` 也改成按文件内容断言 | `static/js/{media_govern,db_tools,news_batch}.js`；引用点 `pages/{mediaGovern,dbTools,news}.js` |
 | **素材目录只认 `core/storage.js` 的常量**：新上传落 `image/`、`video/`、`avatar/`（素材库页 2.4.1 起由入口决定类型：图片→`image/`、视频→`video/`）；列举/引用判定/直出都要覆盖历史目录 `news_uploads/`、`avatar_uploads/`；2.4.0 起**不再有任何派生文件**（缩略图整体移除，一律用原图） | 目录散落在多处各写一份时，会出现"传上去但素材库里看不到""老素材被判成未引用而误删"这类静默事故（旧实现就是 `mediaUpload.js` 与 `core/storage.js` 各有一份 `news_uploads/`） | `app/core/storage.js`（`MEDIA_PREFIXES`/`SERVED_PREFIXES`）；调用方只 import，不自己拼 |
 | **上传弹窗靠 `static/js/image_upload.js` 认领**：表单只写 `data-endpoint/data-purpose/data-kind/data-target/data-insert`，发请求的是那个脚本（capture 阶段监听 submit） | 这段绑定原先在旧站模板里，抽静态脚本时漏掉了 → 点「上传」变成整页提交，表现为"上传没反应/上传失败"（`tests/admin_submit_action.test.mjs` 会拦回退） | `app/admin/lib/partials.js`（渲染表单）；`static/js/image_upload.js`（绑定与回填） |
@@ -133,7 +132,7 @@ DELETE FROM admin_users;   -- 清掉全部管理员(通常只有 1 个)
 | **筛选项一律用共用筛选组 `partials.filterButtons`**（基准 = 留言管理页上那一组）：`.btn-group.btn-group-sm > a.btn.btn-outline-secondary`，当前项带 `.active` + `aria-current="page"`；参数名与取值按各页语义（`?status=` / `?category=` / `?topic=` / `?section=` / `?kind=`），**"全部"也带参数**（`?status=all` 这一口径） | 旧站每页一套形态（专题 pills、素材库按钮组、笔记下拉），换页就得重新找筛选器；各写一套还会各自拼错地址（切筛选丢页码/丢其它筛选）。筛选态进 URL 后刷新/直链/回退都能定位，分页与触底加载也自动带着它 | `lib/partials.js` 的 `filterButtons`；六个调用点 `pages/comments.js`、`news.js`、`topics.js`、`appHome.js`、`mediaGovern.js`、`notices.js`（2.5.9 起公告页按接收人筛选）（`tests/admin_submit_action.test.mjs` 有一条"六页只许引用共用实现、且不许自己写 `btn-group`/`nav-pills`"的检查） |
 | **R2 的写入规则只有 `core/storage.js` + `lib/mediaUpload.js` 两处**（2.3.9 定规则、2.4.0 补上传策略、2.4.1 补"入口即类型"、2.4.2 补"目录整棵保留"、2.4.3 补"目标路径可选"、2.4.4 补"根目录 + 可选下拉"）：新对象 `<目标路径>/<相对路径目录>/<文件名>`（图片入口 `purpose=cover`→默认 `image/`、视频入口 `purpose=video`→默认 `video/`；目标路径来自 `target_dir`（缺省=类型根目录，`/`=存储桶根目录即"空前缀"）与 `rel_path`（**两种命名模式都保留**，`auto` 只换文件名那一截））、上传时写死 `CACHE_CONTROL_MEDIA`（7 天 immutable）、**写前 `head` 查重、重名顺延 `_1`/`_2` 绝不覆盖**；改名 = 读→写→删（`moveMediaFile`，流式，R2 没有 rename）；批量删除 = `removeMediaFiles`（`delete(key[])`，一批 1 次子请求，页面按 20 封顶）；**缩略图已整体移除（2.4.0）**，一律用原图 | R2 的能力边界（无 rename/copy、无图片处理、无"建目录"、单次 list/delete 各 1000、子请求 50、key 上限 1024 字节）决定了只能这么用；把这些规则散在各页面会立刻出现"有的批量逐个删、有的不写缓存头、有的会覆盖同名文件"这类不一致 | `core/storage.js`（`moveMediaFile`/`removeMediaFiles`/`CACHE_CONTROL_MEDIA`、`isRootMediaName`/`normRel`/`relPathsIn`/`listNewsMedia` 的根目录口径）、`pages/mediaGovern.js`（唯一的素材治理页：上传/详情/改名/批量删除都在这里，但都不自己碰 R2 SDK）、`lib/mediaUpload.js`（目标目录与命名策略、`safeRelPath`/`safeTargetDir` 清洗、上限） |
 | **搜索区一律用 `partials.searchBar` / `searchInput` / `searchSelect`**（2.3.4）：结构 = `form.search-bar.d-flex.flex-wrap.align-items-center.gap-2` + `form-select-sm` + `form-control-sm` + `btn.btn-sm.btn-outline-secondary`（`bi bi-search` + 「搜索」）；宽度只在 `admin.css` 的 `.search-input`(12rem)/`.search-select`(9rem)/`.search-select-lg`(12rem) 定义；手机端按钮与输入框同高 38px、每项独占一行 | 统一前 9 处各写一套：换行（有的没 `flex-wrap`）、垂直对齐、宽度手法（`max-width` / `width:auto` / 内联 `width`）、控件顺序、图标（`bi-search` vs `bi-funnel`）与文案（搜索 vs 筛选）**六项各不相同**，改一处忘八处；高度这类"用户能看出差别"的东西必须由共用结构与共用样式决定 | `lib/partials.js` 的 `searchBar`/`searchInput`/`searchSelect`；调用点 `pages/news.js`（2 处）、`notices.js`、`topics.js`、`users.js`、`appText.js`、`mediaGovern.js`、`dbTools.js`、`partials.js` 的素材库弹窗（`.search-group`）；`admin.css` 的 `.search-input`/`.search-select` 与手机适配层；`tests/admin_pages_config.test.mjs` 用"源码扫描 + 渲染断言 + CSS/生成物同步"三条守住 |
-| **列表页头部一律用共用三行结构 `partials.listToolbar`**（2.3.3；2.3.7 补齐「首页板块管理」—— 它的三块内容各是一张卡片，没有页面级新增按钮，所以当时被留成待确认；现在三块的新增按钮提到第一行、板块标签条第二行，卡片头部只留板块名与条数）：第一行 = 新增/发布按钮（`addButton`）+ 附带动作 + 右侧统计；第二行 = 筛选标签条（`filterButtons`）；第三行 = 搜索/筛选表单。没传的行不渲染 | 2.3.2 只统一了按钮**标记**，新增按钮/标签条/表单仍挤在同一条 `flex-wrap` 里 —— 屏幕上与改前完全一样，被判"等于没改"。位置这类"用户看到的结构"必须由**共用结构**决定，不能靠各页自觉；顺带也让"新增按钮永远在最前、筛选与搜索永远在它下面"成为一条不会漂移的约定 | `lib/partials.js` 的 `listToolbar`（`listShell` 已内置它：`actions` = 第一行，新增 `filters`/`search` 两个槽）；调用点 `pages/news.js`、`topics.js`、`notices.js`、`appText.js`、`appMenu.js`、`categories.js`（`tests/admin_pages_config.test.mjs` 断言三行顺序与"缺行不渲染"，另有浏览器几何核对） |
+| **列表页头部一律用共用三行结构 `partials.listToolbar`**（2.3.3；2.3.7 补齐「首页板块管理」—— 它的三块内容各是一张卡片，没有页面级新增按钮，所以当时被留成待确认；现在三块的新增按钮提到第一行、板块标签条第二行，卡片头部只留板块名与条数）：第一行 = 新增/发布按钮（`addButton`）+ 附带动作 + 右侧统计；第二行 = 筛选标签条（`filterButtons`）；第三行 = 搜索/筛选表单。没传的行不渲染 | 2.3.2 只统一了按钮**标记**，新增按钮/标签条/表单仍挤在同一条 `flex-wrap` 里 —— 屏幕上与改前完全一样，被判"等于没改"。位置这类"用户看到的结构"必须由**共用结构**决定，不能靠各页自觉；顺带也让"新增按钮永远在最前、筛选与搜索永远在它下面"成为一条不会漂移的约定 | `lib/partials.js` 的 `listToolbar`（`listShell` 已内置它：`actions` = 第一行，新增 `filters`/`search` 两个槽）；调用点 `pages/news.js`、`topics.js`、`notices.js`、`appText.js`、`categories.js`（`tests/admin_pages_config.test.mjs` 断言三行顺序与"缺行不渲染"，另有浏览器几何核对） |
 | **首页三块内容只认 `lib/homeSections.js` 的描述表**：主题项目/拓展项目/精选项目各自的表名、状态类型、列头、行渲染、新增/编辑/删除入口都在那一个文件里；合并页只负责"取数 + 按板块分组 + 渲染卡片"，**编辑页（2.3.8 起也只有一个）按 `?section=` 决定字段集与要写的表** | 2.2.5 把「首页精选管理」并进「首页板块管理」时，若三块各写一套表格，字段差异（精选有"标识/跳转页面"）会散成三份代码，改一处忘两处；三个编辑页各写一套也是同一个问题（合并后 `pages/appFeatured.js` 整个删掉） | `lib/homeSections.js`（`SECTIONS`/`SECTION_TABS`/`sectionLabel`/`sectionOf`/`sortSectionRows`）；`pages/appHome.js`（合并页 + **唯一的编辑页** `/admin/app_home_edit`：`?section=main\|ext` 写 `app_home_sections`、`?section=featured` 写 `app_featured_items`；另含精选删除端点）、`pages/deleteConfirm.js`（`kind=featured` 回 `?section=featured`） |
 | **数据库工具的错误原文只回给超管**：`runStatement` 失败时，除统一文案外**额外**回一句截断到 200 字的数据库原文（同一份同时进 `logWarn` 与服务端审计） | 旧站口径是"错误详情只进日志"，但这一页的使用者本来就是能浏览全库的超管，而 "no such column: xxx" / "UNIQUE constraint failed" 这类原文是定位语法与约束问题最快的线索；页面默认关闭且仅超管，放开的是可诊断性而不是权限 | `lib/dbTool.js` 的 `runStatement`；`pages/dbTools.js` 的 `execHandler`（回 `detail` 字段） |
 | **单行"编辑"只生成 SQL，不做行内表单**：行尾三个按钮是"复制 JSON / 复制 INSERT / 生成 UPDATE"（UPDATE 直接填进 SQL 控制台） | 任意列的行内编辑要动态表单 + 拼整行 UPDATE（宽表极易漏列或写错类型），还会多开一条写路径；生成语句后仍走唯一那条被白名单与审计拦着的 `exec`，安全边界不变。生成时会跳过敏感列（展示值已打码，照抄会覆盖真值） | `pages/dbTools.js`（前端拼语句 + `data-sensitive-columns`）；`lib/dbTool.js`（`tablePage` 回传 `__rowid` 与 `pkColumns`） |
@@ -148,7 +147,7 @@ DELETE FROM admin_users;   -- 清掉全部管理员(通常只有 1 个)
 | 操作 | 落库 | 语义与判定依据 |
 |---|---|---|
 | **恢复账号** | `UPDATE users SET status=0, nickname='<原昵称>(已恢复)', raw_nickname='<原昵称>'`；**`deleted_at` 保留** | `status != 0` = 已注销（不能再登录）；恢复后该用户可用微信重新登录；`deleted_at` 留作"曾被注销过"的标记，列表据此显示"已恢复"。**与对外 `/user/deleted_account_action` 的 restore 不同**：那个给小程序用，会换 token 并清 `deleted_at` |
-| **设为 / 取消内部测试** | `UPDATE users SET is_trusted = 1 / 0` | `users.is_trusted`（1=内部测试）就是判定依据，小程序侧四处生效：① 专题视频可见（`app/api/content.js` 仅 `is_trusted=1` 才下发 `video_url`）；② 留言免审（`app/api/news.js` 里 `is_trusted=1` 直接 `approved`，否则 `pending`）；③ 登录载荷带 `is_trusted`（`app/api/user.js`）供前端区分；④ 菜单 `app_menu_items.trusted_only`（`app/api/app_config.js`）的"仅内部测试可见" |
+| **设为 / 取消内部测试** | `UPDATE users SET is_trusted = 1 / 0` | `users.is_trusted`（1=内部测试）就是判定依据，小程序侧三处生效：① 专题视频可见（`app/api/content.js` 仅 `is_trusted=1` 才下发 `video_url`）；② 留言免审（`app/api/news.js` 里 `is_trusted=1` 直接 `approved`，否则 `pending`）；③ 登录载荷带 `is_trusted`（`app/api/user.js`）供前端区分（「我的」页菜单的图标与可见性也从这里派生的身份字段判定，见小程序 `app.js` 的 `APP_MENU`） |
 
 两个按钮都是：仅超管可见（`actionCell` 判 `isSuper`，另有 `entities.SUPER_ONLY_WRITE_PATHS` 的 `/admin/users` 拦一道）→ 点击先 `confirm()` → `POST /admin/users`（隐藏域 `action=set_trusted|remove_trusted|restore_user` + `user_id`）→ 成功 302 回列表并带 `message`（整页刷新即最新状态），失败带 `error` 显示在页面顶部。
 

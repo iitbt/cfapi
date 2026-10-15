@@ -28,7 +28,7 @@
 为「狼牙极限运动笔记」微信小程序提供全部后端能力：
 
 - **对外 JSON 接口**：小程序整包配置、内容（轮播图 / 户外精选 / 摩旅精选 / 通知公告 / 未读）、笔记（列表 / 详情 / 点赞 / 收藏 / 分享 / 留言 / 行为状态）、用户（微信登录 / 资料 / 注销 / 收藏 / 点赞 / 浏览历史）。
-- **管理后台 `/admin`**：内容运营（笔记 / 分类 / 轮播 / 专题 / 公告 / 留言）、用户与内部测试管理、配置中心（版本 / 文案 / 我的页菜单）、素材库治理、数据库工具、系统信息。
+- **管理后台 `/admin`**：内容运营（笔记 / 分类 / 轮播 / 专题 / 公告 / 留言）、用户与内部测试管理、配置中心（版本 / 文案）、素材库治理、数据库工具、系统信息。
 - **状态 / 探测页**：`/`、`/apitest`、`/health`、`/health/ready`、`/metrics`（最后一项默认关）。
 
 ---
@@ -172,9 +172,8 @@ cfapi/
 | `listPage.js` | 列表页「取数 + 分页」骨架的**唯一实现** `listController`（news/users/comments/banners/notices/topics/admin_users 七个列表页共用，各页只给表名/筛选/排序/行渲染） |
 | `nav.js` | 侧栏菜单唯一来源 `NAV_GROUPS` + `migrationProgress()` |
 | `entities.js` | 实体注册表 + 后台写权限四份清单 + `classifyWritePath` |
-| `catalog.js` | 目录 / 文案 / 菜单常量唯一来源（同旧站 `catalog.py`） |
+| `catalog.js` | 文案分组 / 内置文案 key / 版本默认值常量唯一来源（同旧站 `catalog.py`） |
 | `categorySource.js` | 分类真值来源 |
-| `controlled.js` | 六张小配置表的 CRUD 工厂 |
 | `dbTool.js` | 数据库工具安全内核（白名单表 / 危险语句拒绝 / 分页 / SQL 执行） |
 | `homeSections.js` | 首页「三块内容」描述表 |
 | `layout.js` | 后台页面外壳（对齐旧站 `base.html`） |
@@ -191,7 +190,6 @@ cfapi/
 | --- | --- |
 | `adminUsers.js` | 管理员管理（列表 / 新增 / 删除 / 重置口令，仅超管） |
 | `appHome.js` | 首页板块管理（已合并原首页精选：main/ext/featured） |
-| `appMenu.js` | 我的页菜单：列表 / 编辑 / 删除 / 补齐内置项 |
 | `appText.js` | 运营文案：列表(分组筛选) / 编辑 / 删除 |
 | `appVersion.js` | 版本更新配置（`app_version_config` 单行 upsert） |
 | `banners.js` | 轮播图管理：列表 / 编辑 / 删除 / 复制 |
@@ -381,14 +379,14 @@ cfapi/
 
 **内容类（ANY）**：`/content/get_banners`、`/content/get_outdoor`、`/content/get_motorcycle`（户外/摩旅专题分页）、`/content/get_notices`（公告分页，带 `is_read`；**按 token 与 `receiver_type` 四档过滤可见范围**，`published_at` 到秒）、`/content/get_notice_unread`（未读数；口径同上）、`/content/notice_read`（标记已读，回包里的 `unread_count` 与未读数接口同口径）。
 
-**配置类（ANY）**：`/config/get_app_config`（返回 `categories/home_sections/featured/version/texts/menu` + `timestamp`，用 `message` 键）。六块数据彼此无依赖，**并发查库**（耗时 ≈ 最慢的一条，而不是六条之和；失败仍各自回退内置兜底）。
+**配置类（ANY）**：`/config/get_app_config`（返回 `categories/home_sections/featured/version/texts` + `timestamp`，用 `message` 键；**不再返回 `menu`**，2.6.2 起「我的页菜单」写死在小程序 `xapp/app.js` 的 `APP_MENU`）。五块数据彼此无依赖，**并发查库**（耗时 ≈ 最慢的一条，而不是五条之和；失败仍各自回退内置兜底）。
 
 **静态内容页（GET）**：`/pages/terms`、`/pages/agreement`、`/pages/privacy`、`/pages/download`。
 
 ### 9.2 管理后台路由（`/admin` 前缀，不计入对外 34 条）
 
 - 入口/鉴权：`/admin/login`、`/admin/logout`、`/admin/bootstrap`、`/admin/dashboard`、`/admin/status_update`（统一状态切换，全后台唯一写接口）。
-- 页面（GET）：用户管理 `/admin/users`(+`/users_rows`/`/user_detail`)、管理员 `/admin/admin_users`、笔记 `/admin/news_manage`(+`/news_manage_rows`/`/news_preview`/`/news_edit`/`/news_recycle`)、分类 `/admin/app_category_manage`、公告 `/admin/notice_manage`(+`/notice_rows`/`/notice_edit`)、留言 `/admin/comments_manage`、版本 `/admin/app_version_edit`、文案 `/admin/app_text_manage`、菜单 `/admin/app_menu_manage`、轮播 `/admin/banner_manage`、首页板块 `/admin/app_home_manage`、专题 `/admin/topics_manage`、设置 `/admin/settings`、系统信息 `/admin/system_info`、数据库管理 `/admin/db_tools`(+`/db_manage`)、素材库 `/admin/media_manage`(+`/media_library`)。
+- 页面（GET）：用户管理 `/admin/users`(+`/users_rows`/`/user_detail`)、管理员 `/admin/admin_users`、笔记 `/admin/news_manage`(+`/news_manage_rows`/`/news_preview`/`/news_edit`/`/news_recycle`)、分类 `/admin/app_category_manage`、公告 `/admin/notice_manage`(+`/notice_rows`/`/notice_edit`)、留言 `/admin/comments_manage`、版本 `/admin/app_version_edit`、文案 `/admin/app_text_manage`、轮播 `/admin/banner_manage`、首页板块 `/admin/app_home_manage`、专题 `/admin/topics_manage`、设置 `/admin/settings`、系统信息 `/admin/system_info`、数据库管理 `/admin/db_tools`(+`/db_manage`)、素材库 `/admin/media_manage`(+`/media_library`)。
 - 写入口权限由 `app/admin/lib/entities.js` 四份清单统一口径；未登记写入口一律 403 并记日志。
 - 后台是独立页面（同域名 `/admin` 前缀，HTML SPA + 原生 JS），与小程序前端无耦合；小程序通过微信「服务器域名」白名单访问 `lyjx.250036.xyz`。
 

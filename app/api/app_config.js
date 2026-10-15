@@ -2,7 +2,7 @@
 // 兜底常量取自旧站 fastapi/app/core/catalog.py, 保证"表空/查库失败"时首页不空白
 import { okMessageWithTimestamp } from '../core/response.js';
 import { all, one, str } from '../core/db.js';
-import { assetUrl, iconAssetUrl } from '../core/media_scheme.js';
+import { assetUrl } from '../core/media_scheme.js';
 import { nowEpoch } from '../core/timeutil.js';
 import { cacheOnce } from '../core/ttlCache.js';
 
@@ -47,19 +47,6 @@ const DEFAULT_TEXTS = {
   'share.topic_template': '{title} - 狼牙极限运动笔记'
 };
 
-const DEFAULT_MENU = [
-  { menu_key: 'likes', title: '我的点赞', icon: '/images/like.png', link_type: 'page', link_value: '/subpackages/content/like/like', need_login: 1, trusted_only: 0 },
-  { menu_key: 'favorites', title: '我的收藏', icon: '/images/favorite.png', link_type: 'page', link_value: '/subpackages/content/favorites/favorites', need_login: 1, trusted_only: 0 },
-  { menu_key: 'history', title: '浏览历史', icon: '/images/history.png', link_type: 'page', link_value: '/subpackages/content/history/history', need_login: 1, trusted_only: 0 },
-  { menu_key: 'notices', title: '通知公告', icon: '/images/Notice.png', link_type: 'page', link_value: '/subpackages/content/notices/notices', need_login: 0, trusted_only: 0 },
-  { menu_key: 'privacy', title: '隐私政策', icon: '/images/Privacy.png', link_type: 'action', link_value: 'show_privacy', need_login: 0, trusted_only: 0 },
-  { menu_key: 'about', title: '关于与反馈', icon: '/images/About.png', link_type: 'action', link_value: 'show_about', need_login: 0, trusted_only: 0 },
-  { menu_key: 'delete_account', title: '注销账号', icon: '/images/Delete.png', link_type: 'action', link_value: 'delete_account', need_login: 1, trusted_only: 0 }
-];
-
-const PAGE_PREFIXES = ['/pages/', '/subpackages/'];
-const isPagePath = (value) => PAGE_PREFIXES.some((prefix) => str(value).startsWith(prefix));
-
 async function safeAll(env, sql, ...args) {
   try {
     return await all(env, sql, ...args);
@@ -68,27 +55,26 @@ async function safeAll(env, sql, ...args) {
   }
 }
 
-//: 这六块数据几乎不变, 却是小程序每次启动都要查一遍的聚合接口。
+//: 这五块数据几乎不变, 却是小程序每次启动都要查一遍的聚合接口。
 //: 按 isolate 缓存 30 秒: 命中时整段查库都省掉(状态页实测一次 D1 往返约 240ms);
-//: 代价是后台改文案/分类/菜单后最多 30 秒才对小程序生效 —— 后台与接口通常不在同一个 isolate 里,
+//: 代价是后台改文案/分类后最多 30 秒才对小程序生效 —— 后台与接口通常不在同一个 isolate 里,
 //: 写操作清不掉别人的缓存(见 admin/lib/utils.js 的 invalidateEntityCache 说明)。
 const CONFIG_CACHE_TTL_MS = 30 * 1000;
 
-/** 六块配置的取数: 彼此无依赖 → 并发(耗时 ≈ 最慢的一条而不是六条之和); 单块查库失败各自回退 null, 由下面用内置常量兜底。 */
+/** 五块配置的取数: 彼此无依赖 → 并发(耗时 ≈ 最慢的一条而不是五条之和); 单块查库失败各自回退 null, 由下面用内置常量兜底。 */
 function loadConfigRows(env) {
   return cacheOnce('api:app_config_rows', CONFIG_CACHE_TTL_MS, () => Promise.all([
     safeAll(env, 'SELECT category_key, name FROM app_categories WHERE status=1 ORDER BY sort_order ASC, id ASC'),
     safeAll(env, 'SELECT section_key,item_id,image_url,status FROM app_home_sections ORDER BY section_key ASC, sort_order ASC, id ASC'),
     safeAll(env, 'SELECT item_key,name,image_url,page_path,status FROM app_featured_items ORDER BY sort_order ASC, id ASC'),
     one(env, 'SELECT latest_version,min_version,update_tip,update_content FROM app_version_config WHERE id=1').catch(() => null),
-    safeAll(env, 'SELECT text_key,content,status FROM app_texts ORDER BY group_name ASC, sort_order ASC, id ASC'),
-    safeAll(env, 'SELECT menu_key,title,icon,link_type,link_value,need_login,trusted_only,status FROM app_menu_items ORDER BY sort_order ASC, id ASC')
+    safeAll(env, 'SELECT text_key,content,status FROM app_texts ORDER BY group_name ASC, sort_order ASC, id ASC')
   ]));
 }
 
 export function registerAppConfigRoutes(router) {
   router.any('/config/get_app_config', async (request, env) => {
-    const [categoryRows, sectionRows, featuredRows, versionRow, textRows, menuRows] = await loadConfigRows(env);
+    const [categoryRows, sectionRows, featuredRows, versionRow, textRows] = await loadConfigRows(env);
 
     // 分类: 表空/异常回退内置
     const categories = (categoryRows && categoryRows.length ? categoryRows : NOTE_CATEGORIES)
@@ -151,23 +137,9 @@ export function registerAppConfigRoutes(router) {
       if (key) texts[key] = str(row.content);
     });
 
-    // 菜单: 只取启用行, page 型必须是小程序页面路径, 图标 /images/ 前缀原样
-    const menuSource = menuRows && menuRows.length ? menuRows : DEFAULT_MENU;
-    const menu = menuSource
-      .filter((row) => Number(row.status === undefined ? 1 : row.status) === 1)
-      .filter((row) => str(row.link_type) !== 'page' || isPagePath(row.link_value))
-      .map((row) => ({
-        key: str(row.menu_key),
-        title: str(row.title),
-        icon: iconAssetUrl(env, row.icon),
-        link_type: str(row.link_type) || 'page',
-        link_value: str(row.link_value),
-        need_login: Number(row.need_login) === 1,
-        trusted_only: Number(row.trusted_only) === 1
-      }));
-
+    // 「我的页菜单」不再下发(2.6.2): 菜单已写死在小程序 app.js 的 APP_MENU 里, 后台配置页与这张表都已删除
     return okMessageWithTimestamp(
-      { categories, home_sections: homeSections, featured, version, texts, menu },
+      { categories, home_sections: homeSections, featured, version, texts },
       '获取应用配置成功',
       nowEpoch()
     );

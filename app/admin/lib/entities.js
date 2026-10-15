@@ -49,13 +49,6 @@ export const ENTITIES = {
     auditPrefix: 'app_text',
     statusKinds: ['app_text']
   },
-  menu: {
-    label: '我的页菜单',
-    tables: ['app_menu_items'],
-    cachePrefixes: ['config:', 'dash:'],
-    auditPrefix: 'app_menu',
-    statusKinds: ['app_menu_item']
-  },
   notice: {
     label: '通知公告',
     tables: ['app_notices'],
@@ -185,9 +178,6 @@ export const NORMAL_WRITE_PATHS = [
   '/admin/app_version_edit',
   '/admin/app_text_edit',
   '/admin/app_text_delete',
-  '/admin/app_menu_edit',
-  '/admin/app_menu_delete',
-  '/admin/app_menu_restore_missing', // 补齐内置菜单项(只新增, 不改已有行)
   '/admin/notice_edit',
   '/admin/notice_delete',
   '/admin/notice_batch_delete',      // 批量删除公告(2.6.1; 与单条删除同档: 登录即可, 不额外限超管)

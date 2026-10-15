@@ -32,7 +32,6 @@ export const NAV_GROUPS = [
     items: [
       { key: 'app_version_edit', title: '版本更新配置', href: '/admin/app_version_edit', icon: 'bi-arrow-repeat', status: 'ready' },
       { key: 'app_text_manage', title: '运营文案配置', href: '/admin/app_text_manage', icon: 'bi-chat-square-quote', status: 'ready' },
-      { key: 'app_menu_manage', title: '我的页菜单配置', href: '/admin/app_menu_manage', icon: 'bi-list-ul', status: 'ready' },
       { key: 'banner_manage', title: '轮播图管理', href: '/admin/banner_manage', icon: 'bi-images', status: 'ready' },
       // 首页三块内容(主题/拓展/精选)都在这一页: 精选原先是独立菜单项, 2.2.5 合并进来
       { key: 'app_home_manage', title: '首页板块管理', href: '/admin/app_home_manage', icon: 'bi-grid-3x3-gap', status: 'ready' },

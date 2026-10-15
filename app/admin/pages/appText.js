@@ -10,7 +10,7 @@ import {
 } from '../lib/partials.js';
 import { statusActions, statusBadgeClass, statusKind, statusLabel } from '../lib/status.js';
 import {
-  CONTROLLED_LIST_LIMIT, auditLog, buildListUrl, intOr, invalidateEntityCache, positiveId, strOf, textOf
+  CONFIG_LIST_LIMIT, auditLog, buildListUrl, intOr, invalidateEntityCache, positiveId, strOf, textOf
 } from '../lib/utils.js';
 import { redirect } from '../lib/http.js';
 
@@ -69,7 +69,7 @@ async function managePage(ctx) {
     const [counted, listRows, keyRows] = await Promise.all([
       one(ctx.env, `SELECT COUNT(*) AS c FROM app_texts${where}`, ...args),
       all(ctx.env,
-        `SELECT * FROM app_texts${where} ORDER BY sort_order ASC, id ASC LIMIT ?`, ...args, CONTROLLED_LIST_LIMIT),
+        `SELECT * FROM app_texts${where} ORDER BY sort_order ASC, id ASC LIMIT ?`, ...args, CONFIG_LIST_LIMIT),
       // 缺内置文案必须按**全表**判断: 用被 LIMIT 截断的 rows 会把"排在 200 条之后"的误报成缺失
       all(ctx.env, 'SELECT text_key FROM app_texts')
     ]);
@@ -102,7 +102,7 @@ async function managePage(ctx) {
     primary: addButton('/admin/app_text_edit?id=0', '添加文案'),
     // 分组筛选是"表单"性质(下拉 + 筛选按钮), 按三行结构放到第三行
     search: groupForm,
-    meta: `${listMeta({ total, unit: '条', simple: true })}${truncated ? ` <span class="text-danger">（仅显示前 ${CONTROLLED_LIST_LIMIT} 条，请用分组筛选定位）</span>` : ''}`
+    meta: `${listMeta({ total, unit: '条', simple: true })}${truncated ? ` <span class="text-danger">（仅显示前 ${CONFIG_LIST_LIMIT} 条，请用分组筛选定位）</span>` : ''}`
   })}
   <div class="table-responsive">
     <table aria-label="运营文案列表" class="table table-hover align-middle">

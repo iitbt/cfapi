@@ -24,8 +24,8 @@ import { faviconResponse } from './app/core/favicon.js';
 import { settings } from './app/core/config.js';
 import { SERVED_PREFIXES, mediaContentType } from './app/core/storage.js';
 
-// 版本号(**唯一来源**): 与旧站 fastapi/main.py 的 APP_VERSION 同一处 ——
-export const API_VERSION = '2.6.1';
+// 版本号(**唯一来源**): 
+export const API_VERSION = '2.6.2';
 
 // ==== 路由装配(对应旧站 main.py 的 include_router 段) ====
 const router = createRouter();

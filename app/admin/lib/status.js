@@ -65,13 +65,6 @@ export const STATUS_KINDS = {
     audit: 'admin.app_text.status', cacheEntity: 'text', idKey: 'text_id',
     touchCol: 'update_time', asInt: true
   },
-  app_menu_item: {
-    key: 'app_menu_item', table: 'app_menu_items', itemLabel: '菜单',
-    labels: { 1: ['启用', 'success'], 0: ['停用', 'secondary'] },
-    actions: onOffActions(),
-    audit: 'admin.app_menu.status', cacheEntity: 'menu', idKey: 'menu_id',
-    touchCol: 'update_time', asInt: true
-  },
   app_notice: {
     key: 'app_notice', table: 'app_notices', itemLabel: '公告',
     labels: { 1: ['启用', 'success'], 0: ['停用', 'secondary'] },

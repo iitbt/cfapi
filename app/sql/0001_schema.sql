@@ -39,20 +39,6 @@ CREATE TABLE app_home_sections (
   create_time TEXT DEFAULT (datetime('now','+8 hours')),
   update_time TEXT
 );
-CREATE TABLE app_menu_items (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  menu_key TEXT NOT NULL,                    -- 菜单标识(本表内唯一, 前端当 wx:key 用)
-  title TEXT NOT NULL DEFAULT '',
-  icon TEXT NOT NULL DEFAULT '',             -- 本地图标(/images/x.png)或完整 https 地址
-  link_type TEXT NOT NULL DEFAULT 'page',
-  link_value TEXT NOT NULL DEFAULT '',
-  need_login INTEGER NOT NULL DEFAULT 0,     -- 1=未登录点击提示先登录
-  trusted_only INTEGER NOT NULL DEFAULT 0,   -- 1=仅特权用户可见
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  status INTEGER NOT NULL DEFAULT 1,
-  create_time TEXT DEFAULT (datetime('now','+8 hours')),
-  update_time TEXT
-);
 CREATE TABLE app_notice_reads (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
@@ -211,8 +197,6 @@ CREATE INDEX idx_app_featured_items_status
   ON app_featured_items (status, sort_order, id);
 CREATE INDEX idx_app_home_sections_key
   ON app_home_sections (section_key, status, sort_order);
-CREATE UNIQUE INDEX app_menu_items_key ON app_menu_items (menu_key);
-CREATE INDEX idx_app_menu_items_status ON app_menu_items (status, sort_order, id);
 CREATE UNIQUE INDEX app_notice_reads_uniq ON app_notice_reads (user_id, notice_id);
 CREATE INDEX idx_app_notices_active ON app_notices (status, sort_order, id);
 CREATE UNIQUE INDEX app_texts_key ON app_texts (text_key);

@@ -1,4 +1,4 @@
-// 配置中心与专题端到端自检: 版本配置 / 运营文案 / 我的页菜单(含补齐) / 专题精选(含预览)
+// 配置中心与专题端到端自检: 版本配置 / 运营文案 / 专题精选(含预览)
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
@@ -213,9 +213,6 @@ test('统一(2.3.3): 各 _edit?id=0 列表页的三行顺序 —— 新增按钮
   const banner = await (await get('/admin/banner_manage', env, cookie)).text();
   assert.equal((banner.match(/<div class="d-flex flex-wrap align-items-center gap-2 mb-3">/g) || []).length, 1,
     '轮播图页只有第一行');
-  const menu = await (await get('/admin/app_menu_manage', env, cookie)).text();
-  assert.equal((menu.match(/<div class="d-flex flex-wrap align-items-center gap-2 mb-3">/g) || []).length, 1,
-    '我的页菜单页只有第一行');
 });
 
 function envWith(overrides = {}) {
@@ -227,7 +224,6 @@ test('统一(2.3.2): 各列表页的"添加/发布/新增"按钮是同一份实�
   const cookie = await loginCookie(env);
   const pages = [
     ['/admin/banner_manage', '添加轮播图', '/admin/banner_edit?id=0'],
-    ['/admin/app_menu_manage', '添加菜单项', '/admin/app_menu_edit?id=0'],
     ['/admin/app_text_manage', '添加文案', '/admin/app_text_edit?id=0'],
     ['/admin/app_category_manage', '添加分类', '/admin/app_category_edit?id=0'],
     ['/admin/notice_manage', '添加公告', '/admin/notice_edit?id=0'],
@@ -286,7 +282,6 @@ test('统一(2.3.2): 各 *_edit 页面与 news_edit 同一骨架(单列居中 + 
   const edits = [
     ['/admin/news_edit?id=0', '发布笔记', '发布设置'],
     ['/admin/banner_edit?id=0', '添加轮播图', '发布设置'],
-    ['/admin/app_menu_edit?id=0', '添加', '发布设置'],
     ['/admin/app_text_edit?id=0', '添加', '发布设置'],
     ['/admin/app_category_edit?id=0', '添加分类', '发布设置'],
     ['/admin/notice_edit?id=0', '添加公告', '发布设置'],
@@ -379,60 +374,6 @@ test('运营文案编辑: 正文保留换行(不能 strip)', async () => {
   assert.equal(res.status, 302);
   const insert = findCall(state, /INSERT INTO app_texts/i);
   assert.equal(insert.args[2], '第一行\n第二行\n');
-});
-
-test('我的页菜单列表: 缺内置项时给补齐按钮与提示', async () => {
-  const { env } = envWith({
-    rows: {
-      app_menu_items: [{
-        id: 1, menu_key: 'likes', title: '我的点赞', icon: '/images/like.png', link_type: 'page',
-        link_value: '/subpackages/content/like/like', need_login: 1, trusted_only: 0, sort_order: 10, status: 1
-      }]
-    }
-  });
-  const cookie = await loginCookie(env);
-  const html = await (await get('/admin/app_menu_manage', env, cookie)).text();
-  assert.ok(html.includes('补齐内置菜单项（6）'), '7 条内置里已有 1 条');
-  assert.ok(html.includes('我的收藏'), '缺失项要列出来');
-  assert.ok(html.includes('/images/like.png'), '包内图标只显示路径不根化');
-});
-
-test('我的页菜单编辑: need_login 的 "0" 必须存成 0(不能当布尔真值)', async () => {
-  const { env, state } = envWith();
-  const cookie = await loginCookie(env);
-  const res = await post('/admin/app_menu_edit?id=0', {
-    menu_key: 'notices', title: '通知公告', link_type: 'page',
-    link_value: '/subpackages/content/notices/notices', need_login: '0'
-  }, env, cookie);
-  assert.equal(res.status, 302);
-  const insert = findCall(state, /INSERT INTO app_menu_items/i);
-  assert.equal(insert.args[5], 0, '未登录可见');
-});
-
-test('我的页菜单编辑: 页面路径前缀与"注销账号必须登录可见"', async () => {
-  const { env } = envWith();
-  const cookie = await loginCookie(env);
-  const badPath = await post('/admin/app_menu_edit?id=0',
-    { menu_key: 'xx', title: '外部链接', link_type: 'page', link_value: 'https://example.com' }, env, cookie);
-  assert.ok((await badPath.text()).includes('页面路径必须以 /pages/ 或 /subpackages/ 开头'));
-  const actionNeedLogin = await post('/admin/app_menu_edit?id=0',
-    { menu_key: 'delete_account', title: '注销账号', link_type: 'action', link_value: 'delete_account', need_login: '0' }, env, cookie);
-  assert.ok((await actionNeedLogin.text()).includes('必须设为「登录可见」'));
-});
-
-test('菜单补齐: 只新增缺的内置项, 已有项不动', async () => {
-  const { env, state } = envWith({
-    rows: { app_menu_items: [{ menu_key: 'likes' }, { menu_key: 'favorites' }] }
-  });
-  const cookie = await loginCookie(env);
-  const res = await post('/admin/app_menu_restore_missing', {}, env, cookie);
-  assert.equal(res.status, 302);
-  const location = res.headers.get('location');
-  assert.ok(location.includes(encodeURIComponent('已补齐 5 条内置菜单项')));
-  assert.ok(location.includes(encodeURIComponent('已有 2 条保持不变')));
-  const inserts = state.calls.filter((item) => /INSERT INTO app_menu_items/i.test(item.sql));
-  assert.equal(inserts.length, 5);
-  assert.ok(inserts.every((item) => item.args[0] !== 'likes'));
 });
 
 test('专题列表: topic 参数决定表名与列头', async () => {

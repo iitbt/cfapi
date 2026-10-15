@@ -23,7 +23,6 @@ const SPECS = {
   },
   banner: { label: '轮播图', submit: '/admin/banner_delete', back: '/admin/banner_manage', page: 'banner_manage' },
   text: { label: '运营文案', submit: '/admin/app_text_delete', back: '/admin/app_text_manage', page: 'app_text_manage' },
-  menu: { label: '我的页菜单项', submit: '/admin/app_menu_delete', back: '/admin/app_menu_manage', page: 'app_menu_manage' },
   motorcycle: { label: '摩旅精选', submit: '/admin/motorcycle_delete', back: '/admin/topics_manage', page: 'motorcycle_manage' },
   outdoor: { label: '户外精选', submit: '/admin/outdoor_delete', back: '/admin/topics_manage', page: 'outdoor_manage' },
   // ---- 用户与管理员(不可恢复, 且会级联清数据) ----

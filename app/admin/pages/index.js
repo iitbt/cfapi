@@ -3,7 +3,6 @@
 // 权限口径不在这里声明 —— 写在 admin/lib/entities.js 的三份清单里, 分发前统一拦截
 import { routes as adminUsersRoutes } from './adminUsers.js';
 import { routes as appHomeRoutes } from './appHome.js';
-import { routes as appMenuRoutes } from './appMenu.js';
 import { routes as appTextRoutes } from './appText.js';
 import { routes as appVersionRoutes } from './appVersion.js';
 import { routes as bannerRoutes } from './banners.js';
@@ -33,7 +32,6 @@ export const PAGE_ROUTES = [
   ...appHomeRoutes,
   ...appVersionRoutes,
   ...appTextRoutes,
-  ...appMenuRoutes,
   ...topicRoutes,
   ...settingsRoutes,
   ...systemInfoRoutes,

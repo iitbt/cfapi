@@ -10,8 +10,8 @@ export const PER_PAGE = 10;
 // 不设上限时 ?page=999 会一次查/渲染 9990 行
 export const MAX_FIRST_SCREEN_PAGES = 3;
 
-// 受控小表(分类/文案/菜单)列表的展示上限: 它们一次全量展示更直观, 但异常数据灌进几千行时不能全画
-export const CONTROLLED_LIST_LIMIT = 200;
+// 配置小表(分类/文案)列表的展示上限: 它们一次全量展示更直观, 但异常数据灌进几千行时不能全画
+export const CONFIG_LIST_LIMIT = 200;
 
 // 页码硬上界: 与对外接口 app/api/helpers.py 的 PAGE_MAX 取同一个数
 export const PAGE_MAX = 1000;

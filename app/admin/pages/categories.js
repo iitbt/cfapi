@@ -9,7 +9,7 @@ import {
 } from '../lib/partials.js';
 import { statusButtons, statusCell } from '../lib/status.js';
 import {
-  CONTROLLED_LIST_LIMIT, auditLog, buildListUrl, intOr, invalidateEntityCache,
+  CONFIG_LIST_LIMIT, auditLog, buildListUrl, intOr, invalidateEntityCache,
   onceOrError, positiveId, strOf
 } from '../lib/utils.js';
 import { redirect } from '../lib/http.js';
@@ -58,7 +58,7 @@ async function managePage(ctx) {
     // "未登记分类"体检也从那条 GROUP BY 的结果里挑, 不再为它单独再扫一遍 news(改前这一页要扫两次 news)
     const [counted, categories, newsCounts, homeCounts] = await Promise.all([
       one(ctx.env, 'SELECT COUNT(*) AS c FROM app_categories'),
-      all(ctx.env, 'SELECT * FROM app_categories ORDER BY sort_order ASC, id ASC LIMIT ?', CONTROLLED_LIST_LIMIT),
+      all(ctx.env, 'SELECT * FROM app_categories ORDER BY sort_order ASC, id ASC LIMIT ?', CONFIG_LIST_LIMIT),
       all(ctx.env, 'SELECT category, COUNT(*) AS total FROM news WHERE deleted_at IS NULL GROUP BY category'),
       all(ctx.env, 'SELECT item_id, COUNT(*) AS total FROM app_home_sections GROUP BY item_id')
     ]);
@@ -94,7 +94,7 @@ async function managePage(ctx) {
   ${warn}
   ${listToolbar({
     primary: addButton('/admin/app_category_edit?id=0', '添加分类'),
-    meta: `${listMeta({ total, unit: '个分类', simple: true })}${truncated ? ` <span class="text-danger">（仅显示前 ${CONTROLLED_LIST_LIMIT} 个）</span>` : ''}`
+    meta: `${listMeta({ total, unit: '个分类', simple: true })}${truncated ? ` <span class="text-danger">（仅显示前 ${CONFIG_LIST_LIMIT} 个）</span>` : ''}`
   })}
   <div class="table-responsive">
     <table aria-label="分类列表" class="table table-hover align-middle text-center">

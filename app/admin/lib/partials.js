@@ -9,7 +9,7 @@ export function backButton(url, label = '返回') {
     + '<i class="bi bi-arrow-left" aria-hidden="true"></i> ' + escapeHtml(label) + '</a>';
 }
 
-// 列表页"新增/添加/发布"按钮的**唯一实现**(基准 = 我的页菜单管理 / 轮播图管理 上那一颗):
+// 列表页"新增/添加/发布"按钮的**唯一实现**(基准 = 轮播图管理 上那一颗):
 // .btn.btn-primary + bi-plus-lg + 文案; 位置统一放在列表卡片的工具条里(与筛选组同排)。
 // extraClass 只用来补间距类(例如首页板块那种"靠右"的场景传 ' ms-auto')
 export function addButton(url, label, extraClass = '') {

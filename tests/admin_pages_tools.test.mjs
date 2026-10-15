@@ -713,7 +713,7 @@ test('SQL 形状: 管理页发出的每条 SQL 都要能被真正的 SQLite 解�
   db.exec('CREATE TABLE news (id INTEGER, title TEXT, image TEXT, video_url TEXT, content TEXT, deleted_at TEXT)');
   for (const [table, column] of [
     ['banner_images', 'image_url'], ['motorcycle_trips', 'poster'], ['outdoor_activities', 'poster'],
-    ['app_home_sections', 'image_url'], ['app_featured_items', 'image_url'], ['app_menu_items', 'icon']
+    ['app_home_sections', 'image_url'], ['app_featured_items', 'image_url']
   ]) db.exec(`CREATE TABLE ${table} (id INTEGER, "${column}" TEXT)`);
   db.exec('CREATE TABLE motorcycle_trips_video (id INTEGER)');
   db.exec('ALTER TABLE motorcycle_trips ADD COLUMN videoUrl TEXT');
@@ -725,7 +725,8 @@ test('SQL 形状: 管理页发出的每条 SQL 都要能被真正的 SQLite 解�
   await (await get('/admin/media_manage?prefix=news_uploads%2F', env, cookie)).text();
 
   const scans = state.calls.filter((call) => /LIKE \?/i.test(call.sql));
-  assert.ok(scans.length >= 9, `引用扫描应发出 9 条粗筛, 实际 ${scans.length}`);
+  // 条数跟着 OTHER_REF_SOURCES 走(2.6.2 删掉「我的页菜单图标」那一条后由 9 变 8)
+  assert.ok(scans.length >= 8, `引用扫描应发出 8 条粗筛, 实际 ${scans.length}`);
   for (const call of scans) {
     assert.doesNotThrow(() => db.prepare(call.sql), `语法错误的 SQL: ${call.sql}`);
   }

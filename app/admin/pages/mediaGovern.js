@@ -96,8 +96,7 @@ const OTHER_REF_SOURCES = [
   ['outdoor_activities', 'poster', '户外精选封面'],
   ['outdoor_activities', 'videoUrl', '户外精选视频'],
   ['app_home_sections', 'image_url', '首页板块图标'],
-  ['app_featured_items', 'image_url', '首页精选图标'],
-  ['app_menu_items', 'icon', '我的页菜单图标']
+  ['app_featured_items', 'image_url', '首页精选图标']
 ];
 
 function redirectTo(url) {
