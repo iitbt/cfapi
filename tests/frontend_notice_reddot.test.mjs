@@ -115,6 +115,75 @@ test('我的页红点(4.5.2): 每次刷新都重新问服务端, 只有状态翻
   assert.equal(patched, null, '本来就是已读就不 setData(数字 id 也要能对上)');
 });
 
+// 我的页菜单(4.5.8 起整体住在 pages/profile/profile.js, 不再由 app.js 下发/计算)
+// 这条守卫专门挡"搬漏了"这一类回归: 4.5.8 首次搬迁时 getMenuItems 里引用的 normalizeMenuIcon /
+// getMenuBuiltinIcon 没跟过来, 真机一进「我的」页就抛 is not a function(静态语法检查看不出来)
+test('我的页菜单(4.5.8): loadMenuItems 走完整条 getMenuItems 链路, 顺序/红点/登录态/图标兜底都对', (t) => {
+  if (!existsSync(PROFILE)) {
+    t.skip(`本机没有小程序源码 ${PROFILE}`);
+    return;
+  }
+
+  let unread = 3;
+  const appStub = {
+    isLoggedIn: () => true,
+    isTrustedUser: () => false,
+    getNoticeUnreadCount: () => unread,
+    // app 层的图标归一化唯一实现: 这里照抄口径(空值/不像地址 → 兜底图)
+    normalizeIconValue: (icon, fallback) => (icon && /[/.]/.test(String(icon)) ? String(icon) : fallback),
+    globalData: { version: '4.5.8', api: { content: {} }, userInfo: null, isLoggedIn: true }
+  };
+  installMiniProgramStubs();
+  globalThis.getApp = () => appStub;
+  let profileCfg = null;
+  globalThis.Page = (cfg) => { if (!profileCfg) profileCfg = cfg; };
+  try {
+    // Node 会缓存模块: 前一个用例已经 require 过 profile.js, 这里必须清掉缓存重新加载
+    // (页面模块顶层就执行 getApp(), 不清缓存拿到的还是上一个用例的 Page 注册结果)
+    delete require.cache[require.resolve(PROFILE)];
+    require(PROFILE);
+    assert.ok(profileCfg, 'profile.js 要能加载');
+  } finally {
+    dropMiniProgramStubs();
+  }
+
+  // getMenuItems 引用的方法必须都在这一个页面里(搬迁时最容易漏的就是这种跨文件引用)
+  ['getMenuItems', 'loadMenuItems', 'normalizeMenuIcon', 'getMenuBuiltinIcon', 'onMenuIconError'].forEach((name) => {
+    assert.equal(typeof profileCfg[name], 'function', `profile.js 必须自带 ${name}（菜单 4.5.8 起不再挂在 app.js 上）`);
+  });
+
+  // ctx 带上页面自身的方法: loadMenuItems 内部要调 this.getMenuItems
+  const ctx = Object.assign({}, profileCfg, {
+    data: { menuItems: [], debugMenuItems: [] },
+    setData(patch) { Object.assign(this.data, patch); }
+  });
+  ctx.loadMenuItems();
+  assert.deepEqual(ctx.data.menuItems.map((item) => item.key),
+    ['likes', 'favorites', 'history', 'notices', 'privacy', 'about', 'apply_test', 'delete_account'],
+    '菜单顺序就是 APP_MENU 数组顺序');
+  assert.equal(ctx.data.menuItems[0].icon, '/images/like.png', '图标取自常量表');
+  assert.equal(ctx.data.menuItems[6].icon, '/images/test.png', '未通过时申请测试用 test.png');
+  assert.equal(ctx.data.menuItems[3].badge, true, '有未读公告时通知公告要带红点');
+
+  // 内部测试身份 → 申请测试换成 test_a.png
+  appStub.isTrustedUser = () => true;
+  ctx.data.menuItems = [];
+  ctx.loadMenuItems();
+  assert.equal(ctx.data.menuItems[6].icon, '/images/test_a.png', '已通过时申请测试用 test_a.png');
+
+  // 未登录 → need_login 的项一个都不该出现
+  appStub.isLoggedIn = () => false;
+  ctx.data.menuItems = [];
+  ctx.loadMenuItems();
+  assert.deepEqual(ctx.data.menuItems.map((item) => item.key), ['notices', 'privacy', 'about']);
+  assert.equal(ctx.data.menuItems[0].badge, false, '未登录不该亮红点');
+
+  // 图标地址坏了 → 按 key 回退到这一项自己的包内图标
+  assert.equal(profileCfg.getMenuBuiltinIcon('notices'), '/images/Notice.png');
+  assert.equal(profileCfg.normalizeMenuIcon('随手敲的abc', 'notices'), '/images/Notice.png', '不像地址的值要用本项兜底图');
+  assert.equal(profileCfg.normalizeMenuIcon('/images/like.png', 'notices'), '/images/like.png', '正常包内路径原样用');
+});
+
 test('app.fetchNoticeUnread(4.5.2): 不再有 30 秒内存缓存, 并发只发一次请求', async (t) => {
   if (!existsSync(APP)) {
     t.skip(`本机没有小程序源码 ${APP}`);
@@ -141,14 +210,14 @@ test('app.fetchNoticeUnread(4.5.2): 不再有 30 秒内存缓存, 并发只发�
   assert.equal(await appCfg.fetchNoticeUnread(), 2);
   assert.equal(requests.length, 2, '每次调用都要真请求(D1 上就是一条未读统计)');
   assert.equal(requests[0].method, 'POST');
-  assert.ok(appCfg._hasUnopenedNotice(), '有未读时红点判定为亮');
+  assert.ok(appCfg.getNoticeUnreadCount() > 0, '有未读时红点判定为亮');
 
   // 并发(下拉刷新会同时触发公告列表与未读数): 在途去重, 只发一次
   const before = requests.length;
   response = { code: 200, data: { unread_count: 0, ids: [] } };
   await Promise.all([appCfg.fetchNoticeUnread(), appCfg.fetchNoticeUnread()]);
   assert.equal(requests.length, before + 1, '并发调用共用同一次在途请求');
-  assert.equal(appCfg._hasUnopenedNotice(), false, '未读清零后红点判定为灭');
+  assert.equal(appCfg.getNoticeUnreadCount() > 0, false, '未读清零后红点判定为灭');
 
   // 同身份的资料刷新不许抹掉红点(4.5.3): 「我的」页 onShow 会同时发"拉未读"与"拉资料"两条请求,
   // 资料那条回来要调 updateLoginStatus —— 它以前**无条件**把未读数清零, 于是谁后到谁说了算:
@@ -158,14 +227,14 @@ test('app.fetchNoticeUnread(4.5.2): 不再有 30 秒内存缓存, 并发只发�
   appCfg.globalData.userInfo = { id: 7 };
   response = { code: 200, data: { unread_count: 4, ids: [9] } };
   await appCfg.fetchNoticeUnread();
-  assert.equal(appCfg._hasUnopenedNotice(), true);
+  assert.equal(appCfg.getNoticeUnreadCount() > 0, true);
   // updateLoginStatus 要落缓存, 所以这一段需要 wx 桩(上面 require 时那套已经在 finally 里撤掉了)
   installMiniProgramStubs();
   try {
     appCfg.updateLoginStatus({ id: 7, nickname: '老王' }, null);   // 同一身份, 只是资料刷新
-    assert.equal(appCfg._hasUnopenedNotice(), true, '同一身份的资料刷新不该把红点抹掉');
+    assert.equal(appCfg.getNoticeUnreadCount() > 0, true, '同一身份的资料刷新不该把红点抹掉');
     appCfg.updateLoginStatus({ id: 8, nickname: '张三' }, 'tok-2');   // 换账号: 旧读数属于上一个身份
-    assert.equal(appCfg._hasUnopenedNotice(), false, '换账号后未读数必须归零');
+    assert.equal(appCfg.getNoticeUnreadCount() > 0, false, '换账号后未读数必须归零');
   } finally {
     dropMiniProgramStubs();
   }
@@ -179,7 +248,7 @@ test('app.fetchNoticeUnread(4.5.2): 不再有 30 秒内存缓存, 并发只发�
   const countBefore = requests.length;
   assert.equal(await appCfg.fetchNoticeUnread(), 0);
   assert.equal(requests.length, countBefore, '游客不该去打未读接口');
-  assert.equal(appCfg._hasUnopenedNotice(), false, '未登录不亮红点');
+  assert.equal(appCfg.getNoticeUnreadCount() > 0, false, '未登录不亮红点');
 });
 
 test('公告轮询(4.5.4): 前台每 30 秒问一次, 切后台必须停', async (t) => {

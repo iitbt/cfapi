@@ -241,7 +241,7 @@ test('应用配置: message 键 + timestamp, 表空时回退内置内容', async
   assert.equal(data.home_sections[0].items[0].id, 'outdoor');
   assert.equal(data.home_sections[0].items[0].name, '户外');
   assert.equal(data.featured.length, 2);
-  // 2.6.2 起不再下发菜单: 「我的页菜单」已写死在小程序 app.js 的 APP_MENU 里(后台配置页与 app_menu_items 表都已删除)
+  // 2.6.2 起不再下发菜单: 「我的页菜单」已写死在小程序 pages/profile/profile.js 的 APP_MENU 里(后台配置页与 app_menu_items 表都已删除; 小程序 4.5.8 起从 app.js 搬到该页面)
   assert.equal(data.menu, undefined, '响应里不该再有 menu 字段');
   assert.equal(data.version.update_tip, '发现新版本，更新后体验更好');
   assert.equal(data.texts['login.prompt'].length > 0, true);
