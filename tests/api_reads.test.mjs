@@ -350,6 +350,33 @@ test('笔记详情: 400/404 文案与 is_admin 三种情况', async () => {
   assert.equal(detail.data.is_admin, false);
   assert.equal(detail.data.content.includes('https://media.test/news_uploads/inline.png'), true);
   assert.equal(detail.data.is_liked, false);
+  // 测试内容可见性由服务端给出(与专题接口的 can_watch_video 同名字段): 端上不再拿本地身份镜像猜
+  assert.equal(detail.data.can_watch_video, false, '游客/普通用户为 false');
+  assert.ok(!('viewer_trusted' in detail.data), '访客身份字段不对外暴露');
+});
+
+test('笔记详情: 内部测试用户拿到 can_watch_video=true(同一字段管正文视频与留言区)', async () => {
+  const detailEnv = makeEnv({
+    db: (sql) => {
+      if (/FROM news n LEFT JOIN users au/i.test(sql)) {
+        return Object.assign({}, noteRow, { content: '<p>正文</p>', viewer_id: 0, viewer_trusted: 1 });
+      }
+      return null;
+    }
+  });
+  const detail = await getJson('/news/detail?id=5', detailEnv.env);
+  assert.equal(detail.data.can_watch_video, true);
+
+  // 撤回内部测试身份后同一篇笔记立即变成 false —— 端上不必重进「我的」页
+  const revoked = makeEnv({
+    db: (sql) => {
+      if (/FROM news n LEFT JOIN users au/i.test(sql)) {
+        return Object.assign({}, noteRow, { content: '<p>正文</p>', viewer_id: 7, viewer_trusted: 0 });
+      }
+      return null;
+    }
+  });
+  assert.equal((await getJson('/news/detail?id=5', revoked.env)).data.can_watch_video, false);
 });
 
 test('评论列表: 缺 news_id 给 400; 正常返回 pagination', async () => {

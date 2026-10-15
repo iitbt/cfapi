@@ -1,6 +1,6 @@
 # 狼牙极限运动笔记 · 主后端（cfapi / Cloudflare Workers）
 
-> **版本**：`v2.6.1` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
+> **版本**：`v2.6.3` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
 > **主域名**：**https://lyjx.250036.xyz**（对外 API + `/admin` 管理后台同一域名）。
 > **素材域名**：**https://storage.250036.xyz**（R2 公开域，与接口域名分离）。
 > **定位**：微信小程序「狼牙极限运动笔记」的**主要后端**。今后小程序的开发、接口变更、联调、发版均以本工程为准；FastAPI 工程（`../fastapi/`）为**备用后端**。
@@ -229,9 +229,10 @@ cfapi/
 
 ### 6.6 `tests/` `tools/` `notes/` `out/`
 
-- **`tests/`**：`*.test.mjs`（约 301 条用例，`node --test`，桩模拟 D1/R2），含 `api_contract`/`api_reads`/`api_writes`、`admin_*`、`unit`、`sql_migrations` 与 `notice_visibility`（后两个用真实 SQLite）、`stub` 等。
+- **`tests/`**：`*.test.mjs`（约 300 条用例，`node --test`，桩模拟 D1/R2），含 `api_contract`/`api_reads`/`api_writes`、`admin_*`、`unit`、`sql_migrations` 与 `notice_visibility`（后两个用真实 SQLite）、`stub` 等。
   - `notice_visibility`（2.5.9 起）用**真实 SQLite**顶掉 D1 后走真接口，验证公告接收人四档："谁能看到哪条 / 未读数对得上 / 已读互不影响 / 游客只看得到「所有用户」"（2.6.0 起含"一条公告发给两位"的逗号列表）。为什么要真库：桩只能证明"SQL 长什么样"（`api_reads` 里那条断言），证明不了口径在真 SQL 上确实是这个结果 —— 例如 `?` 占位符顺序错位在桩里看不出来。
   - `frontend_notice_reddot`（2.5.8 起；4.5.3 起多一条"同一身份的资料刷新不许把红点抹掉 / 换账号必须归零"，4.5.4 起多一条"前台每 30 秒轮询公告、切后台必须停"）是**跨端守卫**：用桩顶掉 `getApp/wx/Page` 后直接 require 小程序的 `pages/profile/profile.js` 与 `subpackages/content/notices/notices.js`，真跑一遍"红点每次强制取服务端未读数 / 状态翻转才重渲染 / 已读补丁回写秒开缓存"。本机没有 `../xapp`（只部署后端）时自动跳过，也可用 `LYXJ_DIR=<xapp 路径>` 指定。
+  - `frontend_test_content`（4.5.7 起）同样是跨端守卫，管**测试内容可见性**：真跑一遍"户外/摩旅的秒开缓存 + 服务端回包"（断言 `video_url` 真的进了渲染层、非内部测试时仍不整表 `setData`）、`trustedUser` 的判据（服务端 `can_watch_video` 优先 / 没有才回退本地身份 / 值没变不 `setData`）以及详情页回包按 `can_watch_video` 落 `isTrusted`。挡的就是"服务端已下发视频、端上却因为列表指纹漏掉 `video_url` 或本地身份镜像是旧的就把它藏起来"。
 - **`tools/`**：`diff_api.mjs`（新旧站 JSON 对拍）、`live_smoke.mjs`（真实数据端到端冒烟）、`cf_region.mjs`（R2/D1 区域迁移）、`embed_admin_assets.mjs`（打包静态资源）、`embed_favicon.mjs`（内联 favicon）、`export_sqlite.py`（旧库导出 seed）、`split_sql.py`（SQL 拆块便于控制台粘贴）、`verify_counts.py`（行数校验）、`media_to_r2.md`（素材搬 R2 说明）。
 - **`notes/`**：`api-inventory.md`（对外接口台账）、`structure-map.md`（fastapi↔cfapi 结构与机制对照）、`limits-design.md`（限流方案）、`ops-sql.md`（运营改数 SQL）。
 - **`out/`**：**生成物**（已被 `.gitignore` 忽略）：`seed.sql`（全量数据）+ 拆块 `schema/`、`seed/`、`schema-big/`、`seed-big/`，供控制台逐块粘贴建表/导数据。
@@ -338,6 +339,7 @@ cfapi/
 > - 三种事件都用企业微信机器人给管理员发一条文本（含昵称、ID、用户名、时间；撤回类写明"上一条申请通知可忽略"，已通过后退回再注明"已放弃内部测试身份"——**机器人消息发出去撤不回**，所以撤回要再提醒一次，否则管理员可能白去点一次「设为内部测试」）。`WXWORK_WEBHOOK_KEY` 没配就跳过，**发送失败只记日志，不影响用户那边的申请/撤回结果**；
 > - 管理员在 `/admin/users` 看到「已申请」徽章（下拉可筛「仅已申请」）→ 点【设为内部测试】后 `is_trusted=1`、`test_applied=0`（申请已处理，徽章消失）；用户撤回后徽章同样消失、已通过后退回则「类型」列从「内部测试 微信」回到「普通 微信」（列表读的就是这两个字段，**管理员不需要做任何清理动作**）；
 > - `test_applied` 与 `is_trusted` 随 `/user/login`、`/user/get_user_info` 一起下发，小程序据此决定点【申请测试】后弹哪一条、显示哪张图标（菜单文案不变）。
+> - **测试内容可见性由服务端下发（2.6.3）**：三条路径都带同一个判据 —— 专题接口（`/content/get_outdoor`、`/content/get_motorcycle`）逐条给 `video_url`（非内部测试**直接删掉该键**）与 `can_watch_video`；`/news/detail` 整条给 `can_watch_video`（正文视频与留言区共用）。端上只渲染服务端给的内容，不再按本地身份镜像二次判断 —— 那样会在"后台刚设/刚取消内部测试、端上还停在旧资料"时把已经下发的视频藏起来（依据：2.5.6 的结论是身份不缓存、重新拉资料即可拿到最新值）。
 > - **身份状态不缓存（2.5.6 复核）**：`/user/get_user_info` 每次都按 token 直查 `users` 表（`app/api/helpers.js::userByToken`，`SELECT * FROM users WHERE token=?`，无内存/KV/CDN 缓存层），所以管理员在后台改完 `is_trusted` 后，端上只要重新拉一次资料就能拿到最新身份 —— **不需要刷新接口、不需要额外状态字段**。2.5.6 本身没有接口改动（仅版本号对齐 + 本条说明）；若日后给用户资料加服务端缓存，必须同时提供失效手段，否则端上会出现"重进/下拉也拉不到新身份"。
 > - **定向公告：管理员设/取消内部测试 → 本人收到一条系统消息（2.5.7）**：不新增接口、也不新增表 —— 复用 `app_notices`，用收件人列表（`receiver_type=3` + `target_user_ids=,<uid>,`）表示"只发给这个用户"。管理员点【设为内部测试】/【取消内部测试】后，后端经 `app/core/user_notice.js::pushUserNotice` 插入一条（级别 fixed `important`，标题「内部测试申请已通过」/「内部测试已取消」），用户在小程序「通知公告」页看到它，并在「我的」页公告菜单亮红点。要点：
 >   - **可见性与未读口径收窄**：`/content/get_notices`、`/content/get_notice_unread`、`/content/notice_read` 三条路径统一按同一份口径过滤（2.5.7 时是 `target_user_id IS NULL OR target_user_id = 当前用户`，未登录按游客 `0` 算只看全体公告；**2.5.9 起换成下面那条 `receiver_type` 四档 OR 查询**，语义向后兼容）。改造前 `notice_read` 回的是"全体公告数 − 我的已读行数"，引入定向公告后那个减法会把**别人的**定向消息算成我的未读，红点永远消不掉 —— 2.5.7 起 `get_notice_unread` 与 `notice_read` 共用同一份口径 `unreadNoticeIds()`。
@@ -369,7 +371,7 @@ cfapi/
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | GET | `/news/list` | 列表（无 `page` 返回数组；已审核、未删除） |
-| GET | `/news/detail` | 详情（含作者 / 点赞收藏等状态、浏览量自增、富文本净化；正文图片与视频封面 `poster` 都转绝对地址，供小程序未播放时显示封面） |
+| GET | `/news/detail` | 详情（含作者 / 点赞收藏等状态、浏览量自增、富文本净化；正文图片与视频封面 `poster` 都转绝对地址，供小程序未播放时显示封面）。**2.6.3 起**响应体带 `can_watch_video`（当前访客是否内部测试用户；与专题接口同名字段）—— 正文视频与留言区的可见性由它判定，端上不再拿"只在「我的」页刷新的本地身份镜像"去猜 |
 | POST | `/news/like` `/news/favorite` | 点赞 / 收藏（带限流，内部测试免审） |
 | POST | `/news/share` | 分享计数（可游客） |
 | POST | `/news/add_comment` | 留言（≤500 字，内部测试免审） |
@@ -432,6 +434,7 @@ cfapi/
 10. **老库升级到 2.5.7 / 2.6.0**：依次跑 `npm run schema:noticetarget`（加 `app_notices.target_user_id`）、`npm run schema:noticetargets`（加 `target_user_ids` 并把老的单值折进去），否则公告接口（`/content/get_notices` 等）会报 `no such column: target_user_id` / `no such column: target_user_ids`。两个脚本都不幂等，各只跑一次。
 11. **用户说"设了内部测试但小程序里没收到消息"**：先看公告页是否拉到那一页（定向消息也占一条，排在 `sort_order` 相同的公告之前）、再看「我的」页公告红点；后端侧按 `notice.push_user_notice_failed` 日志排查，并确认老库已跑 `schema:noticetarget`。**发消息失败不影响身份变更本身**（列表里的「内部测试」徽章照样会出现）。
 12. **用户说"红点不亮 / 亮了不消失"**：先确认端上版本 —— 小程序 **≤4.5.1** 进「我的」页会吃 `fetchNoticeUnread` 的 30 秒内存缓存（管理员刚改完的这段时间里红点不动），**4.5.2 起**改为每次 onShow / 下拉刷新都强制取最新值；**4.5.3 起**修掉剩余竞态（`updateLoginStatus` 原先无条件把未读数清零，资料刷新回包后到会把刚亮起的红点抹掉，清零现在只在换人/首次登录时做）；**4.5.4 起**页面停着不动也会收到新公告（端上前台每 30 秒轮询一次，见 `../xapp/README.md` 7.14）。后端侧只需确认 `POST /content/get_notice_unread` 返回的 `unread_count` 正确：它同时统计**全体公告 + 只发给本人的定向通知**，`> 0` 红点亮、`= 0` 灭。
+13. **用户说"已在后台设成内部测试，但户外/摩旅没有视频、笔记里没有留言区"**：2.6.3 起视频可见性与留言区可见性都由服务端下发（专题接口删/留 `video_url`、`/news/detail` 给 `can_watch_video`），所以先按身份核对 `GET /user/get_user_info` 的 `is_trusted`（应为 1）；若接口已是对的，那就是端上仍是旧版本（**4.5.7 起**才不再按本地身份镜像二次判断，也不再因为列表指纹漏掉 `video_url` 而跳过整表刷新），让用户更新小程序并重新进入页面即可。列表侧的守卫见 `tests/frontend_test_content.test.mjs`。
 8. **线上"又慢了"先看状态页的「D1 响应」**：它是一次真实 D1 往返的耗时（基线约 240ms）。接口/页面的耗时 ≈ **串行轮数 × 它**，所以"多了几百毫秒"基本都是多了一轮串行查询，而不是单条 SQL 变慢。
 9. **怎么量"串行轮数"**：本地用 `tests/stub.mjs` / `tests/admin_stub.mjs` 的桩，把每条 D1 语句包一层 `await sleep(240)`，再跑一次该页面/接口 —— `耗时 ÷ 240ms` 就是串行轮数（后台全部 GET 路径可从 `app/admin/pages/index.js` 的 `PAGE_ROUTES` 列出来）。2.5.2 的对照：控制面板 7 轮 → 2 轮、`/config/get_app_config` 6 轮 → 1 轮（命中缓存 0 轮）、`/news/list` 3 轮 → 1~2 轮、`/news/detail` 4 轮 → 2 轮。
 10. **配置类数据最多 30 秒延迟生效**：分类/首页板块/精选/文案/菜单/轮播图走 `core/ttlCache.js` 的 30 秒进程内缓存（跨 isolate 没法主动失效）。后台改完若在小程序侧没立刻看到，等半分钟或重启小程序再试。

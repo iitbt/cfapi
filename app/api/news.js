@@ -99,11 +99,15 @@ export function registerNewsRoutes(router) {
     if (id <= 0) return json({ code: 400, msg: '参数错误' });
     try {
       const token = tokenOf(request, body);
+      // 访客身份一起查出来(同一条 SQL 里两个子查询, 不额外多一次 D1 往返):
+      // viewer_id 用于点赞/收藏态与浏览计数; viewer_trusted 用于 can_watch_video —— 测试内容可见性交回服务端判定,
+      // 端上就不必拿"只在「我的」页刷新的本地身份镜像"去猜(后台刚授权/撤回时会猜错)
       const item = await one(env,
         'SELECT n.*, au.username AS author, au.nickname AS author_nickname, '
-        + '(SELECT id FROM users WHERE token=? LIMIT 1) AS viewer_id '
+        + '(SELECT id FROM users WHERE token=? LIMIT 1) AS viewer_id, '
+        + '(SELECT COALESCE(is_trusted,0) FROM users WHERE token=? LIMIT 1) AS viewer_trusted '
         + 'FROM news n LEFT JOIN users au ON au.id=n.user_id '
-        + "WHERE n.id=? AND n.status='approved' AND n.deleted_at IS NULL", token, id);
+        + "WHERE n.id=? AND n.status='approved' AND n.deleted_at IS NULL", token, token, id);
       if (!item) return json({ code: 404, msg: '笔记不存在或未通过审核' });
 
       const viewerId = Number(item.viewer_id) || 0;
@@ -129,10 +133,14 @@ export function registerNewsRoutes(router) {
         item.view_count = (Number(item.view_count) || 0) + 1;
       }
 
+      const canWatch = Number(item.viewer_trusted) === 1;
       const data = Object.assign({}, item);
       delete data.viewer_id;
+      delete data.viewer_trusted;
       delete data.author;
       delete data.author_nickname;
+      // 测试内容可见性(正文视频 / 留言区): 字段名与专题接口的 can_watch_video 一致 —— 端上一套口径管全部测试内容
+      data.can_watch_video = canWatch;
       if (data.image) data.image = assetUrl(env, data.image);
       if (data.video_url) data.video_url = assetUrl(env, data.video_url);
       data.content = absolutizeMedia(env, sanitizeHtml(data.content));
