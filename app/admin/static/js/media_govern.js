@@ -42,16 +42,22 @@
       return select.value;
     }
     // 前后端都校验(任务要求): 前端先拦一道, 免得整批文件各失败一次。
-    // 只拦两条最要命的(必须是本入口的根目录或它下面的子目录、不含两个点), 其余(分隔符归一/特殊字符/超长)以后端为准 ——
-    // 这段脚本是模板字符串生成的: 反斜杠会被转义吃掉、反引号会直接截断脚本(2026-10-10 两次教训), 注释里都别写。
-    // 根目录的提交值就是斜杠一个字符, 前后端都认(见 lib/mediaUpload 的 safeTargetDir)。
+    // 只拦"一定不合法"的几条(路径穿越、绝对路径、空段), 其余(分隔符归一/特殊字符/超长)以后端为准 ——
+    // 后端 safeTargetDir 是唯一判定, 这里只是提前给一句人话。
+    // 2.6.5: 不再要求"必须写在本入口素材根下面"(2.4.4 起存储桶最外层就能写, 手填的新目录也常在别处),
+    //   只保留非法路径的拦截; 根目录的提交值就是斜杠一个字符, 前后端都认(见 lib/mediaUpload 的 safeTargetDir)。
     function dirProblem() {
-      var rows = [{ purpose: 'cover', title: '图片', root: 'image/' }, { purpose: 'video', title: '视频', root: 'video/' }];
+      var rows = [{ purpose: 'cover', title: '图片' }, { purpose: 'video', title: '视频' }];
       for (var index = 0; index < rows.length; index += 1) {
-        var value = dirOf(rows[index].purpose);
+        var value = dirOf(rows[index].purpose).replace(/\\/g, '/');
         if (!value || value === '/') continue;
-        if (value.indexOf('..') !== -1) return '目标路径不能包含两个点：请改成 ' + rows[index].root + ' 下面的普通目录';
-        if (value.indexOf(rows[index].root) !== 0) return rows[index].title + '的目标路径必须以 ' + rows[index].root + ' 开头';
+        if (value.indexOf('..') !== -1) return rows[index].title + '的目标路径不能包含两个点（路径穿越）';
+        if (value.charAt(0) === '/') return rows[index].title + '的目标路径不能是绝对路径：去掉开头的斜杠（要写存储桶最外层就选「根目录」）';
+        var body = value.replace(/\/+$/, '');
+        var pieces = body.split('/');
+        for (var at = 0; at < pieces.length; at += 1) {
+          if (!pieces[at] || pieces[at] === '.') return rows[index].title + '的目标路径有不合法的一段（空目录名或单个点）';
+        }
       }
       return '';
     }
@@ -60,9 +66,8 @@
       return picked ? picked.value : 'auto';
     }
     // 文件夹上传(2.4.2): webkitRelativePath 形如 "顶层目录/子目录/文件" —— **整棵树原样带上**(含选中的那层),
-    // 服务端按它建层级(图片落 image/、视频落 video/); 普通"选择文件"没有这个字段 → 直接落根目录。
-    // 分隔符与非法字符一律交给服务端的 safeRelPath 清洗(它已做反斜杠归一), 这里不重复一遍 ——
-    // 这是一段"用模板字符串生成的脚本", 在这里写正则里的反斜杠会被多层转义吃掉(2026-10-10 踩过: 整段脚本因此语法错)。
+    // 服务端按它建层级(图片落 image/、视频落 video/); 普通"选择文件"没有这个字段 → 直接落在目标路径下。
+    // 分隔符与非法字符一律交给服务端的 safeRelPath 清洗(它已做反斜杠归一), 这里不重复一遍。
     function relOf(file) {
       return file.webkitRelativePath || '';
     }
@@ -140,7 +145,7 @@
         data.set('name_mode', mode());
         // 2.4.2: 目录结构两种命名模式都保留 → rel_path 不再只在"保留原名"时发
         if (item.rel) data.set('rel_path', item.rel);
-        // 2.4.3: 目标路径(默认 image/ 或 video/, 可改成其下的子目录); 不填就不发, 服务端用默认
+        // 2.4.3: 目标路径(默认 image/ 或 video/); 2.6.5 起下拉里是桶内全部目录、也可手填任意合法相对目录; 不填就不发, 服务端用默认
         var target = dirOf(item.purpose);
         if (target) data.set('target_dir', target);
         var xhr = new XMLHttpRequest();

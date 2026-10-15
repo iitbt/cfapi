@@ -19,7 +19,7 @@ async function uploadHandler(ctx) {
     purpose: form.get('purpose'),
     nameMode: form.get('name_mode'),
     relPath: form.get('rel_path'),
-    // 目标路径(2.4.3): 只认本入口根目录及其子目录, 权威校验在 saveUpload 里
+    // 目标路径(2.4.3; 2.6.5 起任意干净相对目录都收): 权威校验在 saveUpload → safeTargetDir 一处
     targetDir: form.get('target_dir')
   });
   if (!result.ok) return json({ success: false, message: result.message });

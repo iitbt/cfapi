@@ -75,12 +75,15 @@ function splitRel(rel) {
 }
 
 /**
- * 目标目录校验(2.4.3, 素材库页的「选择路径」):
- *   · **只允许落在本入口自己的素材根下**(图片 `image/`、视频 `video/`) —— 跨目录写进去的文件在素材库里"列不出来"
- *     (列举按 kind 只扫 `image/` + `news_uploads/` 或 `video/` + `news_uploads/`), 所以这里直接拒绝而不是事后补救。
- *   · `\` 归一成 `/`、补上尾斜杠; 归一后必须与清洗结果**完全一致** —— 否则拒绝而不是静默改写
+ * 目标目录校验(2.4.3, 素材库页的「目标路径」; 2.6.5 放宽):
+ *   · `root` 现在只当**默认值**(不传或留空时用它), 不再限制"必须写在本入口素材根下":
+ *     2.4.4 起存储桶最外层就能写, 手填的新目录也常常落在别处(如 `news_uploads/2026-10/`), 再强制前缀等于
+ *     让「其它（手动填写）」只能填 `image/...`, 与"支持根目录上传"自相矛盾(线上报的就是这句文案)。
+ *   · 该拦的照旧拦:`\` 归一成 `/`、补尾斜杠后必须与清洗结果**完全一致** —— 否则拒绝而不是静默改写
  *     (这样 `..`/绝对路径/空段/控制字符/`?#%`/盘符/超长都会被挡下, 用户看得见原因, 也不会"写到了别处")。
- *   · 不传或留空 = 用默认根目录(老调用方行为一字不变); 传 `/` = **存储桶最外层**(2.4.4, 不带任何前缀)。
+ *   · 传 `/` = **存储桶最外层**(2.4.4, 不带任何前缀); 图片与视频入口都允许。
+ * 代价(2.6.5 明确写下): 写进"本站素材库不扫的目录"(如把图片写进 `video/`)时, 素材库列表与素材选择器按 kind
+ * 只扫 `image/`+`news_uploads/` 或 `video/`+`news_uploads/`, 那些对象会**列不出来**(对象本身正常, 公开域直读没问题)。
  * 返回 `{ ok: true, dir }` 或 `{ ok: false, message }`。
  */
 export function safeTargetDir(raw, root) {
@@ -90,8 +93,8 @@ export function safeTargetDir(raw, root) {
   // 根目录对图片与视频入口都允许(不带前缀), key 就是文件名/相对路径本身。
   if (text.replace(/\\/g, '/') === '/') return { ok: true, dir: '' };
   const full = `${text.replace(/\\/g, '/').replace(/\/+$/, '')}/`;
-  if (!full.startsWith(root)) return { ok: false, message: `目标路径只能写在 ${root} 下面` };
-  if (`${safeRelPath(full)}/` !== full) {
+  // `//`、`///` 这类"只剩斜杠"的写法不是根目录(根目录的唯一提交值是单个 `/`), 与其它非法路径一起拒
+  if (full === '/' || `${safeRelPath(full)}/` !== full) {
     return { ok: false, message: '目标路径不合法（不能有 .. / 绝对路径 / 空段 / 特殊字符，且不能超过 300 字符）' };
   }
   return { ok: true, dir: full };
@@ -123,8 +126,8 @@ async function uniqueKey(bucket, key) {
 // 2.4.2: relPath 的**目录部分在两种命名模式下都保留**(只换文件名), 且不再剥掉顶层文件夹名;
 //        不传 relPath 的调用方(编辑页/弹窗)行为完全不变 —— keep 模式仍回退到 `file.name`(纯文件名, 无目录)。
 // 2.4.3 新增一个可选入参:
-//   · targetDir → 目标目录(素材库页的「选择路径」), 缺省仍是按类型落 `image/`、`video/`;
-//                 只允许本入口根目录及其子目录, 见 safeTargetDir; 它与 relPath(文件夹结构)**叠加**:
+//   · targetDir → 目标目录(素材库页的「目标路径」), 缺省仍是按类型落 `image/`、`video/`;
+//                 2.6.5 起只要"干净的相对目录"就收(不再只认本入口素材根), 见 safeTargetDir; 它与 relPath(文件夹结构)**叠加**:
 //                 key = `<targetDir>/<relPath 的目录部分>/<文件名>`。
 export async function saveUpload(env, options) {
   const file = options.file;
@@ -172,7 +175,7 @@ export async function saveUpload(env, options) {
   }
 
   // 图片落 image/, 视频落 video/(历史素材仍在 news_uploads/, 两边都能直出与列举)
-  // 2.4.3: 素材库页可以改"目标路径", 但只能改到本入口根目录**下面**的子目录(校验见 safeTargetDir)
+  // 2.4.3: 素材库页可以改"目标路径"; 2.6.5 起不再限制"必须在本入口素材根下面"(校验见 safeTargetDir)
   const target = safeTargetDir(options.targetDir, kind === 'video' ? VIDEO_PREFIX : IMAGE_PREFIX);
   if (!target.ok) return reject(target.message);
   const dir = target.dir;

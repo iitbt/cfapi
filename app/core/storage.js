@@ -118,6 +118,47 @@ export async function listLevel(env, prefix = '', options = {}) {
   return { folders, objects, truncated: Boolean(listed && listed.truncated) };
 }
 
+//: 全桶目录清单的默认上限(2.6.5): 每层一次 R2 list(免费套餐单请求 50 次子请求), 30 个目录够选、又不至于打穿预算
+export const MAX_DIR_SCAN = 30;
+
+/**
+ * 全桶目录清单(2.6.5, 上传卡片的「目标路径」下拉用): 逐层 `delimiter: '/'` 列举, 广度优先, 含多层级。
+ * 目录不是实体, 只有"里面还有对象"的前缀才会出现 —— 这正是要展示的"R2 实际目录"。
+ * `max` 封顶后不再往下走(下拉少几个选项而已, 手填「其它」照旧能写到任意合法目录)。
+ */
+export async function listAllDirs(env, options = {}) {
+  const max = Math.min(200, Math.max(1, Number(options.max) || MAX_DIR_SCAN));
+  const bucket = settings(env).storage;
+  const found = [];
+  let level = [''];
+  while (level.length && found.length < max) {
+    // 同一层的列举互不依赖 → 并发(每个目录一次子请求, 串行会白等好几轮 RTT)
+    const listed = await Promise.all(level.map((prefix) => bucket.list({ prefix, delimiter: '/', limit: 1000 })
+      .catch((error) => {
+        console.error('列举目录失败', prefix, error && error.message);
+        return null;
+      })));
+    const next = [];
+    listed.forEach((result, index) => {
+      const base = level[index];
+      const dirs = ((result && result.delimitedPrefixes) || []).map((one) => String(one));
+      // 兜一道"delimiter 不给 commonPrefixes"的实现: 从这一层对象键里补出目录名(与 listNewsMedia 同一手法)
+      for (const object of (result && result.objects) || []) {
+        const key = String(object.key || '');
+        const at = key.indexOf('/', base.length);
+        if (at > 0) dirs.push(key.slice(0, at + 1));
+      }
+      for (const dir of dirs) {
+        if (!dir || dir === base || dir === '/' || found.includes(dir)) continue;
+        found.push(dir);
+        next.push(dir);
+      }
+    });
+    level = next;
+  }
+  return found.slice(0, max);
+}
+
 //: 站内自有目录(2.4.5): Worker 直出的站点图标与用户头像, **不是素材** —— 它们既不该进素材库清单,
 //  也不该被当成"根目录素材"(否则根目录那一档会被头像/图标刷满)
 export const INTERNAL_PREFIXES = [AVATAR_PREFIX, LEGACY_AVATAR_PREFIX, 'images/'];
@@ -412,6 +453,30 @@ export function normRel(value) {
 //: 从富文本 HTML 里抽素材路径: 认全部素材目录、到引号/空白/尖括号/括号为止的一段
 const RICH_PATH_RE = new RegExp(`(?:${MEDIA_PREFIXES.join('|')})[^\\s"'<>()[\\]{},;]+`, 'gi');
 
+//: 值里的片段分隔符: 路径/地址总被引号、尖括号、括号、逗号之类的字符隔开
+const PATH_PIECE_RE = /[\s"'<>()[\]{},;=]+/;
+//: 绝对地址的"协议 + 主机"部分(库里的值有相对路径与绝对地址两种形态)
+const ABS_HOST_RE = /^[a-z][a-z0-9+.-]*:\/\/[^/\s]+/i;
+
+/**
+ * 值里是否**整段**出现了候选路径(2.6.5 修引用误判):
+ * 原先根目录那一档用 `text.includes(name)` —— 子串判断, 于是字段里写着 `image/food/2017-2018.jpg` 时,
+ * 根目录的 `2018.jpg` 也会被判成"被引用"(它是那个文件名的后缀), 列表列与「查看引用」一起误报。
+ * 现在两条路都要求"完整一段":
+ *   ① 按分隔符切成片段, 片段剥掉协议/主机、问号锚点、反斜杠、开头的斜杠后与候选名**整段相等**;
+ *   ② 名字里带空格这类会被①切碎的情况, 再按"左右紧邻必须是分隔符或串首尾"做一次字面匹配。
+ * 两条都不吃 `-`、`/` 这类紧邻字符, 所以"子串命中"那种误判不会回来。
+ */
+function hasExactPath(text, name) {
+  for (const piece of text.split(PATH_PIECE_RE)) {
+    const clean = piece.split('?')[0].split('#')[0].replace(/\\/g, '/')
+      .replace(ABS_HOST_RE, '').replace(/^\/+/, '');
+    if (clean === name) return true;
+  }
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[\\s"'<>()[\\]{},;=])${escaped}(?=$|[\\s"'<>()[\\]{},;=?#:])`).test(text);
+}
+
 /** 从一个字段值里抽出**所有**素材相对记录值(富文本可能引用多个)。 */
 export function relPathsIn(value, rootNames = null) {
   const text = String(value === undefined || value === null ? '' : value);
@@ -424,8 +489,9 @@ export function relPathsIn(value, rootNames = null) {
   }
   // 2.4.4: 根目录素材只有文件名(没有前缀可认) —— 由调用方给出候选名单, 字段里出现即算引用。
   // 只能"按名单查", 不做"从任意文本里猜文件名": 猜出来的裸名(如正文里提到 a.png)没有边界, 误判率太高。
+  // 2.6.5: 命中口径由"子串"改成"整段路径"(见 hasExactPath) —— 判定来源仍是这一处, 列表列/「查看引用」/删除前复查三处共用。
   for (const name of rootNames || []) {
-    if (name && text.includes(name) && !out.includes(name)) out.push(name);
+    if (name && !out.includes(name) && hasExactPath(text, name)) out.push(name);
   }
   return out;
 }

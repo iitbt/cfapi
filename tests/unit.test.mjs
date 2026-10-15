@@ -66,7 +66,7 @@ test('上传命名(2.4.0/2.4.2): 相对路径清洗挡住路径穿越/空段/控
   assert.equal(safeRelPath(''), '', '空串');
 });
 
-test('目标路径校验(2.4.3/2.4.4): 本入口根目录及其子目录 + 根目录(斜杠), 非法一律拒绝', () => {
+test('目标路径校验(2.4.3/2.4.4/2.6.5): 干净的相对目录都收(不再只认本入口根), 非法路径一律拒绝', () => {
   // 不传/留空 = 默认根目录(老调用方行为一字不变)
   assert.deepEqual(safeTargetDir('', 'image/'), { ok: true, dir: 'image/' });
   assert.deepEqual(safeTargetDir(undefined, 'video/'), { ok: true, dir: 'video/' });
@@ -81,13 +81,14 @@ test('目标路径校验(2.4.3/2.4.4): 本入口根目录及其子目录 + 根�
   assert.equal(safeTargetDir('image/2026-10', 'image/').dir, 'image/2026-10/', '自动补尾斜杠');
   assert.equal(safeTargetDir('image\\素材\\相册', 'image/').dir, 'image/素材/相册/', '分隔符归一');
   assert.equal(safeTargetDir('image/中文 目录(2026)/', 'image/').dir, 'image/中文 目录(2026)/', '正常字符保留');
-  // 禁止跨入口 / 非素材目录: 写进去素材库会"列不出来"(列举按 kind 只扫 image/ 或 video/ + news_uploads/)
-  for (const bad of ['video/x/', 'avatar/x/', 'news_uploads/x/', '/image/x/', 'C:/image/x/']) {
-    assert.equal(safeTargetDir(bad, 'image/').ok, false, `${bad} 应被拒`);
-  }
-  assert.equal(safeTargetDir('image/x/', 'video/').ok, false, '视频入口不许写 image/');
-  // 路径穿越 / 空段 / 单点 / 特殊字符 / 超长: 一律拒绝(而不是静默改写)
-  for (const bad of ['image/../video/', '../image/', 'image//x/', 'image/./x/', 'image/x#1/', 'image/ my /', `image/${'x'.repeat(400)}/`]) {
+  // 2.6.5: 不再要求"必须写在本入口素材根下面" —— 2.4.4 起根目录就能写, 「其它（手动填写）」也只能填本入口根
+  // 就与"支持根目录上传"自相矛盾(线上报的就是 "图片的目标路径必须以 image/ 开头")。现在只拦非法路径。
+  assert.equal(safeTargetDir('news_uploads/2026-10/', 'image/').dir, 'news_uploads/2026-10/', '历史素材目录也能手填');
+  assert.equal(safeTargetDir('video/x/', 'image/').dir, 'video/x/', '跨入口不再由后端拦(代价见注释: 素材库按 kind 列举, 可能列不出来)');
+  assert.equal(safeTargetDir('素材/相册/', 'video/').dir, '素材/相册/', '根下自定义目录同样放行');
+  assert.equal(safeTargetDir('avatar/x/', 'image/').dir, 'avatar/x/', '站内自有目录也只是一条普通路径, 由页面用它自己决定要不要给选项');
+  // 路径穿越 / 绝对路径 / 盘符 / 空段 / 单点 / 特殊字符 / 超长: 一律拒绝(而不是静默改写)
+  for (const bad of ['image/../video/', '../image/', '/image/x/', 'C:/image/x/', 'image//x/', 'image/./x/', 'image/x#1/', 'image/ my /', `image/${'x'.repeat(400)}/`]) {
     const result = safeTargetDir(bad, 'image/');
     assert.equal(result.ok, false, `${bad} 应被拒`);
     assert.match(result.message, /目标路径/, '要给明确原因');
@@ -162,6 +163,28 @@ test('根目录素材(2.4.4/2.4.5): 根目录树的范围(裸文件名与根下�
   assert.deepEqual(relPathsIn('<p><img src="image/a.png"></p><p><img src="logo.png"></p>', ['logo.png']),
     ['image/a.png', 'logo.png'], '两种形态同时命中');
   assert.deepEqual(relPathsIn('看 素材/子/图.png 这张', ['素材/子/图.png']), ['素材/子/图.png'], '带目录的也能命中');
+});
+
+test('引用判定(2.6.5): 根目录素材按"整段路径"命中, 同名后缀/子串不再误判', () => {
+  // 线上报的原始例子: 素材实际引用的是 image/food/2017-2018.jpg, 根目录的 2018.jpg 却被标成"被引用"
+  // (旧实现是 text.includes('2018.jpg') —— 子串命中)
+  assert.deepEqual(relPathsIn('image/food/2017-2018.jpg', ['2018.jpg']), ['image/food/2017-2018.jpg'],
+    '只认真实那个对象(旧实现会在同一个字段里再带出根目录的 2018.jpg —— 子串命中)');
+  assert.deepEqual(relPathsIn('<p><img src="image/food/2017-2018.jpg"></p>', ['2018.jpg']), ['image/food/2017-2018.jpg'],
+    '富文本里同样不带出根目录那个');
+  assert.deepEqual(relPathsIn('image/2018.jpg', ['2018.jpg']), ['image/2018.jpg'],
+    '另一个目录下的同名文件不算(根目录的 2018.jpg 是另一个对象)');
+  assert.deepEqual(relPathsIn('image/food/2018.jpg', ['food/2018.jpg']), ['image/food/2018.jpg'],
+    '根下自定义目录的名字也不能靠"子串"蹭上');
+  // 真引用要照旧命中
+  assert.deepEqual(relPathsIn('2018.jpg', ['2018.jpg']), ['2018.jpg'], '裸文件名');
+  assert.deepEqual(relPathsIn('<p><img src="2018.jpg"></p>', ['2018.jpg']), ['2018.jpg'], 'HTML 属性里');
+  assert.deepEqual(relPathsIn('https://storage.250036.xyz/2018.jpg', ['2018.jpg']), ['2018.jpg'], '绝对地址');
+  assert.deepEqual(relPathsIn('https://storage.250036.xyz/a/2018.jpg', ['2018.jpg']), [],
+    '绝对地址的目录不同: 那是 a/2018.jpg 这个对象');
+  assert.deepEqual(relPathsIn('["活动 照片.jpg","2018.jpg"]', ['活动 照片.jpg', '2018.jpg']),
+    ['活动 照片.jpg', '2018.jpg'], '名字里带空格也认(JSON 数组形态)');
+  assert.deepEqual(relPathsIn('看 活动 照片.jpg 这张', ['活动 照片.jpg']), ['活动 照片.jpg'], '正文里带空格的名字');
 });
 
 test('对象键校验(2.4.6): 桶浏览器只收"干净"的键, 清洗结果必须与输入一致', () => {
@@ -286,9 +309,17 @@ test('上传落目录(2.4.3): 目标路径作为根, 文件夹结构在其下继
     { purpose: 'cover', nameMode: 'keep', targetDir: 'image/2026-10/' });
   assert.equal(direct.url, 'image/2026-10/图.png');
 
-  // 非法目标路径: 拒绝且一个对象都不写(跨入口 / 穿越 / 非素材目录)
+  // 2.6.5: 任意干净的相对目录都能手填(跨入口 / 历史素材目录 / 根下自建目录), 落到哪就是哪
+  const manual = await save(new File([png], '图.png', { type: 'image/png' }),
+    { purpose: 'cover', nameMode: 'keep', targetDir: 'news_uploads/2026-10/' });
+  assert.equal(manual.url, 'news_uploads/2026-10/图.png', '手填历史素材目录: 不再被"必须以 image/ 开头"挡住');
+  const cross = await save(new File([png], '图.png', { type: 'image/png' }),
+    { purpose: 'cover', nameMode: 'keep', targetDir: 'video/x/' });
+  assert.equal(cross.url, 'video/x/图.png', '跨入口也不再拦(代价: 素材库按 kind 列举, 可能列不出来)');
+
+  // 非法目标路径: 拒绝且一个对象都不写(穿越 / 绝对路径 / 空段)
   const before = state.objects.size;
-  for (const bad of ['video/x/', 'image/../video/', 'avatar/', 'news_uploads/', 'image//x/']) {
+  for (const bad of ['image/../video/', '/image/x/', 'image//x/', 'image/./x/']) {
     const result = await save(new File([png], 'a.png', { type: 'image/png' }), { purpose: 'cover', targetDir: bad });
     assert.equal(result.ok, false, `${bad} 应被拒`);
   }

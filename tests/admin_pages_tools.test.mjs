@@ -949,7 +949,7 @@ test('素材库(2.4.1): 图片与视频两个独立入口(各带文件/文件夹
   assert.equal(kept.kind, 'image');
 });
 
-test('素材库(2.4.3/2.4.4): 目标路径是可选项(根目录 + 本入口根 + 现有目录 + 手动兜底)', async () => {
+test('素材库(2.4.3/2.4.4/2.6.5): 目标路径可选项 = 根目录 + 本入口根 + 全桶所有目录(含多层级) + 手动兜底', async () => {
   const { env } = makeAdminEnv({
     role: 'super',
     mediaObjects: [
@@ -960,7 +960,8 @@ test('素材库(2.4.3/2.4.4): 目标路径是可选项(根目录 + 本入口根 
     rows: mediaRows
   });
   const cookie = await loginCookie(env);
-  // 上传卡片的「目标路径」建议来自**当前浏览层**的子目录(2.4.6 起不再全桶扫描): 进 image/ 这一层, 建议里就有 image/素材/
+  // 2.6.5: 可选项由 listAllDirs 扫全桶(含多层级), 不再只给"当前浏览层"的子目录 ——
+  // 站在 image/ 也能选到 image/素材/相册/ 与 video/ 那边的目录(手填新目录仍走「其它」)
   const html = await (await get('/admin/media_manage?prefix=image%2F', env, cookie)).text();
   const script = await readFile(MEDIA_GOVERN_SCRIPT, 'utf8');
 
@@ -969,24 +970,28 @@ test('素材库(2.4.3/2.4.4): 目标路径是可选项(根目录 + 本入口根 
   assert.ok(html.includes('id="mediaUploadImageDirManual"') && html.includes('id="mediaUploadVideoDirManual"'),
     '各带一个手动填写的兜底输入框');
   assert.ok(html.includes('data-root="image/"') && html.includes('data-root="video/"'), '根目录随控件一起下发');
-  // 可选项: 根目录 → 本入口根目录(默认选中) → 桶里已存在的各级目录(缩进表示层级) → 其它(手动填写)
+  // 可选项: 根目录 → 本入口根目录(默认选中) → 桶里所有目录(缩进表示层级) → 其它(手动填写)
   const imageOptions = (html.match(/<select[^>]*id="mediaUploadImageDir"[\s\S]*?<\/select>/) || [])[0] || '';
   const videoOptions = (html.match(/<select[^>]*id="mediaUploadVideoDir"[\s\S]*?<\/select>/) || [])[0] || '';
   assert.ok(imageOptions.includes('value="/">根目录（存储桶最外层）'), '有根目录选项');
   assert.ok(imageOptions.includes('value="image/" selected'), '默认仍是 image/(不操作时行为不变)');
-  assert.ok(imageOptions.includes('value="image/素材/"'), '当前浏览层的子目录作为可选项');
-  assert.ok(!imageOptions.includes('image/素材/相册/'), '只给当前层的子目录(更深的下钻进去才有 —— 2.4.6 不再全桶扫描)');
+  assert.ok(imageOptions.includes('value="image/素材/"'), '桶里的目录作为可选项');
+  assert.ok(imageOptions.includes('value="image/素材/相册/"'), '多层级目录也要列出来(2.6.5 前站在 image/ 只给下一层)');
+  assert.ok(imageOptions.includes('value="video/活动/子/"'), '桶内其它顶层目录一样可选(校验放宽后不再自相矛盾)');
   assert.ok(imageOptions.includes('&nbsp;&nbsp;') && imageOptions.includes('value="__manual">其它（手动填写）'),
     '层级用缩进表示, 另有手动填写兜底');
-  assert.ok(!imageOptions.includes('video/'), '图片那条不给 video/ 的选项');
-  assert.ok(videoOptions.includes('value="video/" selected') && !videoOptions.includes('image/'),
-    '视频那条只给 video/ 与根目录');
+  assert.ok(!imageOptions.includes('avatar/') && !imageOptions.includes('images/'),
+    '站内自有目录(头像/站点图标)不是素材, 不进下拉(手填仍可写)');
+  assert.ok(videoOptions.includes('value="video/" selected') && videoOptions.includes('value="image/素材/相册/"'),
+    '两条下拉的目录集合一致, 只有默认项不同');
   // 提交与校验
   assert.ok(script.includes("data.set('target_dir', target)"), '提交时带上目标路径');
   assert.ok(script.includes('function dirProblem()') && script.includes('if (problem)'),
     '前端开跑前也校验一遍(前后端双校验)');
   assert.ok(script.includes("value === '/'"), '前端认根目录这个提交值');
-  assert.ok(script.includes("的目标路径必须以 '") && script.includes('目标路径不能包含两个点'), '前端拦跨入口与穿越');
+  assert.ok(script.includes('目标路径不能包含两个点') && script.includes('不能是绝对路径'),
+    '前端仍拦穿越与绝对路径(2.6.5 起不再拦"必须以 image/ 开头")');
+  assert.ok(!script.includes('必须以 '), '那句"必须以 image/ 开头"的拦截已按 2.6.5 去掉');
 });
 
 test('上传接口(2.4.4): target_dir=/ 落存储桶根目录(不带任何前缀)', async () => {
@@ -1040,7 +1045,7 @@ test('存储桶(2.4.6): 逐层浏览整个桶(根层目录/深层对象/引用�
     assert.ok(root.includes(`?prefix=${encodeURIComponent(folder)}`), `根层能看到目录 ${folder}`);
   }
   assert.ok(!root.includes('value="素材/子/深图.png"'), '只列当前这一层, 深层内容进目录才看得到');
-  assert.ok(root.includes('上一级') === false, '根层没有"上一级"');
+  assert.ok(!root.includes('上一级</a>'), '根层没有"上一级"按钮(面包屑只到"存储桶")');
 
   // ② 进 素材/子/: 深层对象可见(2.4.5 修的"根目录树"在这里体现) + 面包屑 + 引用判定
   const deep = await (await at('素材/子/')).text();
@@ -1189,7 +1194,7 @@ test('上传接口(2.4.1): 文件夹上传靠入口带类型, 类型对不上会
   assert.equal(rootLevel.url, 'video/素材/root.mp4', '所选文件夹下的文件落 video/<文件夹>/');
 });
 
-test('上传接口(2.4.3): 目标路径只能落在本入口根目录下(跨入口/穿越/非素材目录一律拒)', async () => {
+test('上传接口(2.4.3/2.6.5): 目标路径可以是任意干净相对目录, 只有非法路径被拒', async () => {
   const { env, state } = makeAdminEnv({ role: 'super', mediaObjects: [], rows: mediaRows });
   const cookie = await loginCookie(env);
   const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -1206,14 +1211,20 @@ test('上传接口(2.4.3): 目标路径只能落在本入口根目录下(跨入�
   assert.equal(nested.url, 'image/2026-10/素材/图.png', 'target_dir 当根, 子目录结构照带');
   assert.equal(state.objects.has('image/2026-10/素材/图.png'), true, '真写进了桶');
 
+  // 2.6.5: 「其它（手动填写）」不再被"必须以 image/ 开头"挡住 —— 干净的相对目录写哪落哪
+  const manual = await upload({ purpose: 'cover', target_dir: 'news_uploads/2026-10/', name_mode: 'keep' });
+  assert.equal(manual.success, true, '手填历史素材目录要能传');
+  assert.equal(manual.url, 'news_uploads/2026-10/图.png', '落在手填的目录下');
+  const cross = await upload({ purpose: 'cover', target_dir: 'video/x/', name_mode: 'keep' });
+  assert.equal(cross.success, true, '跨入口也不再由后端拦(代价: 素材库按 kind 列举, 该对象会列不出来)');
+
   const before = state.objects.size;
   const rejected = [
-    { purpose: 'cover', target_dir: 'video/x/' },          // 跨入口(图片写进 video/ 会列不出来)
     { purpose: 'cover', target_dir: 'image/../video/' },   // 路径穿越
-    { purpose: 'cover', target_dir: 'avatar/x/' },         // 非素材目录
-    { purpose: 'cover', target_dir: 'news_uploads/x/' },   // 历史目录不在允许范围(新上传只落 image//video/)
     { purpose: 'cover', target_dir: '/image/x/' },         // 绝对路径
-    { purpose: 'cover', target_dir: 'image//x/' }          // 空段
+    { purpose: 'cover', target_dir: '//' },                // 只剩斜杠(根目录的唯一提交值是单个斜杠)
+    { purpose: 'cover', target_dir: 'image//x/' },         // 空段
+    { purpose: 'cover', target_dir: 'image/./x/' }         // 单个点
   ];
   for (const one of rejected) {
     const result = await upload(one);
@@ -1221,6 +1232,77 @@ test('上传接口(2.4.3): 目标路径只能落在本入口根目录下(跨入�
     assert.ok(result.message.includes('目标路径'), '给出可读原因');
   }
   assert.equal(state.objects.size, before, '被拒的请求不写任何对象');
+});
+
+test('存储桶目录按钮(2.6.5): 跟着当前位置换一层(根 = 存储桶根目录 + 根下子目录, 进了子目录就换成它的子目录)', async () => {
+  const { env } = makeAdminEnv({
+    role: 'super',
+    mediaObjects: [
+      { key: 'image/a.png', size: 10, uploaded: '2026-10-09T00:00:00Z' },
+      { key: 'image/food/f.png', size: 10, uploaded: '2026-10-09T00:00:00Z' },
+      { key: 'video/v.mp4', size: 10, uploaded: '2026-10-09T00:00:00Z' },
+      { key: 'news_uploads/n.png', size: 10, uploaded: '2026-10-09T00:00:00Z' }
+    ],
+    rows: mediaRows
+  });
+  const cookie = await loginCookie(env);
+  // 只取"目录按钮"那一条(面包屑与筛选组都在别的容器里)
+  const buttons = (html) => (html.match(/<div class="d-flex flex-wrap gap-2 mb-2">([\s\S]*?)<\/div>/) || ['', ''])[1];
+
+  // 常态(桶根): 「存储桶根目录」高亮 + 根下的子目录
+  const rootButtons = buttons(await (await get('/admin/media_manage', env, cookie)).text());
+  assert.ok(rootButtons.includes('btn-primary') && rootButtons.includes('存储桶根目录'), '根时选中「存储桶根目录」');
+  for (const dir of ['image/', 'video/', 'news_uploads/']) {
+    assert.ok(rootButtons.includes(`?prefix=${encodeURIComponent(dir)}`), `根层按钮要有 ${dir}`);
+  }
+
+  // 进 image/: 按钮换成 image/ 下的子目录; 写死的 video/、news_uploads/ 按钮不再出现(它们不在这一层)
+  const imageButtons = buttons(await (await get(`/admin/media_manage?prefix=${encodeURIComponent('image/')}`, env, cookie)).text());
+  assert.ok(imageButtons.includes(`?prefix=${encodeURIComponent('image/food/')}`), '按钮换成当前目录的子目录');
+  assert.ok(imageButtons.includes('存储桶根目录') && !imageButtons.includes('btn-primary'),
+    '「存储桶根目录」常驻可一键回根, 但这时不高亮');
+  assert.ok(!imageButtons.includes(encodeURIComponent('news_uploads/')) && !imageButtons.includes(encodeURIComponent('video/')),
+    '固定的 image//video//news_uploads/ 按钮已并入动态层级');
+
+  // 没有子目录的那一层: 只剩「存储桶根目录」(返回上一层仍靠面包屑/上一级)
+  const videoButtons = buttons(await (await get(`/admin/media_manage?prefix=${encodeURIComponent('video/')}`, env, cookie)).text());
+  assert.ok(videoButtons.includes('存储桶根目录') && !videoButtons.includes('?prefix='),
+    '本层没有子目录时就只有「存储桶根目录」');
+});
+
+test('引用判定(2.6.5): 子目录里"同后缀"的文件不再把根目录的同名文件标成被引用', async () => {
+  // 线上反馈的原始例子: 素材实际引用的是 image/food/2017-2018.jpg, 根目录的 2018.jpg 却显示"被引用"
+  const { env } = makeAdminEnv({
+    role: 'super',
+    mediaObjects: [
+      { key: '2018.jpg', size: 2048, uploaded: '2026-10-09T00:00:00Z' },
+      { key: 'image/food/2017-2018.jpg', size: 4096, uploaded: '2026-10-09T00:00:00Z' }
+    ],
+    // 详情页先 head 再看引用: 桩的 head 只认 put 过的对象, 这里显式给一个
+    mediaHead: (key) => (key === '2018.jpg' ? { key, size: 2048, httpMetadata: {} } : null),
+    rows: {
+      news: [{
+        id: 3, title: '正文用了子目录那张', image: '', video_url: '',
+        content: '<p><img src="image/food/2017-2018.jpg"></p>', deleted_at: null
+      }]
+    }
+  });
+  const cookie = await loginCookie(env);
+  const rootLevel = await (await get('/admin/media_manage', env, cookie)).text();
+  const rowOf = (path) => {
+    const at = rootLevel.indexOf(`title="${path}"`);
+    return at < 0 ? '' : rootLevel.slice(rootLevel.lastIndexOf('<tr', at), rootLevel.indexOf('</tr>', at));
+  };
+  assert.ok(rowOf('2018.jpg').includes('未引用'), '根目录的 2018.jpg 没有被引用');
+
+  // 真正被引用的那张在子目录里, 引用数照旧算得出来(别为了修误判把判定改成一律"未引用")
+  const deep = await (await get(`/admin/media_manage?prefix=${encodeURIComponent('image/food/')}`, env, cookie)).text();
+  assert.match(deep, /1 处/, '子目录那张仍算出 1 处引用');
+  // 三处判定同源: 列表列 / 「查看引用」/ 详情
+  const refs = await (await get('/admin/media_manage_refs?path=2018.jpg', env, cookie)).json();
+  assert.equal(refs.total, 0, '「查看引用」与列表列同一结论');
+  const detail = await (await get(`/admin/media_manage_detail?path=${encodeURIComponent('2018.jpg')}`, env, cookie)).text();
+  assert.ok(detail.includes('没有任何引用'), '详情页也一致');
 });
 
 test('素材库(2.4.0): 详情页给出体积/类型/时间/引用, 预览直接用原图(不再探测缩略图)', async () => {
