@@ -949,8 +949,8 @@ test('素材库(2.4.1): 图片与视频两个独立入口(各带文件/文件夹
   assert.equal(kept.kind, 'image');
 });
 
-test('素材库(2.4.3/2.4.4/2.6.6): 目标路径可选项 = 根目录 + 桶根下的一级子目录 + 手动兜底', async () => {
-  const { env } = makeAdminEnv({
+test('素材库(2.4.3/2.4.4/2.6.7): 目标路径可选项 = 根目录 + 桶根下的一级子目录(与桶页那排按钮逐字一致) + 手动兜底', async () => {
+  const { env, state } = makeAdminEnv({
     role: 'super',
     mediaObjects: [
       { key: 'image/素材/相册/图.png', size: 100, uploaded: '2026-10-09T00:00:00Z' },
@@ -963,31 +963,51 @@ test('素材库(2.4.3/2.4.4/2.6.6): 目标路径可选项 = 根目录 + 桶根�
     rows: mediaRows
   });
   const cookie = await loginCookie(env);
-  // 2.6.6: 可选项只取"桶根下的一级子目录"(一次 listLevel 列一层) —— 不再扫全桶;
-  // 2.6.5 曾把各级目录全列出来, 站在 image/ 也能选到 image/素材/相册/, 选项太长所以收回; 更深的目录走「其它」手填
-  const html = await (await get('/admin/media_manage?prefix=image%2F', env, cookie)).text();
   const script = await readFile(MEDIA_GOVERN_SCRIPT, 'utf8');
+  const optionValues = (block) => [...block.matchAll(/<option value="([^"]+)"/g)]
+    .map((one) => one[1]).filter((one) => one !== '/' && one !== '__manual').sort();
+  const selectOf = (html, id) => (html.match(new RegExp(`<select[^>]*id="${id}"[\\s\\S]*?</select>`)) || [])[0] || '';
 
-  assert.ok(html.includes('id="mediaUploadImageDir"') && html.includes('id="mediaUploadVideoDir"'),
-    '两个入口各有一个目标路径控件');
-  assert.ok(html.includes('id="mediaUploadImageDirManual"') && html.includes('id="mediaUploadVideoDirManual"'),
+  // ① 桶页(根层)自己列出的目录 = 上传下拉的目录集合(2.6.7 的硬口径: 两处必须逐字一致, 否则就是"显示不全")
+  const rootHtml = await (await get('/admin/media_manage', env, cookie)).text();
+  const buttonDirs = [...new Set([...rootHtml.matchAll(/href="\/admin\/media_manage\?prefix=([^"]+)"/g)]
+    .map((one) => decodeURIComponent(one[1])))].sort();
+  const rootImageDirs = optionValues(selectOf(rootHtml, 'mediaUploadImageDir'));
+  const rootVideoDirs = optionValues(selectOf(rootHtml, 'mediaUploadVideoDir'));
+  assert.deepEqual(rootImageDirs, buttonDirs, '图片下拉的目录 = 桶页「存储桶根目录」后面那排按钮的目录');
+  assert.deepEqual(rootVideoDirs, buttonDirs, '视频下拉同理(两条下拉只有默认项不同)');
+  assert.ok(buttonDirs.includes('avatar/') && buttonDirs.includes('images/') && buttonDirs.includes('news_uploads/'),
+    '桩里根层有 5 个目录(image/、video/、news_uploads/、avatar/、images/), 站内自有目录也照列');
+
+  // ② 站在子目录里也一样(下拉与当前浏览位置无关), 且只给一级 —— 更深的 image/素材/ 不出现
+  const innerHtml = await (await get('/admin/media_manage?prefix=image%2F', env, cookie)).text();
+  const innerOptions = selectOf(innerHtml, 'mediaUploadImageDir');
+  assert.deepEqual(optionValues(innerOptions), buttonDirs, '进了 image/ 之后下拉仍是桶根那一层');
+  assert.ok(!innerOptions.includes('image/素材/') && !innerHtml.includes('value="image/素材/"'),
+    '更深层级不列出来(2.6.5 会列, 2.6.6 起只给一级, 更深的走「其它」手填)');
+  assert.ok(innerOptions.includes('value="/">根目录（存储桶最外层）'), '有根目录选项');
+  assert.ok(innerOptions.includes('value="image/" selected'), '默认仍是 image/(不操作时行为不变)');
+  assert.ok(!innerOptions.includes('&nbsp;'), '一层目录不需要缩进');
+  assert.ok(innerOptions.includes('value="__manual">其它（手动填写）'), '另有手动填写兜底');
+  assert.ok(innerHtml.includes('id="mediaUploadImageDirManual"') && innerHtml.includes('id="mediaUploadVideoDirManual"'),
     '各带一个手动填写的兜底输入框');
-  assert.ok(html.includes('data-root="image/"') && html.includes('data-root="video/"'), '根目录随控件一起下发');
-  // 可选项: 根目录 → 本入口根目录(默认选中) → 桶根下的一级子目录 → 其它(手动填写)
-  const imageOptions = (html.match(/<select[^>]*id="mediaUploadImageDir"[\s\S]*?<\/select>/) || [])[0] || '';
-  const videoOptions = (html.match(/<select[^>]*id="mediaUploadVideoDir"[\s\S]*?<\/select>/) || [])[0] || '';
-  assert.ok(imageOptions.includes('value="/">根目录（存储桶最外层）'), '有根目录选项');
-  assert.ok(imageOptions.includes('value="image/" selected'), '默认仍是 image/(不操作时行为不变)');
-  assert.ok(imageOptions.includes('value="video/"') && imageOptions.includes('value="news_uploads/"'),
-    '桶根下的一级子目录都作为可选项');
-  assert.ok(!imageOptions.includes('image/素材/') && !imageOptions.includes('video/活动/'),
-    '更深层级不再列出来(2.6.5 会列, 2.6.6 收回, 只给一级)');
-  assert.ok(!imageOptions.includes('&nbsp;'), '一层目录不需要缩进');
-  assert.ok(imageOptions.includes('value="__manual">其它（手动填写）'), '另有手动填写兜底');
-  assert.ok(!imageOptions.includes('avatar/') && !imageOptions.includes('images/'),
-    '站内自有目录(头像/站点图标)不是素材, 不进下拉(手填仍可写)');
-  assert.ok(videoOptions.includes('value="video/" selected') && videoOptions.includes('value="image/"'),
-    '两条下拉的目录集合一致, 只有默认项不同');
+  assert.ok(innerHtml.includes('data-root="image/"') && innerHtml.includes('data-root="video/"'), '根目录随控件一起下发');
+
+  // ③ 下拉里任选一个目录都能真写进去(选项与桶页一致, 也就都可用)
+  for (const dir of rootImageDirs) {
+    const form = new FormData();
+    form.set('file', new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], '检查.png', { type: 'image/png' }));
+    form.set('purpose', 'cover');
+    form.set('name_mode', 'keep');
+    form.set('target_dir', dir);
+    const result = await (await handleAdmin(new Request(`${HOST}/admin/image_upload`, {
+      method: 'POST', headers: { origin: HOST, cookie }, body: form
+    }), env, { version: API_VERSION })).json();
+    assert.equal(result.success, true, `${dir} 应能上传`);
+    assert.equal(result.url, `${dir}检查.png`, `落在 ${dir} 下`);
+  }
+  assert.equal(state.objects.has('images/检查.png'), true, '站内自有目录也能选、能写(2.6.6 前被过滤掉)');
+
   // 提交与校验
   assert.ok(script.includes("data.set('target_dir', target)"), '提交时带上目标路径');
   assert.ok(script.includes('function dirProblem()') && script.includes('if (problem)'),

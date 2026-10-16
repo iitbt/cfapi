@@ -37,6 +37,9 @@
 // 2.6.6 变化:
 //   · 目标路径下拉只给桶根下的一级子目录(根目录选项、各入口默认项、手填入口都不变), 更深的目录仍用「其它（手动填写）」写;
 //     少扫几十层目录, 素材库页也就少几十次 R2 子请求。
+// 2.6.7 修复:
+//   · 下拉原先另扫一份根层、还多一层"站内自有目录不进"的过滤, 与【存储桶根目录】后面那排按钮对不上(下拉少几个);
+//     现在下拉直接用页面那份数据(根层) 或同参数的 listLevel(子目录时), 不再额外过滤。
 //   · **目录按钮** —— 原先写死 存储桶根目录/image//video//news_uploads/ 五个; 现在跟着当前位置动态一层
 //     (常态 = 存储桶根目录 + 根下子目录, 进了子目录就换成它的子目录), 返回上一层仍用面包屑或「上一级」。
 import { escapeHtml } from '../../core/html.js';
@@ -44,7 +47,7 @@ import { settings } from '../../core/config.js';
 import { all } from '../../core/db.js';
 import { fmtBytes } from '../../core/overview.js';
 import {
-  CACHE_CONTROL_MEDIA, IMAGE_PREFIX, INTERNAL_PREFIXES, MEDIA_PREFIXES, VIDEO_PREFIX,
+  CACHE_CONTROL_MEDIA, IMAGE_PREFIX, MEDIA_PREFIXES, VIDEO_PREFIX,
   checkObjectKey, copyObject, extOf, isRootTreePath, kindOfExt, listLevel, listUnder,
   mediaPrefixOf, moveObject, relPathsIn, removeObjects
 } from '../../core/storage.js';
@@ -367,10 +370,10 @@ function uploadCard(dirs = []) {
   // 2.4.3: 每个入口多一个「目标路径」下拉 —— 原生 select 给"桶里已存在的目录", 也可以手填新目录。
   const pickers = ({ tab, title, icon, dir, purpose, accept, limit, unit }) => {
     const root = `${dir}/`;
-    // 可选项(2.6.6): 根目录 → 本入口根目录(默认) → 桶根下的一级子目录 → 「其它（手动填写）」兜底。
+    // 可选项(2.6.7): 根目录 → 本入口根目录(默认) → 桶根下的一级子目录(与【存储桶根目录】后面那排按钮同一份数据) → 「其它（手动填写）」兜底。
     // 只给一级子目录是刻意的: 更深层级用「其它」手填(下拉选项太多反而难选), 见 listPage 处的说明。
-    // 站内自有目录(avatar/、images/ 这些不是素材)不进下拉; 目录名照旧转义。
-    const others = dirs.filter((one) => one !== root && !INTERNAL_PREFIXES.some((prefix) => one.startsWith(prefix)));
+    // 不再额外过滤任何目录(2.6.7 删掉了原来的"站内自有目录不进下拉"): 下拉与桶页那排按钮必须逐字一致, 否则就是"显示不全"。
+    const others = dirs.filter((one) => one !== root);
     const options = [[ROOT_DIR, '根目录（存储桶最外层）'], [root, `${root}（默认）`]]
       .concat(others.map((one) => [one, one]))
       .map(([value, text]) => `<option value="${escapeHtml(value)}"${value === root ? ' selected' : ''}>`
@@ -578,8 +581,10 @@ function folderRows(folders, currentUrl) {
 
 async function listPage(ctx) {
   if (!isSuper(ctx)) return denied(ctx);
-  // 上传卡片的「目标路径」下拉与当前层取数互不依赖 → 一起发; 下拉只要桶根那一层(2.6.6), 一次列举搞定
-  const [data, rootLevel] = await Promise.all([browseQuery(ctx), listLevel(ctx.env, '')]);
+  // 目标路径下拉必须与【存储桶根目录】后面那排目录一致(2.6.7): 站在根目录就直接复用页面这份数据(零额外列举),
+  // 站在子目录时才补一次**同参数**的根层列举 —— 两处始终出自 listLevel, 不再各扫一份、各有各的过滤
+  const data = await browseQuery(ctx);
+  const rootLevel = data.prefix === '' ? data : await listLevel(ctx.env, '', { limit: LEVEL_MAX });
   const dirs = rootLevel.folders.map((one) => one.key);
   const rows = folderRows(data.folders, data.currentUrl) + levelRows(data.pageItems, data);
 

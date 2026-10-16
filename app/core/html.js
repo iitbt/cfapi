@@ -117,7 +117,6 @@ ${FAVICON_LINK}
   <div class="card">
     <h1>${escapeHtml(options.name)} <span class="pill${options.overallOk ? '' : ' bad'}">${escapeHtml(options.status)}</span></h1>
     <div class="muted">服务器时间 <span id="server-time" data-live="clock">${escapeHtml(options.serverTime)}</span>${version ? ` · 服务版本 v${escapeHtml(version)}` : ''}</div>
-    <div class="muted">进程启动时间 <span id="process-start-time">${escapeHtml(options.startedAt || '-')}</span>${options.startedAtNote ? ` <span class="muted">${escapeHtml(options.startedAtNote)}</span>` : ''}</div>
     <div class="muted" style="margin-top:8px">${escapeHtml(options.description)}</div>
     <span hidden data-live-anchor="${escapeHtml(options.wallMs)}"></span>
   </div>
@@ -139,7 +138,6 @@ ${FAVICON_LINK}
   </div>
 
   <div class="card">
-    <h2>使用说明</h2>
     <p class="muted">${escapeHtml(options.description)}</p>
     <p class="muted" style="margin-top:8px">本服务为狼牙极限运动笔记微信小程序提供后端 API 支持。</p>
     <p class="muted" style="margin-top:8px">
