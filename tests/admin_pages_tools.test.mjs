@@ -904,8 +904,8 @@ test('素材库(2.4.1): 图片与视频两个独立入口(各带文件/文件夹
   assert.ok(html.includes('data-purpose="cover"') && html.includes('data-purpose="video"'),
     '入口即类型: 图片→purpose=cover(image/)、视频→purpose=video(video/)');
   assert.ok(!html.includes('id="mediaUploadFiles"'), '旧的"混合类型"单入口已撤掉');
-  assert.ok(html.includes('name="mediaNameMode"') && html.includes('value="auto" checked') && html.includes('value="keep"'),
-    '命名策略: 自动生成(默认) / 保留原名');
+  assert.ok(html.includes('name="mediaNameMode"') && html.includes('value="keep" checked') && html.includes('value="auto"'),
+    '命名策略: 保留原名(2.6.8 起默认) / 自动生成');
   assert.ok(html.includes('id="mediaUploadBar"') && html.includes('id="mediaUploadOverall"'),
     '整体进度条与统计行(进度来自 XHR upload.onprogress, 不是 fetch)');
   assert.ok(script.includes("data.set('purpose', item.purpose)"), '每个文件按自己入口的 purpose 上传');

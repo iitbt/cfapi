@@ -138,7 +138,6 @@ ${FAVICON_LINK}
   </div>
 
   <div class="card">
-    <p class="muted">${escapeHtml(options.description)}</p>
     <p class="muted" style="margin-top:8px">本服务为狼牙极限运动笔记微信小程序提供后端 API 支持。</p>
     <p class="muted" style="margin-top:8px">
       常用接口: <code>/user/login</code> · <code>/news/list</code> · <code>/news/detail?id=1</code> ·

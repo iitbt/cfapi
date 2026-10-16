@@ -95,12 +95,31 @@ test('上传(2.4.0): 页面用 XHR 报进度、顺序上传、失败可重试/�
   assert.ok(script.includes("data.set('name_mode', mode())"), '命名策略随请求发出');
   assert.ok(script.includes("data.set('rel_path', item.rel)"), '相对路径随请求发出');
   assert.ok(html.includes('webkitdirectory'), '文件夹入口(浏览器原生目录选择)');
-  assert.ok(script.includes("retry.textContent = '重试'") && script.includes('renderFailed'), '失败项带「重试」按钮');
-  assert.ok(script.includes("skip.textContent = '跳过'"), '失败可跳过');
+  assert.ok(script.includes("buttonIn('重试'") && script.includes('function renderList()'),
+    '失败项带「重试」按钮(渲染在同一份待上传清单里)');
+  assert.ok(script.includes("buttonIn('跳过'"), '失败可跳过');
   // 2.4.2: 目录结构两种命名模式都保留 —— rel_path 不再按命名模式分叉, 也不再剥掉顶层文件夹名
   assert.ok(!script.includes("mode() === 'keep' && item.rel"), 'rel_path 不该只在"保留原名"时发');
   assert.ok(!script.includes('parts.slice(1).join'), '不再剥掉顶层文件夹名(整棵树都要保留)');
   assert.ok(script.includes("return file.webkitRelativePath || ''"), '相对路径整条带上(清洗交给服务端)');
+
+  // 2.6.8: 命名默认「保留原名」+ 待上传清单(缩略图/相对路径/大小/类型/状态 + 按文件或按文件夹移除)
+  assert.ok(html.includes('id="mediaNameKeep" value="keep" checked'), '命名默认值改成「保留原名」(2.6.8)');
+  assert.ok(!html.includes('id="mediaNameAuto" value="auto" checked'), '「自动生成」不再默认勾选(仍是可选项)');
+  assert.ok(html.includes('id="mediaUploadListBox"') && html.includes('id="mediaUploadList"'), '页面有待上传清单容器');
+  assert.ok(!html.includes('id="mediaUploadFailed"'), '原来的"失败项列表"已并入待上传清单(不再两处渲染)');
+  assert.ok(script.includes('URL.createObjectURL(item.file)') && script.includes('URL.revokeObjectURL'),
+    '图片用本地 objectURL 出缩略图, 移除时回收');
+  assert.ok(script.includes("buttonIn('移除'") && script.includes("buttonIn('移除整个文件夹'"),
+    '可移除单个文件, 也可整组(整个文件夹)移除');
+  assert.ok(script.includes('function groupOf(item)'), '选文件夹时按"选中的那层文件夹"分组');
+  assert.ok(script.includes("wait: '等待'") && script.includes("doing: '上传中'")
+    && script.includes("ok: '成功'") && script.includes("fail: '失败'"), '行内显示等待/上传中/成功/失败');
+  assert.ok(script.includes('item.rel || item.file.name'), '行内显示相对路径(单独选的文件就是文件名)');
+  assert.ok(script.includes("item.state === 'wait' || item.state === 'fail' || item.state === 'skip'"),
+    '只有还没传上去的能移除(已成功/正在传的不可撤)');
+  const bundle = await readFile(new URL('../app/admin/assets/static-assets.js', import.meta.url), 'utf8');
+  assert.ok(bundle.includes('.upload-list'), '清单样式要同步进生成物(记得重跑 embed_admin_assets.mjs)');
 });
 
 test('页面内联脚本必须能解析(2.4.2): 页面用模板字符串生成 <script>, 多层转义很容易吃掉反斜杠', async () => {

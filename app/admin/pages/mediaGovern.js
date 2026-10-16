@@ -40,6 +40,10 @@
 // 2.6.7 修复:
 //   · 下拉原先另扫一份根层、还多一层"站内自有目录不进"的过滤, 与【存储桶根目录】后面那排按钮对不上(下拉少几个);
 //     现在下拉直接用页面那份数据(根层) 或同参数的 listLevel(子目录时), 不再额外过滤。
+// 2.6.8 变化(只动上传卡片的前端交互, 进度条机制/命名策略的服务端口径/目标路径都没动):
+//   · 命名默认值由「自动生成」改成「保留原名」(重名顺延 _1/_2, 同目录才算、各子目录独立计数);
+//   · 选完文件/文件夹多一份**待上传清单**(缩略图/图标 + 相对路径 + 大小/类型/状态), 可按文件或按文件夹移除,
+//     与进度条同一份队列(等待/上传中/成功/失败都在行内显示, 失败仍可重试/跳过)。
 //   · **目录按钮** —— 原先写死 存储桶根目录/image//video//news_uploads/ 五个; 现在跟着当前位置动态一层
 //     (常态 = 存储桶根目录 + 根下子目录, 进了子目录就换成它的子目录), 返回上一层仍用面包屑或「上一级」。
 import { escapeHtml } from '../../core/html.js';
@@ -421,8 +425,9 @@ function uploadCard(dirs = []) {
           选文件夹会把<strong>整棵目录树</strong>一起传上去（含你选中的那层文件夹名）：图片入口拼到
           <code>image/</code> 后面、视频入口拼到 <code>video/</code> 后面 —— 例如选文件夹「素材」里有
           <code>相册/图.png</code> 与 <code>根目录图.png</code>，则落成 <code>image/素材/相册/图.png</code> 与
-          <code>image/素材/根目录图.png</code>。<strong>两种命名模式都保留目录</strong>：「保留原名」文件名也不变，
-          「自动生成」只把文件名换成 <code>&lt;用途&gt;_时间戳.ext</code>。空文件夹不会被保留（R2 没有目录，浏览器也不会把空目录列出来）。
+          <code>image/素材/根目录图.png</code>。<strong>两种命名模式都保留目录</strong>：「保留原名」（<strong>2.6.8 起为默认</strong>）
+          文件名也不变、同目录重名自动加 <code>_1</code>，「自动生成」只把文件名换成 <code>&lt;用途&gt;_时间戳.ext</code>。
+          空文件夹不会被保留（R2 没有目录，浏览器也不会把空目录列出来）。
           <br><strong>目标路径</strong>默认就是各入口的 <code>image/</code> 与 <code>video/</code>，下拉里可选的还有
           <strong>根目录</strong>（存储桶最外层，不带任何前缀；选文件夹时目录结构会直接铺在根下，如
           <code>素材/子/图.png</code> —— 这些内容素材库列表与素材选择器同样能看到，列表里「目录」列显示"根目录"）与桶根下的一级子目录；
@@ -435,23 +440,29 @@ function uploadCard(dirs = []) {
       <div class="col-12 d-flex flex-wrap align-items-center gap-3">
         <span class="form-label mb-0">命名</span>
         <div class="form-check form-check-inline mb-0">
-          <input class="form-check-input" type="radio" name="mediaNameMode" id="mediaNameAuto" value="auto" checked>
-          <label class="form-check-label" for="mediaNameAuto">自动生成（<code>&lt;用途&gt;_时间戳.ext</code>）</label>
+          <input class="form-check-input" type="radio" name="mediaNameMode" id="mediaNameKeep" value="keep" checked>
+          <label class="form-check-label" for="mediaNameKeep">保留原名（默认；重名自动加 <code>_1</code>/<code>_2</code>）</label>
         </div>
         <div class="form-check form-check-inline mb-0">
-          <input class="form-check-input" type="radio" name="mediaNameMode" id="mediaNameKeep" value="keep">
-          <label class="form-check-label" for="mediaNameKeep">保留原名（重名自动加 <code>_1</code>）</label>
+          <input class="form-check-input" type="radio" name="mediaNameMode" id="mediaNameAuto" value="auto">
+          <label class="form-check-label" for="mediaNameAuto">自动生成（<code>&lt;用途&gt;_时间戳.ext</code>）</label>
         </div>
         <button class="btn btn-sm btn-primary" type="button" id="mediaUploadStart" disabled>开始上传</button>
         <button class="btn btn-sm btn-outline-secondary" type="button" id="mediaUploadClear">清空</button>
       </div>
       <div class="col-12">
+        <div class="form-text mb-2">默认「保留原名」：同一目录里同名文件自动顺延 <code>_1</code>、<code>_2</code>…（扩展名不变）；
+          不同子目录各自独立计数，互不影响。要按用途+时间戳重命名就切到「自动生成」（两种模式都保留文件夹结构）。</div>
         <div class="progress" role="progressbar" aria-label="整体上传进度" style="height:1rem">
           <div class="progress-bar" id="mediaUploadBar" style="width:0%">0%</div>
         </div>
         <div class="small text-muted mt-1" id="mediaUploadOverall" role="status" aria-live="polite">等待选择文件…</div>
         <div class="small text-muted" id="mediaUploadCurrent"></div>
-        <ul class="list-unstyled small mt-2 mb-0" id="mediaUploadFailed"></ul>
+        <!-- 待上传清单(2.6.8): 一行一个文件(缩略图/图标 + 相对路径 + 大小/类型/状态), 与下面的进度条联动;
+             选文件夹时按"选中的那层文件夹"分组、组头整组移除; 列表本身可滚动, 多层级也不会把页面撑长 -->
+        <div class="upload-list mt-2 d-none" id="mediaUploadListBox">
+          <ul class="list-unstyled mb-0" id="mediaUploadList"></ul>
+        </div>
         <div class="mt-2" id="mediaUploadDone"></div>
       </div>
     </div>
