@@ -5,13 +5,13 @@ import { json, redirect } from '../lib/http.js';
 import { all, chunkIds, marksOf, one, run } from '../../core/db.js';
 import { assetUrl, mediaBase } from '../../core/media_scheme.js';
 import { sanitizeHtml } from '../../core/sanitize.js';
-import { MEDIA_PREFIXES } from '../../core/storage.js';
 import { beijingNow } from '../../core/timeutil.js';
 import { adminLayout } from '../lib/layout.js';
 import { getNameMap, nameFor, optionsForSelect } from '../lib/categorySource.js';
 import { imagesForStorage, plainDesc, videoForBrowser, videoForEditor, videoForStorage } from '../lib/newsContent.js';
 import {
-  addButton, backButton, emptyRow, filterButtons, imageUploadField, imageUploadModal, listShell, mediaLibraryModal,
+  IMAGE_FALLBACK_SRC, IMG_FALLBACK_ATTR, addButton, backButton, emptyRow, filterButtons, imageTag, imageUploadField,
+  imageUploadModal, listShell, mediaLibraryModal,
   pagerScript, searchBar, searchInput, searchSelect, selectField, staticScript, switchField, textareaField, textField
 } from '../lib/partials.js';
 import { statusButtons, statusCell, statusKind, statusLabel } from '../lib/status.js';
@@ -80,9 +80,7 @@ function renderRows(ctx, rows) {
   if (!rows || !rows.length) return emptyRow(COLUMNS, '没有符合条件的笔记');
   return rows.map((row) => {
     const image = strOf(row.image);
-    const cover = image
-      ? `<img src="${escapeHtml(assetUrl(ctx.env, image, ''))}" class="cover-thumb" alt="" loading="lazy" decoding="async" onerror="this.style.visibility='hidden'">`
-      : '-';
+    const cover = image ? imageTag(ctx.env, image) : '-';   // 2.6.9: 封面加载失败换兜底图(唯一实现在 lib/partials.js)
     const subtitle = strOf(row.desc)
       ? `<div class="small text-muted text-truncate" title="${escapeHtml(strOf(row.desc))}">${escapeHtml(strOf(row.desc))}</div>` : '';
     return `<tr>
@@ -227,9 +225,14 @@ async function previewPage(ctx) {
   if (!row) return fail('新闻不存在');
 
   const base = mediaBase(ctx.env);
-  const absolute = videoForBrowser(sanitizeHtml(strOf(row.content)), base)
-    .replace(/(<img[^>]+src=["'])([^"']+)(["'])/gi, (whole, head, src, tail) => head + assetUrl(ctx.env, src, '') + tail);
-  const body = absolute;
+  const absolute = videoForBrowser(sanitizeHtml(strOf(row.content)), base);
+  // 2.6.9: 正文配图在这里统一改成绝对地址 + 挂图片兜底 —— 注入点必须在 sanitizeHtml 之后,
+  // 否则 onerror 会被清洗掉; 正文是用户内容, 图片地址经常是"早就删了的素材", 没有兜底就是一排裂图
+  const body = absolute.replace(/<img\b([^>]*)>/gi, (whole, inner) => {
+    const withSrc = inner.replace(/(\bsrc=["'])([^"']+)(["'])/i,
+      (matched, head, src, tail) => head + assetUrl(ctx.env, src, '') + tail);
+    return /onerror=/i.test(withSrc) ? `<img${withSrc}>` : `<img${withSrc} ${IMG_FALLBACK_ATTR}>`;
+  });
   const nameMap = await getNameMap(ctx.env);
   const kind = statusKind('news');
   // 2.4.0: 封面与主视频直接给原图/原视频地址(原来会先探测有没有 800px 缩略图)
@@ -253,7 +256,7 @@ async function previewPage(ctx) {
         <div class="mp-preview mp-frame">
           <div class="mp-frame-hint">小程序笔记详情页预览（800px 宽，与编辑区一致）</div>
           ${cover ? `<div class="mp-cover-label">封面图（列表页展示）</div>
-          <img class="mp-cover" src="${escapeHtml(cover)}" alt="" onerror="this.style.visibility='hidden'">` : ''}
+          ${imageTag(ctx.env, cover, { className: 'mp-cover', attrs: '' })}` : ''}
           <div class="mp-card">
             <div class="mp-title">${escapeHtml(strOf(row.title))}</div>
             ${desc ? `<div class="mp-cover-label">副标题（列表页展示）</div>
@@ -410,7 +413,8 @@ function editView(ctx, { isNew, row, error, errorField, options }) {
       <div class="mp-frame">
         <div id="contentToolbar" class="border rounded-top bg-light"></div>
         <div id="contentEditor" class="rich-editor border border-top-0 rounded-bottom${errorField === 'content' ? ' border-danger' : ''}"
-             data-media-prefixes="${escapeHtml(MEDIA_PREFIXES.join(','))}"${errorField === 'content' ? ' tabindex="-1" data-invalid="1"' : ''}></div>
+             data-media-base="${escapeHtml(mediaBase(ctx.env))}"
+             data-img-fallback="${escapeHtml(IMAGE_FALLBACK_SRC)}"${errorField === 'content' ? ' tabindex="-1" data-invalid="1"' : ''}></div>
       </div>
       <textarea id="contentRaw" name="content" class="form-control font-monospace d-none" rows="16" aria-required="true">${escapeHtml(contentValue)}</textarea>
       <div class="form-text" data-hint-mobile-hidden>
@@ -628,8 +632,7 @@ async function recyclePage(ctx) {
   }
   const rendered = rows.length ? rows.map((row) => {
     const image = strOf(row.image);
-    const cover = image
-      ? `<img src="${escapeHtml(assetUrl(ctx.env, image, ''))}" class="cover-thumb" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : '-';
+    const cover = image ? imageTag(ctx.env, image) : '-';   // 回收站列表同一份封面渲染(含兜底)
     const sourceBadge = strOf(row.type) === 'users'
       ? '<span class="badge text-bg-info">用户笔记</span>'
       : '<span class="badge text-bg-secondary">官方笔记</span>';

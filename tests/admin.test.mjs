@@ -158,9 +158,9 @@ test('后台: 带合法会话能看到控制面板与菜单', async () => {
   assert.equal(res.status, 200);
   const html = await res.text();
   assert.ok(html.includes('nav-group'));
-  // 控制面板已换成旧站那套 13 张卡(数字由聚合 SQL 提供, 结构断言不依赖桩数据)
+  // 控制面板 2.6.9 精简成 5 张卡(数字由聚合 SQL 提供, 结构断言不依赖桩数据)
   assert.ok(html.includes('总用户数'), '应有统计卡');
-  assert.ok(html.includes('管理页面'), '应有迁移进度卡');
+  assert.ok(!html.includes('管理页面'), '迁移进度卡已删(2.6.9)');
   assert.ok(html.includes('admin'), '应显示登录用户名');
 });
 

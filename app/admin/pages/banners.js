@@ -5,7 +5,7 @@ import { all, one, run } from '../../core/db.js';
 import { assetUrl } from '../../core/media_scheme.js';
 import { adminLayout } from '../lib/layout.js';
 import {
-  addButton, emptyRow, imageUploadField, imageUploadModal, listShell, mediaLibraryModal, numberField,
+  addButton, emptyRow, imageTag, imageUploadField, imageUploadModal, listShell, mediaLibraryModal, numberField,
   pagerScript, selectField, switchField, textField, editShell
 } from '../lib/partials.js';
 import { statusButtons, statusCell } from '../lib/status.js';
@@ -57,7 +57,7 @@ export function renderRows(ctx, banners, page) {
   if (!banners || !banners.length) return emptyRow(COLUMNS, '暂无轮播图');
   return banners.map((row) => `<tr>
   <td class="text-nowrap">${row.id}</td>
-  <td><img src="${escapeHtml(assetUrl(ctx.env, row.image_url, ''))}" class="cover-thumb" alt="" loading="lazy" decoding="async" onerror="this.style.visibility='hidden'"></td>
+  <td>${imageTag(ctx.env, row.image_url)}</td>
   <td><div class="text-truncate clamp-lg" title="${escapeHtml(row.title || '')}">${escapeHtml(row.title || '-')}</div></td>
   <td class="text-nowrap">${escapeHtml(row.position_text || row.position || '-')}</td>
   <td class="text-nowrap">${row.sort_order}</td>

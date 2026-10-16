@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { FAVICON_LINK } from '../app/core/html.js';
+import { LUCKY_ETAG, LUCKY_HASH, LUCKY_PATH, luckyBytes } from '../app/core/lucky.js';
 import worker from '../main.js';
 import { TRUSTED_USER_ROW, USER_ROW, get, getJson, makeEnv } from './stub.mjs';
 
@@ -66,6 +67,20 @@ test('站点图标: /favicon.ico 直出 app/favicon.ico 的字节, 不依赖 R2'
   // 声明的类型必须与真实字节一致(该文件其实是 PNG): 类型与字节不符 + nosniff, 挑剔的客户端会直接丢掉图标
   const isPng = Buffer.from(bytes.subarray(0, 8)).toString('hex') === '89504e470d0a1a0a';
   assert.equal(res.headers.get('content-type'), isPng ? 'image/png' : 'image/x-icon');
+});
+
+test('图片兜底图: /lucky.jpg 直出 app/lucky.jpg 的字节, 不依赖 R2', async () => {
+  const { env } = makeEnv();
+  const res = await get(`${LUCKY_PATH}?v=${LUCKY_HASH}`, env);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('cache-control'), 'public, max-age=604800');
+  assert.equal(res.headers.get('etag'), LUCKY_ETAG, '标签稳定才能走 304');
+
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  const source = await readFile(new URL('../app/lucky.jpg', import.meta.url));
+  assert.equal(bytes.length, source.length, '字节数要与仓库里的 lucky.jpg 一致');
+  assert.equal(res.headers.get('content-type'), 'image/jpeg', '类型要按真实文件头声明');
+  assert.equal(bytes.length, luckyBytes().length, '内联模块与响应同源');
 });
 
 test('站点图标: 所有页面都带同一个带指纹的 <link rel="icon">', async () => {

@@ -5,7 +5,7 @@ import { all, one, run } from '../../core/db.js';
 import { assetUrl } from '../../core/media_scheme.js';
 import { adminLayout } from '../lib/layout.js';
 import {
-  addButton, editShell, emptyRow, filterButtons, imageUploadField, imageUploadModal, listShell, mediaLibraryModal,
+  addButton, editShell, emptyRow, filterButtons, imageTag, imageUploadField, imageUploadModal, listShell, mediaLibraryModal,
   pagerScript, searchBar, searchInput, selectField, textareaField, textField
 } from '../lib/partials.js';
 import { statusButtons, statusCell, statusKind } from '../lib/status.js';
@@ -98,9 +98,7 @@ function cellOf(ctx, config, row, column) {
   const value = row[column];
   if (column === 'poster') {
     const poster = strOf(value);
-    return poster
-      ? `<img src="${escapeHtml(assetUrl(ctx.env, poster, ''))}" class="cover-thumb" alt="" loading="lazy" decoding="async" onerror="this.style.visibility='hidden'">`
-      : '-';
+    return poster ? imageTag(ctx.env, poster) : '-';   // 2.6.9: 封面加载失败换兜底图(唯一实现在 lib/partials.js)
   }
   if (column === 'description') {
     return `<div class="desc-cell text-truncate clamp-lg" title="${escapeHtml(strOf(value))}">${escapeHtml(strOf(value) || '-')}</div>`;
@@ -340,7 +338,7 @@ async function previewPage(ctx, routeConfig) {
   const content = `<div class="card"><div class="card-body">
   ${statusCell(config.kind, row)}
   <h4 class="mt-2">${escapeHtml(strOf(row.title))}</h4>
-  ${poster ? `<img src="${escapeHtml(assetUrl(ctx.env, poster, ''))}" class="img-fluid cover-detail mb-3" alt="" onerror="this.style.display='none'">` : ''}
+  ${poster ? imageTag(ctx.env, poster, { className: 'img-fluid cover-detail mb-3', attrs: '' }) : ''}
   <p>${escapeHtml(strOf(row.description))}</p>
   ${video ? `<a class="btn btn-outline-primary btn-sm mb-3" href="${escapeHtml(assetUrl(ctx.env, video, ''))}" target="_blank" rel="noopener"><i class="bi bi-play-circle" aria-hidden="true"></i> 查看视频</a>` : ''}
   ${extraRows ? `<div class="table-responsive"><table class="table table-sm align-middle"><tbody>${extraRows}</tbody></table></div>` : ''}

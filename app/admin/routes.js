@@ -1,11 +1,12 @@
 // 控制面板 + 未迁入口的占位页
-// 统计口径与旧站 dashboard.py / overview.collect_counts 一致(13 张卡 + 2 张趋势 + 3 个最新列表):
-// 数字一次 UNION 取回、趋势分开查、列表各一条 —— 一共 6 次 D1 往返, 免费套餐子请求预算内
+// 2.6.9 精简: 卡片从 14 张压到 5 张(把"已显示/待审核"并进同一张卡, 删掉低频与别处已有的数字),
+// 只留"经营要看的一眼" + 2 张趋势 + 3 个最新列表 —— 版本/服务器时间/依赖状态/表数量/存储占用这些在
+// 「系统信息」与对外状态页已经有了, 这里不再重复。
+// 统计口径仍与旧站 dashboard.py / overview.collect_counts 一致: 数字一次 UNION 取回、趋势分开查、列表各一条
 import { escapeHtml } from '../core/html.js';
 import { all, one } from '../core/db.js';
 import { beijingDaysAgo, beijingMidnight } from '../core/timeutil.js';
 import { adminLayout } from './lib/layout.js';
-import { migrationProgress } from './lib/nav.js';
 import { intOr, strOf } from './lib/utils.js';
 
 // 纯 SVG 折线(零依赖, 与旧站的 sparkline 宏等价): 固定 7 个点, 最高点贴顶
@@ -38,10 +39,7 @@ async function collectCounts(env, windows) {
     + '(SELECT COUNT(*) FROM news_comments) AS total_comments, '
     + "(SELECT COUNT(*) FROM news_comments WHERE status='pending') AS pending_comments, "
     + '(SELECT COUNT(*) FROM news_likes) AS total_likes, '
-    + '(SELECT COUNT(*) FROM news_favorites) AS total_favorites, '
-    + '(SELECT COUNT(*) FROM banner_images) AS total_banners, '
-    + '(SELECT COUNT(*) FROM motorcycle_trips) AS motorcycle_total, '
-    + '(SELECT COUNT(*) FROM outdoor_activities) AS outdoor_total';
+    + '(SELECT COUNT(*) FROM news_favorites) AS total_favorites';
   const row = await one(env, sql, windows.today, windows.week, windows.prevWeek, windows.week,
     windows.yesterday) || {};
   const counts = {};
@@ -64,10 +62,11 @@ async function trend(env, table, dateColumn, extraWhere = '') {
   return days.map((day) => map[day] || 0);
 }
 
-function card(label, value, hint = '', accent = '') {
+// 统计卡: value/hint 允许带 HTML(数字与"待审核"角标由调用方拼), label 一律转义
+function card(label, value, hint = '') {
   return `<div class="col-6 col-md-3"><div class="card-stat">
   <div class="lbl">${escapeHtml(label)}</div>
-  <div class="num${accent ? ` text-${accent}` : ''}">${value}</div>
+  <div class="num">${value}</div>
   ${hint ? `<div class="lbl">${hint}</div>` : ''}
 </div></div>`;
 }
@@ -86,7 +85,6 @@ function miniList(title, rows, renderRow, href) {
 }
 
 export async function dashboardPage(ctx) {
-  const progress = migrationProgress();
   const windows = {
     today: beijingMidnight(),
     yesterday: beijingMidnight(new Date(Date.now() - 86400000)),
@@ -129,21 +127,15 @@ export async function dashboardPage(ctx) {
   const weekDelta = counts.week_users - counts.prev_week_users;
   const deltaText = (value) => (value > 0 ? `较上期 +${value}` : (value < 0 ? `较上期 ${value}` : '与上期持平'));
 
+  // 5 张卡(2.6.9 精简): 用户 / 近 7 日新增 / 笔记(含已显示与待审核) / 留言(含待审核) / 互动
+  const warn = (value, text) => `<span class="${value ? 'text-warning' : ''}">${text}</span>`;
   const cards = [
-    card('总用户数', num(counts.total_users)),
-    card('今日新增用户', num(counts.today_users), deltaText(todayDelta)),
+    card('总用户数', num(counts.total_users), `今日 +${num(counts.today_users)} · ${deltaText(todayDelta)}`),
     card('近 7 日新增用户', num(counts.week_users), deltaText(weekDelta)),
-    card('笔记总数', num(counts.total_news)),
-    card('已显示笔记', num(counts.approved_news), '', 'success'),
-    card('待审核笔记', num(counts.pending_news), '', counts.pending_news ? 'warning' : ''),
-    card('留言总数', num(counts.total_comments)),
-    card('待审核留言', num(counts.pending_comments), '', counts.pending_comments ? 'warning' : ''),
-    card('总点赞', num(counts.total_likes)),
-    card('总收藏', num(counts.total_favorites)),
-    card('轮播图', num(counts.total_banners)),
-    card('摩旅精选', num(counts.motorcycle_total)),
-    card('户外精选', num(counts.outdoor_total)),
-    card('管理页面', `${progress.ready}/${progress.total}`, '后台功能已全部迁移')
+    card('笔记', num(counts.total_news),
+      `已显示 ${num(counts.approved_news)} · ${warn(counts.pending_news, `待审核 ${num(counts.pending_news)}`)}`),
+    card('留言', num(counts.total_comments), warn(counts.pending_comments, `待审核 ${num(counts.pending_comments)}`)),
+    card('互动（点赞 / 收藏）', `${num(counts.total_likes)} / ${num(counts.total_favorites)}`, '点赞总数 / 收藏总数')
   ].join('');
 
   const trendCards = `<div class="row g-3 mt-1">

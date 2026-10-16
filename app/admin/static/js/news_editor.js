@@ -1,5 +1,5 @@
 // 正文富文本编辑器(wangEditor): 只服务后台编辑页, 页面没有 #contentEditor 时整体空转
-// 三件事: ① 初始化编辑器与工具栏; ② 内容在"浏览器形态(根路径)"与"库内形态(相对路径)"之间转换;
+// 三件事: ① 初始化编辑器与工具栏; ② 图片地址在"浏览器形态(媒体域绝对地址)"与"库内形态(相对路径)"之间转换;
 // ③ 给「本地上传」与「素材库」提供插入落点(MediaInsertFromUpload / MediaInsertFromLibrary)
 // 资源来自 /admin/static/vendor/wangeditor/(自托管, 不走 CDN; 加载失败会回退普通文本域并给出提示)
 (function () {
@@ -11,15 +11,11 @@
   if (!editorEl || !toolbarEl || !rawEl) { return; }
 
   var editor = null;
-  // 站内素材目录由页面下发(真值在 core/storage.js 的 MEDIA_PREFIXES, 与素材库弹窗读的是同一份清单)
-  var mediaPrefixes = String(editorEl.getAttribute('data-media-prefixes') || 'image/,video/,news_uploads/')
-    .split(',').map(function (item) { return item.trim(); }).filter(Boolean);
-  // 拼进正则前先转义, 免得目录名里的特殊字符把表达式弄坏
-  var alt = mediaPrefixes.map(function (item) { return item.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }).join('|');
+  // 媒体域地址与兜底图地址都由页面下发, 真值在 core/media_scheme.js 与 lib/partials.js
+  var mediaBase = String(editorEl.getAttribute('data-media-base') || '').replace(/\/+$/, '');
+  var imgFallback = String(editorEl.getAttribute('data-img-fallback') || '');
   var IMG_TAG_RE = /<img\b[^>]*>/gi;
-  // 相对记录值(news_uploads/a.png / image/a.png) → 站点根路径, 以及反过来的还原
-  var REL_ATTR_RE = new RegExp('(\\s(?:src|data-href)\\s*=\\s*["\'])((' + alt + ')[^"\']*)(["\'])', 'gi');
-  var ABS_ATTR_RE = new RegExp('(\\s(?:src|data-href)\\s*=\\s*["\'])/(' + alt + ')([^"\']*)(["\'])', 'gi');
+  var SRC_ATTR_RE = /(\s(?:src|data-href)\s*=\s*["'])([^"']*)(["'])/gi;
 
   // 编辑器解析"顶层连续 <img> 后面跟 <video>"时会把图片丢掉、甚至抛 path 越界:
   // 回显时把顶层图片各包一层 <p>(解析就正常了), 保存时再把"只有一张图"的段落拆回顶层 —— 库内格式不变
@@ -38,35 +34,74 @@
     return box.innerHTML;
   }
 
-  /** 回显用: 站内相对图片补前导 "/"(编辑页在 /admin/ 下, 相对地址会取错), 并做上面那层段落包装。 */
-  function toEditorPreview(html) {
-    var fixed = String(html || '').replace(IMG_TAG_RE, function (tag) {
-      return tag.replace(REL_ATTR_RE, '$1/$2$4');
-    });
-    return wrapTopLevelImages(fixed);
+  /** 兜底图由 Worker 直出(不在媒体域上), 不能被当成素材再改一遍地址。 */
+  function isFallbackSrc(value) {
+    return Boolean(imgFallback) && String(value || '').split('?')[0] === imgFallback.split('?')[0];
   }
 
-  /** 入库用: 拆掉"只有一张图"的段落包装, 再把根路径图片还原成相对记录值(库内只存相对路径)。 */
+  /** 库内记录值 → 浏览器可显示地址: 站内目录与桶根素材都拼媒体域, 外链/其它协议原样。 */
+  function browserUrl(value) {
+    var text = String(value || '').trim();
+    if (!text || text.charAt(0) === '#' || isFallbackSrc(text)
+      || text.indexOf('//') === 0 || /^[a-z][a-z0-9+.-]*:/i.test(text)) {
+      return value;
+    }
+    var rel = text.replace(/^\/+/, '');
+    // 没配媒体域时退回站点根路径(只有 image//video//news_uploads/ 这些目录能这样取到)
+    return mediaBase ? mediaBase + '/' + rel : '/' + rel;
+  }
+
+  /** 浏览器地址 → 库内相对记录值: 只拆回本媒体域那一段, 外链与站内其它地址原样。 */
+  function storedUrl(value) {
+    var text = String(value || '');
+    return mediaBase && text.indexOf(mediaBase + '/') === 0 ? text.slice(mediaBase.length + 1) : value;
+  }
+
+  /** 逐张图片改 src/data-href —— 编辑页在 /admin/ 下, 相对地址会取错目录。 */
+  function mapImgAttrs(html, map) {
+    return String(html || '').replace(IMG_TAG_RE, function (tag) {
+      return tag.replace(SRC_ATTR_RE, function (whole, head, value, tail) { return head + map(value) + tail; });
+    });
+  }
+
+  /** 回显用。 */
+  function toEditorPreview(html) {
+    return wrapTopLevelImages(mapImgAttrs(html, browserUrl));
+  }
+
+  /** 入库用: 拆掉"只有一张图"的段落包装, 再把地址还原成相对记录值(库内只存相对路径)。 */
   function toStoredHtml(html) {
     var plain = String(html || '').replace(LONE_IMG_P_RE, function (whole) {
       return (/<img\b[^>]*>/i.exec(whole) || [''])[0];
     });
-    return plain.replace(IMG_TAG_RE, function (tag) {
-      return tag.replace(ABS_ATTR_RE, '$1$2$3$4');
-    });
+    return mapImgAttrs(plain, storedUrl);
   }
 
-  /** 编辑过程中新粘进来/手填的相对地址图片也即时可见(否则要刷新重进才看得到)。 */
+  /** 图片兜底: 与后台其它页面同一口径 —— 兜底图自己也没加载到(或本来就是它)就藏起来, 不会无限循环。 */
+  function bindImgFallback(img) {
+    if (!imgFallback || img.getAttribute('data-fallback') === '1') { return; }
+    img.setAttribute('data-fallback', '1');
+    img.addEventListener('error', function () {
+      if (img.src.indexOf(imgFallback) >= 0) { img.style.visibility = 'hidden'; return; }
+      img.src = imgFallback;
+    });
+    // 挂监听之前就已经失败的图片不会再补发 error 事件, 这里补判一次
+    if (img.complete && img.naturalWidth === 0) { img.src = imgFallback; }
+  }
+
+  /** 编辑中新粘进来/手填的图片也即时可见(否则要刷新重进才看得到), 并补上兜底。 */
   function fixEditorImgPaths(container) {
     if (!container) { return; }
     var imgs = container.querySelectorAll('img');
     for (var i = 0; i < imgs.length; i += 1) {
+      var img = imgs[i];
       ['src', 'data-href'].forEach(function (attr) {
-        var value = imgs[i].getAttribute(attr);
-        if (value && mediaPrefixes.some(function (prefix) { return value.indexOf(prefix) === 0; })) {
-          imgs[i].setAttribute(attr, '/' + value);
-        }
+        var value = img.getAttribute(attr);
+        if (!value) { return; }
+        var fixed = browserUrl(value);
+        if (fixed !== value) { img.setAttribute(attr, fixed); }
       });
+      bindImgFallback(img);
     }
   }
 
@@ -107,8 +142,9 @@
           window.AdminImageUpload.finishProgress(null, false);
           return;
         }
-        // 交给编辑器的一律是站点根路径(编辑页在 /admin/ 下也能显示/播放), 入库时再还原成相对记录值
-        var url = '/' + String(data.url || '').replace(/^\/+/, '');
+        // 图片走媒体域绝对地址(桶根素材才显示得出来), 视频走站点根路径(与 videoForEditor 回显同一口径)
+        var rel = String(data.url || '').replace(/^\/+/, '');
+        var url = kind === 'video' ? '/' + rel : browserUrl(rel);
         if (kind === 'video') { insertFn(url, ''); } else { insertFn(url, '', url); }
         window.AdminImageUpload.paintProgress(null, { phase: 'done', percent: 100 });
         window.AdminImageUpload.finishProgress(null, true);
@@ -196,8 +232,10 @@
 
   /** 把素材插到正文光标处: 图片与视频各用编辑器原生节点, 任何失败都在弹窗里写明原因。 */
   function mediaInsertIntoEditor(item) {
-    var url = '/' + String(item.path || '').replace(/^\/+/, '');
+    var rel = String(item.path || '').replace(/^\/+/, '');
     var isVideo = item.kind === 'video';
+    // 图片走媒体域绝对地址(桶根素材才显示得出来), 视频走站点根路径(与 videoForEditor 回显同一口径)
+    var url = isVideo ? '/' + rel : browserUrl(rel);
     if (!editor) {
       // 没有编辑器(已回退文本域): 直接写库内形态的标签, 保存链路照样能处理
       rawEl.value = (rawEl.value || '') + (isVideo

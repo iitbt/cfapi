@@ -8,7 +8,7 @@
 // (精选那边原来的 /admin/app_featured_edit 已删除)。
 import { escapeHtml } from '../../core/html.js';
 import { statusButtons, statusCell } from './status.js';
-import { assetUrl } from '../../core/media_scheme.js';
+import { imageTag } from './partials.js';
 import { nameFor } from './categorySource.js';
 
 /** 三个板块的键(顺序即页面上的标签条与卡片顺序)。 */
@@ -37,12 +37,10 @@ export const SECTION_OPTIONS = HOME_SECTION_KEYS.map((key) => [key, LABELS[key]]
 /** 合并页筛选组的项(与其它管理页同一套的按钮组): 'all' = 全部(sectionOf('all') 也当"全部")。 */
 export const SECTION_TABS = [['all', '全部']].concat(SECTION_KEYS.map((key) => [key, LABELS[key]]));
 
-/** 预览单元格(封面缩略图, 与其它列表页一致的 .cover-thumb)。 */
+/** 预览单元格(封面缩略图, 与其它列表页一致的 .cover-thumb, 含加载失败兜底图)。 */
 function previewCell(env, image) {
   const text = String(image === undefined || image === null ? '' : image);
-  return text
-    ? `<img src="${escapeHtml(assetUrl(env, text, ''))}" class="cover-thumb" alt="" loading="lazy" decoding="async" onerror="this.style.visibility='hidden'">`
-    : '-';
+  return text ? imageTag(env, text) : '-';
 }
 
 /** 操作列: 编辑 + 行内启停 + 删除(删除一律走服务端确认页, 前端 confirm 可被绕过)。 */

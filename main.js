@@ -21,11 +21,12 @@ import { registerAppConfigRoutes } from './app/api/app_config.js';
 import { registerNewsRoutes } from './app/api/news.js';
 import { registerUserRoutes } from './app/api/user.js';
 import { faviconResponse } from './app/core/favicon.js';
+import { LUCKY_PATH, luckyResponse } from './app/core/lucky.js';
 import { settings } from './app/core/config.js';
 import { SERVED_PREFIXES, mediaContentType } from './app/core/storage.js';
 
 // 版本号(**唯一来源**): 
-export const API_VERSION = '2.6.8';
+export const API_VERSION = '2.6.9';
 
 // ==== 路由装配(对应旧站 main.py 的 include_router 段) ====
 const router = createRouter();
@@ -140,6 +141,10 @@ export default {
     if (url.pathname === '/favicon.ico') {
       // 站点图标由 Worker 内联字节直出(见 core/favicon.js): 不依赖 R2 里有没有该对象, 也省一次子请求
       return withHeaders(faviconResponse(), requestId, corsHeaders);
+    }
+    if (url.pathname === LUCKY_PATH) {
+      // 后台图片兜底图(见 core/lucky.js, 生成物): 与 favicon 同一手法 —— 页面 <img> 加载失败时换成它
+      return withHeaders(luckyResponse(), requestId, corsHeaders);
     }
 
     const handler = router.match(request.method, url.pathname);

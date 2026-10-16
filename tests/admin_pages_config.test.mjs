@@ -4,7 +4,44 @@ import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
 
 import { findCall, get, loginCookie, makeAdminEnv, post } from './admin_stub.mjs';
-import { addButton, listToolbar, searchBar, searchInput, searchSelect } from '../app/admin/lib/partials.js';
+import {
+  IMAGE_FALLBACK_SRC, IMG_FALLBACK_ATTR, addButton, listToolbar, searchBar, searchInput, searchSelect
+} from '../app/admin/lib/partials.js';
+
+test('图片兜底(2.6.9): 六个页面的每张图片都挂同一份兜底(唯一实现在 lib/partials.js)', async () => {
+  const { env } = makeAdminEnv({
+    rows: {
+      news: [{
+        id: 5, title: '笔记', desc: '', image: 'news_uploads/a.png', category: 'outdoor', type: 'users',
+        status: 1, publish_time: '2026-10-01 10:00:00', video_url: '',
+        content: '<p>正文</p><img src="image/a.png" alt="">'
+      }],
+      app_categories: [{ category_key: 'outdoor', name: '户外' }],
+      app_home_sections: [{
+        id: 2, section_key: 'main', item_id: 'outdoor', name: '户外',
+        image_url: 'image/home.png', sort_order: 1, status: 1
+      }],
+      banner_images: [{ id: 3, title: '轮播', image_url: 'news_uploads/b.png', position: 'news', sort_order: 1, status: 1 }],
+      motorcycle_trips: [{ id: 9, title: '摩旅', description: '简介', poster: 'image/p.png', status: 1 }]
+    }
+  });
+  const cookie = await loginCookie(env);
+  const paths = [
+    '/admin/news_manage', '/admin/news_preview?id=5', '/admin/banner_manage', '/admin/app_home_manage',
+    '/admin/app_home_edit?section=main', '/admin/topics_manage?topic=motorcycle'
+  ];
+  for (const path of paths) {
+    const html = await (await get(path, env, cookie)).text();
+    assert.ok(html.includes(IMAGE_FALLBACK_SRC), `${path} 的兜底地址应指向 /lucky.jpg`);
+    // 逐张数: onerror 里带 ">=" 会被"取到第一个 >"的正则截断, 所以按"img 前缀 + 紧跟兜底属性"数配对
+    const total = (html.match(/<img\b/gi) || []).length;
+    const guarded = (html.match(/<img\b[^>]*?onerror="this\.src\.indexOf\('/g) || []).length;
+    assert.ok(total > 0, `${path} 应有图片`);
+    assert.equal(guarded, total, `${path} 有 ${total - guarded} 张图片没挂兜底`);
+  }
+  assert.ok(IMG_FALLBACK_ATTR.includes("this.src.indexOf('/lucky.jpg')>=0"),
+    '兜底图自己再失败时要收起, 避免无限循环');
+});
 
 test('统一(2.3.4): searchInput/searchSelect/searchBar 是全站唯一一份搜索区实现', () => {
   const input = searchInput({ name: 'keyword', value: '甲', placeholder: '搜索标题' });

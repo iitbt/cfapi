@@ -1,6 +1,6 @@
 # 狼牙极限运动笔记 · 主后端（cfapi / Cloudflare Workers）
 
-> **版本**：`v2.6.8` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
+> **版本**：`v2.6.9` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
 > **主域名**：**https://lyjx.250036.xyz**（对外 API + `/admin` 管理后台同一域名）。
 > **素材域名**：**https://storage.250036.xyz**（R2 公开域，与接口域名分离）。
 > **定位**：微信小程序「狼牙极限运动笔记」的**主要后端**。今后小程序的开发、接口变更、联调、发版均以本工程为准；FastAPI 工程（`../fastapi/`）为**备用后端**。
@@ -64,6 +64,7 @@
 | 后台页面唯一布局 | 后台页面外壳在 `app/admin/lib/layout.js`（对齐旧站 `base.html`），宏/片段唯一实现在 `app/admin/lib/partials.js` |
 | 列表页骨架单点 | 后台列表页的取数/分页一律走 `app/admin/lib/listPage.js` 的 `listController`（7 个列表页共用），页面只提供表名/筛选/排序/行渲染 |
 | 幂等防重单点 | 后台写操作的防重一律走 `app/admin/lib/utils.js` 的 `onceOrError(ctx, action, parts)`（命中就返回可直接回显的文案），不再各页手拼 `idemKey` + `isDuplicateSubmit` |
+| 图片兜底单点 | 后台展示素材图的 `<img>` 一律走 `app/admin/lib/partials.js` 的 `imageTag()`（或它的 `IMG_FALLBACK_ATTR`）：加载失败换 `/lucky.jpg`，兜底图自己再失败就收起。兜底图由 Worker 内联字节直出（`app/core/lucky.js`，生成物；路由见 `main.js`），不依赖 R2 里有没有那张对象 |
 | 页面脚本不内联 | 页面脚本一律放 `app/admin/static/js/*.js`，模板里最多注入配置（`window.__xxxCfg`）—— 大段脚本写在模板字符串里会被吃掉反斜杠、被反引号截断（2026-10-10 两次教训） |
 | 静态资源内联 | `app/admin/assets/static-assets.js`（自有 css/js 内联，由 `tools/embed_admin_assets.mjs` 打包 `app/admin/static/**` 生成）随代码提交但**不是手改文件**；`static/vendor/`（wangEditor / 图标字体 / bootstrap）**不内联**，从 R2 的 `admin/` 前缀直出（见 `DEPLOY.md` 第 7.5 步） |
 | 往返优先（性能） | 线上主要成本是 **D1 往返次数**（一次实测约 240ms，见状态页）：① 互不依赖的查询一律 `Promise.all` 并发发出；② 非关键写库（如浏览量 +1）用 `ctx.waitUntil` 交给后台，不挡响应；③ 几乎不变的配置数据走 `app/core/ttlCache.js` 的 30 秒进程内缓存 |
@@ -147,7 +148,8 @@ cfapi/
 | `wechat.js` | 微信 `code2session` / `access_token` 缓存（D1）/ 昵称安全送审 |
 | `sanitize.js` | 富文本白名单净化 + 图片与视频封面改绝对地址 |
 | `overview.js` | 表行数 / 核心计数唯一实现（须排除 D1 内部表，逐表 COUNT） |
-| `favicon.js` | 站点图标内联字节（约 65KB 生成物，按需解码直出） |
+| `favicon.js` | 站点图标内联字节（约 65KB 生成物，按需解码直出 `/favicon.ico`） |
+| `lucky.js` | 后台图片兜底图内联字节（约 9KB 生成物，按需解码直出 `/lucky.jpg`；两处都由 `tools/embed_favicon.mjs` 生成） |
 | `ttlCache.js` | 进程内短 TTL 缓存 `cacheOnce(key, ttlMs, loader)`：只给"几乎不变、却每个请求都要查一次"的配置数据用（分类/首页板块/精选/文案/菜单/轮播图，TTL 30 秒）。跨 isolate 无法主动失效，所以靠 TTL 兜底 —— 后台改完最多 30 秒生效 |
 
 ### 6.4 `app/admin/`（管理后台，前缀 `/admin`）
@@ -157,7 +159,7 @@ cfapi/
 | 文件 | 职责 |
 | --- | --- |
 | `index.js` | 后台总分发：静态资源（生成物直出，未命中的大件从 R2 取）/ 登录态 / 写权限拦截（含来源校验）/ 页面路由表 `PAGE_ROUTES`；**每笔写请求留一条 `admin.write` 审计**（操作人 + IP/UA + 路径 + 结果） |
-| `routes.js` | 控制面板 `dashboardPage`（13 卡+2 趋势+3 最新列表）+ 待迁占位页 `pendingPage` |
+| `routes.js` | 控制面板 `dashboardPage`（**2.6.9 精简为 5 卡 + 2 趋势 + 3 最新列表**：用户 / 近 7 日新增 / 笔记（含已显示·待审核）/ 留言（含待审核）/ 互动；版本、服务器时间、依赖状态、表数量、存储占用等在「系统信息」与对外状态页已有，这里不再重复）+ 待迁占位页 `pendingPage` |
 | `routes/auth.js` | 登录 / 登出 / 首次初始化（签名 Cookie 会话；未配密钥显示「后台未就绪」） |
 
 `lib/`（支撑库）：
@@ -179,7 +181,7 @@ cfapi/
 | `layout.js` | 后台页面外壳（对齐旧站 `base.html`） |
 | `mediaUpload.js` | 上传（写 R2，不生成缩略图）+ 素材库列举 |
 | `newsContent.js` | 富文本 `<wx-video>`↔`<video>` 转换 + 摘要生成 |
-| `partials.js` | 后台页面「宏」唯一实现 |
+| `partials.js` | 后台页面「宏」唯一实现；**后台图片兜底唯一实现**（`imageTag()` / `IMG_FALLBACK_ATTR` / `IMAGE_FALLBACK_SRC`，失败换 `/lucky.jpg`） |
 | `status.js` | 后台「状态切换」注册表 + 行内徽章/启停按钮的唯一渲染入口 `statusCell`/`statusButtons` |
 | `utils.js` | 后台通用小工具（分页 / 审计 / 幂等键 + 防重入口 `onceOrError` / `positiveId`；`invalidateEntityCache` 是**预留的空实现** —— 当前接口层没有缓存） |
 | `base64url.js` | base64url 编解码 |
@@ -233,7 +235,7 @@ cfapi/
   - `notice_visibility`（2.5.9 起）用**真实 SQLite**顶掉 D1 后走真接口，验证公告接收人四档："谁能看到哪条 / 未读数对得上 / 已读互不影响 / 游客只看得到「所有用户」"（2.6.0 起含"一条公告发给两位"的逗号列表）。为什么要真库：桩只能证明"SQL 长什么样"（`api_reads` 里那条断言），证明不了口径在真 SQL 上确实是这个结果 —— 例如 `?` 占位符顺序错位在桩里看不出来。
   - `frontend_notice_reddot`（2.5.8 起；4.5.3 起多一条"同一身份的资料刷新不许把红点抹掉 / 换账号必须归零"，4.5.4 起多一条"前台每 30 秒轮询公告、切后台必须停"）是**跨端守卫**：用桩顶掉 `getApp/wx/Page` 后直接 require 小程序的 `pages/profile/profile.js` 与 `subpackages/content/notices/notices.js`，真跑一遍"红点每次强制取服务端未读数 / 状态翻转才重渲染 / 已读补丁回写秒开缓存"。本机没有 `../xapp`（只部署后端）时自动跳过，也可用 `LYXJ_DIR=<xapp 路径>` 指定。
   - `frontend_test_content`（4.5.7 起）同样是跨端守卫，管**测试内容可见性**：真跑一遍"户外/摩旅的秒开缓存 + 服务端回包"（断言 `video_url` 真的进了渲染层、非内部测试时仍不整表 `setData`）、`trustedUser` 的判据（服务端 `can_watch_video` 优先 / 没有才回退本地身份 / 值没变不 `setData`）以及详情页回包按 `can_watch_video` 落 `isTrusted`。挡的就是"服务端已下发视频、端上却因为列表指纹漏掉 `video_url` 或本地身份镜像是旧的就把它藏起来"。
-- **`tools/`**：`diff_api.mjs`（新旧站 JSON 对拍）、`live_smoke.mjs`（真实数据端到端冒烟）、`cf_region.mjs`（R2/D1 区域迁移）、`embed_admin_assets.mjs`（打包静态资源）、`embed_favicon.mjs`（内联 favicon）、`export_sqlite.py`（旧库导出 seed）、`split_sql.py`（SQL 拆块便于控制台粘贴）、`verify_counts.py`（行数校验）、`media_to_r2.md`（素材搬 R2 说明）。
+- **`tools/`**：`diff_api.mjs`（新旧站 JSON 对拍）、`live_smoke.mjs`（真实数据端到端冒烟）、`cf_region.mjs`（R2/D1 区域迁移）、`embed_admin_assets.mjs`（打包静态资源）、`embed_favicon.mjs`（内联 favicon 与后台兜底图 lucky.jpg → `core/favicon.js` / `core/lucky.js`）、`export_sqlite.py`（旧库导出 seed）、`split_sql.py`（SQL 拆块便于控制台粘贴）、`verify_counts.py`（行数校验）、`media_to_r2.md`（素材搬 R2 说明）。
 - **`notes/`**：`api-inventory.md`（对外接口台账）、`structure-map.md`（fastapi↔cfapi 结构与机制对照）、`limits-design.md`（限流方案）、`ops-sql.md`（运营改数 SQL）。
 - **`out/`**：**生成物**（已被 `.gitignore` 忽略）：`seed.sql`（全量数据）+ 拆块 `schema/`、`seed/`、`schema-big/`、`seed-big/`，供控制台逐块粘贴建表/导数据。
 
@@ -440,6 +442,8 @@ cfapi/
 16. **上传时"目标路径"选不到想要的目录 / 手填报"必须以 image/ 开头"（2.6.5 修）**：① 可选项原先只取**当前浏览层**的子目录（站在 `image/food/` 连 `image/` 的兄弟目录都选不到），2.6.5 改成逐层扫全桶（各级目录全列出来，选项太长），**2.6.6 定为只列桶根下的一级子目录**，2.6.7 起与「存储桶根目录」后面那排按钮**逐字一致**（原先下拉另扫一份、还多一层"站内自有目录不进"的过滤，于是少几个目录 = "显示不全"；现在站内自有目录 `avatar/`、`avatar_uploads/`、`images/` 也照列，见第 17 条）；② 那句拦截来自 `lib/mediaUpload.js::safeTargetDir`（2.4.3 的"只允许本入口素材根之下"，理由是跨目录写进去素材库列不出来）与前端 `static/js/media_govern.js::dirProblem` 的同一口径 —— 但 2.4.4 已经允许写到**存储桶最外层**，这条前缀限制自相矛盾，2.6.5 起 `root` 只当默认值，任何"干净的相对目录"都收，**仍拦** `..`（穿越）、绝对路径、`//`、空段、单点、特殊字符与超长。代价照旧写在校验函数的注释里：写进素材库不扫的目录（如把图片写进 `video/`）时，那些对象在素材库列表与素材选择器里列不出来（公开域直读不受影响）。**本轮没有动任何接口与字段**（`target_dir` 仍是那个字段，只是取值放宽）；守卫：`tests/unit.test.mjs`「目标路径校验(2.6.5)」、`tests/admin_pages_tools.test.mjs`「目标路径可选项」「上传接口(2.6.5)」「存储桶目录按钮(2.6.5)」。
 17. **目标路径下拉只列一层、且与桶页那排按钮一致（2.6.6 / 2.6.7）**：① 2.6.5 用 `core/storage.js::listAllDirs` 逐层扫全桶，每个目录一次 R2 子请求（上限 `MAX_DIR_SCAN = 30`），把各级目录都塞进下拉 —— 选项太长、子请求也白花，2.6.6 改为 `listLevel(env, '')` 只列桶根那一层，`listAllDirs` 与 `MAX_DIR_SCAN` 一并删除。② 但 2.6.6 的下拉仍是"**另扫一份** + 多一层过滤（站内自有目录不进下拉）"：桶页那排按钮来自 `browseQuery(ctx)` 的 `data.folders`，下拉来自另一次 `listLevel`，两处口径不同 → 下拉少几个目录（2.6.7 报的就是这个"一级子目录显示不全"）。③ 2.6.7 统一成一份数据：`listPage` 站在根目录**直接复用 `data`**（零额外列举），站在子目录才补一次**同参数**（`{ limit: LEVEL_MAX }`）的 `listLevel`，并删掉那层额外过滤 —— 两处永远同源同参，集合逐字相等（含 `avatar/`、`avatar_uploads/`、`images/`）。要归档到更深层就选「其它（手动填写）」：手填校验沿用 2.6.5 口径（只拦 `..`/绝对路径/`//`/空段/特殊字符/超长），多深都收。下拉的候选目录**与当前浏览位置无关**（站在 `image/` 里看到的仍是桶根那一层）。守卫：`tests/admin_pages_tools.test.mjs`「目标路径可选项」—— 把桶页那排 `?prefix=` 按钮的目录集合与两条下拉的 option 集合做 `deepEqual`（逐字一致才算过），再逐个目录真上传一遍；2.6.5 的多层级目录（`image/素材/`）必须**不再**出现。
 18. **上传命名默认值与待上传清单（2.6.8）**：① 命名默认值从「自动生成（`<用途>_时间戳.ext`）」改成「**保留原名**」—— 用户不操作时文件名原样落库；「自动生成」仍是可选项（切过去才换文件名，两种模式都保留文件夹结构）。② 重名规则在 `app/admin/lib/mediaUpload.js`：待写 key = 目标目录 + 相对路径目录 + 文件名，写前 `head` 探测，已存在就顺延 `_1`、`_2`…（`MAX_KEY_TRIES` 次封顶，扩展名不变、**绝不覆盖**）；**计数按完整 key（含目录）算，所以不同子目录里的同名文件互不影响**（`相册一/图.png` 与 `相册二/图.png` 各自独立，只有同一目录内重名才顺延）。③ 选完文件/文件夹后，上传卡片多一份可滚动的「待上传清单」：图片出本地缩略图（`URL.createObjectURL`，移除/清空时 `revokeObjectURL`），视频出图标；每行 = 相对路径 + 大小 + 类型 + 状态（等待/上传中/成功/失败），失败行仍带重试/跳过；可按单个文件「移除」，也可按**选中的那层文件夹**「移除整个文件夹」—— 与进度条共用同一个队列。**已成功与正在上传的不可移除**（对象已落/请求已发），移除待传文件会同步从总量里扣掉体积。④ 体积文案改成自适应 B/KB/MB（原先一律按 MB，几十 KB 的文件全是 `0.0 MB`，看不出大小）。本轮只动后台的页面/脚本/样式：接口、字段、上传规则、目标路径与进度条机制都没变（`purpose`/`rel_path`/`target_dir` 照旧）。守卫：`tests/admin_pages_config.test.mjs`（默认 `value="keep" checked`、「自动生成」不再勾选、清单容器、`createObjectURL`/`revokeObjectURL`、`移除`/`移除整个文件夹`、四态文案、CSS 生成物同步）与 `tests/unit.test.mjs`（重名顺延 `_1`、不同子目录独立计数）。
+
+19. **控制面板精简与「后台图片兜底」（2.6.9）**：① 控制面板卡片 14 → 5：保留 总用户数（含今日新增与较昨日）、近 7 日新增用户（含较上期）、笔记（总数 + 已显示/待审核 并进同一张卡）、留言（总数 + 待审核）、互动（点赞/收藏）；删掉的 轮播图 / 摩旅精选 / 户外精选（各自管理页的统计条里就能看到）、管理页面（后台已全部迁完，侧栏本身就是入口清单）、以及分散的「待审核笔记/待审核留言」两张卡（并进主卡，仍然带 `text-warning` 高亮）；同时把统计 SQL 里那三张表的 COUNT 一并去掉（少读几行）。版本 / 服务器时间 / 依赖状态 / 表数量 / 记录总数 / 存储占用这些口径在「系统信息」页与对外状态页已有，控制面板不再重复。2 张趋势卡与 3 个最新列表（注册用户 / 笔记 / 留言，各自带「查看全部」）保持不变 —— 列表那一行同时承担"常用入口"的作用。② 图片兜底：`admin/news_preview`、`admin/news_manage`（含回收站）、`admin/banner_manage`、`admin/app_home_manage`（列表封面 + 编辑页的封面预览）、`admin/topics_manage`（列表 + 详情）这几处的 `<img>` 一律改走 `app/admin/lib/partials.js` 的 `imageTag()`（或挂同一份 `IMG_FALLBACK_ATTR`）：**加载失败就换成 `app/lucky.jpg`**，兜底图自己再失败才 `visibility:hidden` 收起（用 `this.src.indexOf('/lucky.jpg')` 判断，不会无限触发 error）。原先是各页各写一套（`visibility:hidden` / `display:none` / `classList.add('d-none')` 三种写法），现在换兜底图只改一处。预览页正文里的配图在 `pages/news.js` 里"改绝对地址"的同一步注入兜底 —— 注入点必须在 `sanitizeHtml` 之后，否则会被清洗掉。首页三块内容的列表封面在 `lib/homeSections.js` 的 `previewCell`（先前漏了这一处，是 2.6.9 里唯一没接上的调用点）。③ 兜底图的托管方式（与 favicon 同一手法）：仓库文件 `app/lucky.jpg` → `node tools/embed_favicon.mjs` 生成 `app/core/lucky.js`（base64 内联 + ETag + `?v=` 指纹，当前 6657 字节）→ `main.js` 在根路径 `/lucky.jpg` 直出（不走 R2、不受 `MEDIA_BASE` 影响、未登录也能取；`?v=` 只用于破缓存，路由按 pathname 匹配）。换图流程见 `DEPLOY.md`「第 10.5 步」。④ 正文编辑器（`static/js/news_editor.js`）同一口径：编辑区里的图片也挂兜底（地址由 `pages/news.js` 经 `#contentEditor` 的 `data-img-fallback` 下发同一份 `IMAGE_FALLBACK_SRC`；编辑中新粘进来的图片由既有的 MutationObserver 补挂，Slate 重画后重挂），同时把正文图片的显示地址从"站点根路径"改成**媒体域绝对地址**（`data-media-base` 下发 `mediaBase`，与后端 `assetUrl` 同口径）：站内目录两种写法都能取到，但"上传到存储桶最外层"的素材（2.4.4 起允许）只有媒体域能取 —— 原先在编辑区里是 404 裂图（小程序与预览页正常，因为那两处本就走 `assetUrl`）。提交前 `toStoredHtml` 把媒体域地址还原成库内相对值（编辑期临时改成兜底图的 DOM 不影响入库值：`getHtml()` 读的是编辑器模型）。⑤ 未覆盖的地方：头像（`users.js`/`notices.js`）与素材库缩略图（`mediaGovern.js`）仍保持"加载失败就隐藏" —— 这两处的槽位比例是给头像/原图的，塞一张 447×252 的兜底图会更奇怪；要一起改再说。守卫：`tests/api_reads.test.mjs`（`/lucky.jpg` 直出字节与类型）、`tests/admin_pages_config.test.mjs`（六个页面逐张数 `img`，必须张张带兜底）、`tests/admin_pages_system.test.mjs`（5 张卡、删掉的卡片按 `<div class="lbl">` 标记断言、统计 SQL 不再查那三张表）。
 
 8. **线上"又慢了"先看状态页的「D1 响应」**：它是一次真实 D1 往返的耗时（基线约 240ms）。接口/页面的耗时 ≈ **串行轮数 × 它**，所以"多了几百毫秒"基本都是多了一轮串行查询，而不是单条 SQL 变慢。
 9. **怎么量"串行轮数"**：本地用 `tests/stub.mjs` / `tests/admin_stub.mjs` 的桩，把每条 D1 语句包一层 `await sleep(240)`，再跑一次该页面/接口 —— `耗时 ÷ 240ms` 就是串行轮数（后台全部 GET 路径可从 `app/admin/pages/index.js` 的 `PAGE_ROUTES` 列出来）。2.5.2 的对照：控制面板 7 轮 → 2 轮、`/config/get_app_config` 6 轮 → 1 轮（命中缓存 0 轮）、`/news/list` 3 轮 → 1~2 轮、`/news/detail` 4 轮 → 2 轮。

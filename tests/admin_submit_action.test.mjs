@@ -108,7 +108,12 @@ test('编辑页: 富文本编辑器容器、自托管资源与三种插图入口
   assert.ok(html.includes('id="contentEditor"'), '编辑区容器');
   assert.ok(html.includes('id="contentRaw" name="content"'), '隐藏文本域承载提交值');
   assert.ok(!html.includes('newsContentTextarea'), '旧的纯文本域不该还在');
-  assert.ok(html.includes(`data-media-prefixes="image/,video/,news_uploads/"`), '回显转换用同一份目录清单');
+  // 编辑器要的两个地址由页面下发: 媒体域(拼正文图片) + 兜底图(与后台其它页面同一份)
+  assert.ok(html.includes('data-media-base="https://media.test"'), '回显用页面下发的媒体域地址');
+  assert.ok(html.includes('data-img-fallback="/lucky.jpg?v='), '正文图片挂同一份兜底图');
+  const editor = await readFile(new URL('../app/admin/static/js/news_editor.js', import.meta.url), 'utf8');
+  assert.ok(editor.includes("getAttribute('data-media-base')") && editor.includes("getAttribute('data-img-fallback')"),
+    '编辑器脚本要读页面上这两个地址');
   // 自托管资源(不走 CDN)与初始化脚本, 顺序: 样式 → 本体 → 初始化
   for (const asset of ['vendor/wangeditor/style.css', 'vendor/wangeditor/index.js', 'js/news_editor.js']) {
     assert.ok(html.includes(`/admin/static/${asset}?v=`), `${asset} 必须被引入`);

@@ -277,6 +277,30 @@ wrangler r2 object put lyjxxapp-r2/admin/vendor/fonts/bootstrap-icons.woff2 --fi
 3. 抽查：浏览器打开 `https://storage.250036.xyz/news_uploads/home/<某个图>` 能正常显示。
 4. 特别大的视频（超过 64 MB）建议直接用 rclone 之类传进桶，不经过 Worker，再把相对路径填进后台。
 
+## 第 10.5 步 换站点图标 / 后台图片兜底图（需要时）
+
+这两张图不放在 R2，而是**内联进 Worker 的字节**（换了图必须重新生成 + 重新部署，否则线上还是旧图）：
+
+| 图 | 仓库里的文件 | 生成物 | 访问地址 | 谁在用 |
+| --- | --- | --- | --- | --- |
+| 站点图标 | `app/favicon.ico` | `app/core/favicon.js` | `/favicon.ico` | 所有页面 `<link rel="icon">`（带 `?v=<指纹>`） |
+| 后台图片兜底图 | `app/lucky.jpg` | `app/core/lucky.js` | `/lucky.jpg` | 后台各页 `<img>` 加载失败时（带 `?v=<指纹>`） |
+
+步骤：
+
+1. 替换 `cfapi/app/` 下的那张图（保持文件名不变）。
+2. 在 `cfapi/` 下执行：
+
+   ```powershell
+   node tools\embed_favicon.mjs
+   ```
+
+   它会按文件头判定 `content-type`（jpg → `image/jpeg`、PNG → `image/png`），并算出内容指纹（ETag / `?v=`）。
+3. 升 `main.js` 的 `API_VERSION`（静态资源与页面里的 `?v=` 都读它，不升版本号浏览器会继续用旧图）。
+4. `npm run deploy`，然后打开上表两个地址确认能取到（不是 404，也不是旧的）。
+
+两张图的数据都在 `app/core/{favicon,lucky}.js` 里（生成物，不要手改）；路径常量分别是 `LUCKY_PATH`、`FAVICON_HASH` 等。
+
 ## 第 11 步 上线前自查
 
 | 打开这个地址 | 应该看到 |
@@ -285,6 +309,7 @@ wrangler r2 object put lyjxxapp-r2/admin/vendor/fonts/bootstrap-icons.woff2 --fi
 | `https://lyjx.250036.xyz/health/ready` | `status: ready`；数据库或素材不通会变成 503 |
 | `https://lyjx.250036.xyz/apitest` | `api_status: online` |
 | `https://lyjx.250036.xyz/favicon.ico` | 能返回图标文件，不是 404 |
+| `https://lyjx.250036.xyz/lucky.jpg` | 能返回后台兜底图（jpg），不是 404 |
 | `https://lyjx.250036.xyz/admin` | 跳转到登录页 |
 | 后台登录后看控制面板 | 能进，统计数字正常 |
 | `https://storage.250036.xyz/<素材路径>` | 图片、视频能打开 |

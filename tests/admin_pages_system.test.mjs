@@ -126,9 +126,11 @@ test('系统信息: 默认不跑全库 COUNT 与全桶列举(要 ?counts=1 才�
   assert.equal(findCall(state, /SELECT COUNT\(\*\) AS c FROM/i), null, '默认不做逐表 COUNT');
 });
 
-test('控制面板: 13 张卡 + 7 日趋势 + 最新列表', async () => {
+test('控制面板(2.6.9 精简): 5 张核心卡(待审核并进卡里) + 7 日趋势 + 最新列表, 不重复状态页的口径', async () => {
+  const asked = [];
   const { env } = adminEnv({
     db: (sql, args, kind) => {
+      asked.push(sql);
       if (kind === 'all' && /substr\(publish_time/i.test(sql)) return [{ d: '2026-10-01', c: 3 }];
       if (kind === 'all' && /substr\(create_time/i.test(sql)) return [{ d: '2026-10-01', c: 2 }];
       if (kind === 'all' && /FROM users ORDER BY id DESC/i.test(sql)) return [{ id: 9, username: 'wx_1', nickname: '老王', create_time: '2026-10-01 08:00:00' }];
@@ -139,16 +141,24 @@ test('控制面板: 13 张卡 + 7 日趋势 + 最新列表', async () => {
   });
   const cookie = await loginCookie(env);
   const html = await (await get('/admin/dashboard', env, cookie)).text();
-  assert.ok(html.includes('总用户数'));
-  assert.ok(html.includes('今日新增用户'));
-  assert.ok(html.includes('待审核笔记'));
-  assert.ok(html.includes('总收藏'));
-  assert.ok(html.includes('摩旅精选') && html.includes('户外精选'));
+  for (const label of ['总用户数', '近 7 日新增用户', '笔记', '留言', '互动（点赞 / 收藏）']) {
+    assert.ok(html.includes(label), `缺少统计卡: ${label}`);
+  }
+  assert.ok(html.includes('已显示 ') && html.includes('待审核 '), '已显示/待审核并进同一张卡(不再各占一张)');
+  // 2.6.9 删掉的卡片: 低频数字(轮播图/摩旅/户外, 各自管理页里都有)、迁移进度卡(迁完了, 侧栏能看到全部页面),
+  // 以及分散的点赞/收藏(并进「互动」卡)。按卡片标记断言, 免得误伤侧栏菜单里的同名文字
+  for (const gone of ['轮播图', '摩旅精选', '户外精选', '管理页面', '总点赞', '总收藏', '今日新增用户']) {
+    assert.ok(!html.includes(`<div class="lbl">${gone}</div>`), `控制面板不该再有「${gone}」卡片`);
+  }
   assert.ok(html.includes('近 7 日新增用户趋势') && html.includes('近 7 日笔记发布趋势'));
   assert.ok(html.includes('<svg class="sparkline"'), '趋势用纯 SVG, 不引图表库');
-  assert.ok(html.includes('最新注册用户') && html.includes('最新笔记') && html.includes('最新留言'));
+  assert.ok(html.includes('最新注册用户') && html.includes('最新笔记') && html.includes('最新留言'), '三个最新列表与它们的入口照旧');
   assert.ok(html.includes('老王') && html.includes('重走来时路'));
-  assert.ok(html.includes('13/13') || html.includes('管理页面'), '迁移进度卡');
+  // 统计 SQL 也要跟着瘦: 那三张表的 COUNT 不再发
+  const countsSql = asked.find((sql) => /total_users/.test(sql)) || '';
+  for (const table of ['banner_images', 'motorcycle_trips', 'outdoor_activities']) {
+    assert.ok(!countsSql.includes(table), `统计 SQL 不该再查 ${table}`);
+  }
 });
 
 function adminEnv(overrides = {}) {

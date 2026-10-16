@@ -1,8 +1,27 @@
 // 后台页面"宏"的唯一实现: 结构与 class 逐字对齐旧站 templates/_*.html, 这样 admin.css 才能直接复用
 // 这边没有模板引擎, 所以每个宏就是"返回 HTML 字符串的函数"
 import { escapeHtml } from '../../core/html.js';
+import { LUCKY_HASH, LUCKY_PATH } from '../../core/lucky.js';
 import { assetUrl } from '../../core/media_scheme.js';
 import { MEDIA_PREFIXES } from '../../core/storage.js';
+
+// 图片兜底(2.6.9, 后台唯一实现): 后台所有"展示素材图"的 <img> 都从这里取标记或走 imageTag(),
+// 不许再各页各写 onerror —— 换兜底图/改兜底行为只改这一处。
+// 带 ?v=<内容指纹>: 兜底图换了之后浏览器不会继续用旧缓存(与 /favicon.ico 同一手法)
+export const IMAGE_FALLBACK_SRC = `${LUCKY_PATH}?v=${LUCKY_HASH}`;
+
+//: 加载失败 → 换成兜底图; 若当前地址本来就是兜底图(说明它自己也没加载到)就整张藏起来, 不会无限循环触发 error
+export const IMG_FALLBACK_ATTR = `onerror="this.src.indexOf('${LUCKY_PATH}')>=0`
+  + `?this.style.visibility='hidden':(this.src='${IMAGE_FALLBACK_SRC}')"`;
+
+// 素材图标记(封面/缩略图/预览大图共用): 统一拼绝对地址 + 失败兜底, 类名与样式仍由调用方给
+export function imageTag(env, value, options = {}) {
+  const attrs = options.attrs === undefined ? 'loading="lazy" decoding="async"' : options.attrs;
+  return `<img src="${escapeHtml(assetUrl(env, value, ''))}"`
+    + ` class="${escapeHtml(options.className || 'cover-thumb')}"`
+    + `${options.style ? ` style="${escapeHtml(options.style)}"` : ''}`
+    + ` alt="${escapeHtml(options.alt || '')}"${attrs ? ` ${attrs}` : ''} ${IMG_FALLBACK_ATTR}>`;
+}
 
 export function backButton(url, label = '返回') {
   return `<a class="btn btn-outline-secondary btn-sm" href="${escapeHtml(url)}">`
@@ -179,7 +198,7 @@ export function imageUploadField(options = {}) {
     : '';
   const preview = kind === 'image'
     ? `<img id="${escapeHtml(name)}FieldPreview" src="${escapeHtml(assetUrl(env, options.value || '', '') || '#')}"`
-      + ` class="mt-2 cover-preview${options.value ? '' : ' d-none'}" alt="" onerror="this.classList.add('d-none')">`
+      + ` class="mt-2 cover-preview${options.value ? '' : ' d-none'}" alt="" ${IMG_FALLBACK_ATTR}>`
     : '';
   const hint = options.hint
     ? `<div class="form-text"${options.hintMobileHidden ? ' data-hint-mobile-hidden' : ''}>${escapeHtml(options.hint)}</div>`
