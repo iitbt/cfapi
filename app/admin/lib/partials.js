@@ -89,6 +89,7 @@ export function listMeta(options = {}) {
 // 复制 location.search 自动带上这些参数, 各页不用自己拼。
 // items: [[值, 文案], ...]; param: 该页自己的参数名(不改各页语义); active: 当前值;
 // extra: 需要一起保留的其它参数(空值与 'all' 不带, 免得 URL 变脏)。
+// hrefFor(值): 个别页面(合并后的专题编辑页)每一项要带**各自**的参数, 由它返回整条地址; 不给就还是"只带筛选参数"。
 export function filterButtons(options = {}) {
   const param = String(options.param || '');
   const current = String(options.active === undefined || options.active === null ? '' : options.active).trim();
@@ -102,8 +103,9 @@ export function filterButtons(options = {}) {
       if (text && text !== 'all') params.set(key, text);
     }
     const on = raw === current;
+    const href = options.hrefFor ? options.hrefFor(raw, label) : `${options.baseUrl || ''}?${params.toString()}`;
     return `<a class="btn btn-outline-secondary${on ? ' active' : ''}"`
-      + ` href="${escapeHtml(`${options.baseUrl || ''}?${params.toString()}`)}"`
+      + ` href="${escapeHtml(href)}"`
       + `${on ? ' aria-current="page"' : ''}>${escapeHtml(label)}</a>`;
   }).join('');
   const label = options.label ? ` aria-label="${escapeHtml(options.label)}"` : '';

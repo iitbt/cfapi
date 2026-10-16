@@ -1,6 +1,6 @@
 # 狼牙极限运动笔记 · 主后端（cfapi / Cloudflare Workers）
 
-> **版本**：`v2.6.9` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
+> **版本**：`v2.7.0` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
 > **主域名**：**https://lyjx.250036.xyz**（对外 API + `/admin` 管理后台同一域名）。
 > **素材域名**：**https://storage.250036.xyz**（R2 公开域，与接口域名分离）。
 > **定位**：微信小程序「狼牙极限运动笔记」的**主要后端**。今后小程序的开发、接口变更、联调、发版均以本工程为准；FastAPI 工程（`../fastapi/`）为**备用后端**。
@@ -159,7 +159,7 @@ cfapi/
 | 文件 | 职责 |
 | --- | --- |
 | `index.js` | 后台总分发：静态资源（生成物直出，未命中的大件从 R2 取）/ 登录态 / 写权限拦截（含来源校验）/ 页面路由表 `PAGE_ROUTES`；**每笔写请求留一条 `admin.write` 审计**（操作人 + IP/UA + 路径 + 结果） |
-| `routes.js` | 控制面板 `dashboardPage`（**2.6.9 精简为 5 卡 + 2 趋势 + 3 最新列表**：用户 / 近 7 日新增 / 笔记（含已显示·待审核）/ 留言（含待审核）/ 互动；版本、服务器时间、依赖状态、表数量、存储占用等在「系统信息」与对外状态页已有，这里不再重复）+ 待迁占位页 `pendingPage` |
+| `routes.js` | 控制面板 `dashboardPage`（**2.7.0 精简为 5 卡 + 3 最新列表**（两张 7 日趋势卡连同它们的取数与 `sparkline` 一并删除）：用户 / 近 7 日新增 / 笔记（含已显示·待审核）/ 留言（含待审核）/ 互动；版本、服务器时间、依赖状态、表数量、存储占用等在「系统信息」与对外状态页已有，这里不再重复）+ 待迁占位页 `pendingPage` |
 | `routes/auth.js` | 登录 / 登出 / 首次初始化（签名 Cookie 会话；未配密钥显示「后台未就绪」） |
 
 `lib/`（支撑库）：
@@ -205,7 +205,7 @@ cfapi/
 | `notices.js` | 通知公告：列表（可按接收人筛选 + **多选批量删除**，2.6.1）/ 编辑 / 删除。**接收人四档**（所有用户 / 内部测试用户 / 普通用户 / 指定用户）仅超管可改；选「指定用户」时用 `name=action value=search_user` 的普通提交按钮重画本页来搜人、用每位后面的「移除」按钮摘掉收件人（都不引入弹窗与接口），**2.6.0 起可一次指定多位**（同名多值 `target_user_id`，由 `app/admin/index.js` 的 `readForm` 拼成逗号串），非超管提交时保留库里的原接收人 |
 | `settings.js` | 管理员设置：改自己资料 / 改自己口令 |
 | `systemInfo.js` | 系统信息：运行环境 / 表数量 / 记录数 / 素材占用 |
-| `topics.js` | 专题精选（摩旅 / 户外）：聚合列表 / 编辑 / 预览 / 删除 |
+| `topics.js` | 专题精选（摩旅 / 户外）：聚合列表 / **合并后的编辑页**（2.7.0：`/admin/topics_edit?topic=motorcycle\|outdoor`，一份表单 + 顶部项目单选）/ 预览 / 删除 |
 | `users.js` | 用户管理：列表（可按「仅已申请」筛选，类型列显示「已申请」徽章）/ 详情 / 设内部测试（同时清申请标记）/ 恢复 / 删除。**用户可自助撤回**：待审批撤回=徽章消失，已通过后撤回=「类型」列回到「普通 微信」，管理员无需清理。**设/取消内部测试后自动给本人发一条定向公告**（「内部测试申请已通过」/「内部测试已取消」，走 `core/user_notice.js`）—— 用户在小程序「通知公告」页与公告红点处收到 |
 
 `static/js/`（页面脚本，全部打包进 `assets/static-assets.js`；引用一律走 `partials.js` 的 `staticScript`，带 `?v=<API_VERSION>`）：
@@ -390,7 +390,7 @@ cfapi/
 ### 9.2 管理后台路由（`/admin` 前缀，不计入对外 34 条）
 
 - 入口/鉴权：`/admin/login`、`/admin/logout`、`/admin/bootstrap`、`/admin/dashboard`、`/admin/status_update`（统一状态切换，全后台唯一写接口）。
-- 页面（GET）：用户管理 `/admin/users`(+`/users_rows`/`/user_detail`)、管理员 `/admin/admin_users`、笔记 `/admin/news_manage`(+`/news_manage_rows`/`/news_preview`/`/news_edit`/`/news_recycle`)、分类 `/admin/app_category_manage`、公告 `/admin/notice_manage`(+`/notice_rows`/`/notice_edit`)、留言 `/admin/comments_manage`、版本 `/admin/app_version_edit`、文案 `/admin/app_text_manage`、轮播 `/admin/banner_manage`、首页板块 `/admin/app_home_manage`、专题 `/admin/topics_manage`、设置 `/admin/settings`、系统信息 `/admin/system_info`、数据库管理 `/admin/db_tools`(+`/db_manage`)、素材库 `/admin/media_manage`(+`/media_library`)。
+- 页面（GET）：用户管理 `/admin/users`(+`/users_rows`/`/user_detail`)、管理员 `/admin/admin_users`、笔记 `/admin/news_manage`(+`/news_manage_rows`/`/news_preview`/`/news_edit`/`/news_recycle`)、分类 `/admin/app_category_manage`、公告 `/admin/notice_manage`(+`/notice_rows`/`/notice_edit`)、留言 `/admin/comments_manage`、版本 `/admin/app_version_edit`、文案 `/admin/app_text_manage`、轮播 `/admin/banner_manage`、首页板块 `/admin/app_home_manage`、专题 `/admin/topics_manage`(+`/topics_edit`/`/topics_manage_rows`)、设置 `/admin/settings`、系统信息 `/admin/system_info`、数据库管理 `/admin/db_tools`(+`/db_manage`)、素材库 `/admin/media_manage`(+`/media_library`)。
 - 写入口权限由 `app/admin/lib/entities.js` 四份清单统一口径；未登记写入口一律 403 并记日志。
 - 后台是独立页面（同域名 `/admin` 前缀，HTML SPA + 原生 JS），与小程序前端无耦合；小程序通过微信「服务器域名」白名单访问 `lyjx.250036.xyz`。
 
@@ -444,6 +444,8 @@ cfapi/
 18. **上传命名默认值与待上传清单（2.6.8）**：① 命名默认值从「自动生成（`<用途>_时间戳.ext`）」改成「**保留原名**」—— 用户不操作时文件名原样落库；「自动生成」仍是可选项（切过去才换文件名，两种模式都保留文件夹结构）。② 重名规则在 `app/admin/lib/mediaUpload.js`：待写 key = 目标目录 + 相对路径目录 + 文件名，写前 `head` 探测，已存在就顺延 `_1`、`_2`…（`MAX_KEY_TRIES` 次封顶，扩展名不变、**绝不覆盖**）；**计数按完整 key（含目录）算，所以不同子目录里的同名文件互不影响**（`相册一/图.png` 与 `相册二/图.png` 各自独立，只有同一目录内重名才顺延）。③ 选完文件/文件夹后，上传卡片多一份可滚动的「待上传清单」：图片出本地缩略图（`URL.createObjectURL`，移除/清空时 `revokeObjectURL`），视频出图标；每行 = 相对路径 + 大小 + 类型 + 状态（等待/上传中/成功/失败），失败行仍带重试/跳过；可按单个文件「移除」，也可按**选中的那层文件夹**「移除整个文件夹」—— 与进度条共用同一个队列。**已成功与正在上传的不可移除**（对象已落/请求已发），移除待传文件会同步从总量里扣掉体积。④ 体积文案改成自适应 B/KB/MB（原先一律按 MB，几十 KB 的文件全是 `0.0 MB`，看不出大小）。本轮只动后台的页面/脚本/样式：接口、字段、上传规则、目标路径与进度条机制都没变（`purpose`/`rel_path`/`target_dir` 照旧）。守卫：`tests/admin_pages_config.test.mjs`（默认 `value="keep" checked`、「自动生成」不再勾选、清单容器、`createObjectURL`/`revokeObjectURL`、`移除`/`移除整个文件夹`、四态文案、CSS 生成物同步）与 `tests/unit.test.mjs`（重名顺延 `_1`、不同子目录独立计数）。
 
 19. **控制面板精简与「后台图片兜底」（2.6.9）**：① 控制面板卡片 14 → 5：保留 总用户数（含今日新增与较昨日）、近 7 日新增用户（含较上期）、笔记（总数 + 已显示/待审核 并进同一张卡）、留言（总数 + 待审核）、互动（点赞/收藏）；删掉的 轮播图 / 摩旅精选 / 户外精选（各自管理页的统计条里就能看到）、管理页面（后台已全部迁完，侧栏本身就是入口清单）、以及分散的「待审核笔记/待审核留言」两张卡（并进主卡，仍然带 `text-warning` 高亮）；同时把统计 SQL 里那三张表的 COUNT 一并去掉（少读几行）。版本 / 服务器时间 / 依赖状态 / 表数量 / 记录总数 / 存储占用这些口径在「系统信息」页与对外状态页已有，控制面板不再重复。2 张趋势卡与 3 个最新列表（注册用户 / 笔记 / 留言，各自带「查看全部」）保持不变 —— 列表那一行同时承担"常用入口"的作用。② 图片兜底：`admin/news_preview`、`admin/news_manage`（含回收站）、`admin/banner_manage`、`admin/app_home_manage`（列表封面 + 编辑页的封面预览）、`admin/topics_manage`（列表 + 详情）这几处的 `<img>` 一律改走 `app/admin/lib/partials.js` 的 `imageTag()`（或挂同一份 `IMG_FALLBACK_ATTR`）：**加载失败就换成 `app/lucky.jpg`**，兜底图自己再失败才 `visibility:hidden` 收起（用 `this.src.indexOf('/lucky.jpg')` 判断，不会无限触发 error）。原先是各页各写一套（`visibility:hidden` / `display:none` / `classList.add('d-none')` 三种写法），现在换兜底图只改一处。预览页正文里的配图在 `pages/news.js` 里"改绝对地址"的同一步注入兜底 —— 注入点必须在 `sanitizeHtml` 之后，否则会被清洗掉。首页三块内容的列表封面在 `lib/homeSections.js` 的 `previewCell`（先前漏了这一处，是 2.6.9 里唯一没接上的调用点）。③ 兜底图的托管方式（与 favicon 同一手法）：仓库文件 `app/lucky.jpg` → `node tools/embed_favicon.mjs` 生成 `app/core/lucky.js`（base64 内联 + ETag + `?v=` 指纹，当前 6657 字节）→ `main.js` 在根路径 `/lucky.jpg` 直出（不走 R2、不受 `MEDIA_BASE` 影响、未登录也能取；`?v=` 只用于破缓存，路由按 pathname 匹配）。换图流程见 `DEPLOY.md`「第 10.5 步」。④ 正文编辑器（`static/js/news_editor.js`）同一口径：编辑区里的图片也挂兜底（地址由 `pages/news.js` 经 `#contentEditor` 的 `data-img-fallback` 下发同一份 `IMAGE_FALLBACK_SRC`；编辑中新粘进来的图片由既有的 MutationObserver 补挂，Slate 重画后重挂），同时把正文图片的显示地址从"站点根路径"改成**媒体域绝对地址**（`data-media-base` 下发 `mediaBase`，与后端 `assetUrl` 同口径）：站内目录两种写法都能取到，但"上传到存储桶最外层"的素材（2.4.4 起允许）只有媒体域能取 —— 原先在编辑区里是 404 裂图（小程序与预览页正常，因为那两处本就走 `assetUrl`）。提交前 `toStoredHtml` 把媒体域地址还原成库内相对值（编辑期临时改成兜底图的 DOM 不影响入库值：`getHtml()` 读的是编辑器模型）。⑤ 未覆盖的地方：头像（`users.js`/`notices.js`）与素材库缩略图（`mediaGovern.js`）仍保持"加载失败就隐藏" —— 这两处的槽位比例是给头像/原图的，塞一张 447×252 的兜底图会更奇怪；要一起改再说。守卫：`tests/api_reads.test.mjs`（`/lucky.jpg` 直出字节与类型）、`tests/admin_pages_config.test.mjs`（六个页面逐张数 `img`，必须张张带兜底）、`tests/admin_pages_system.test.mjs`（5 张卡、删掉的卡片按 `<div class="lbl">` 标记断言、统计 SQL 不再查那三张表）。
+
+20. **控制面板去掉 7 日趋势、专题两个编辑页合并（2.7.0）**：① 控制面板删掉「近 7 日新增用户趋势」「近 7 日笔记发布趋势」两张折线卡，连同它们的取数与渲染实现（`routes.js` 里的 `trend()`、每次一发的 `substr(...) GROUP BY d`、以及 `sparkline()`）一并删除，面板只剩 5 张数字卡 + 3 个最新列表；一次并发请求从 6 条降到 4 条。② `admin/motorcycle_edit` 与 `admin/outdoor_edit` 合并成一个 **`/admin/topics_edit?topic=motorcycle|outdoor`**（沿用列表页那个 `?topic=` 参数）：共用 标题 / 简介 / 封面图 URL / 视频地址 / 状态，各自独有 摩旅（骑行里程·计划时长·难度）与 户外（活动日期·活动地点），字段集仍由 `CONFIGS[kind].extraFields` 驱动 —— 换项目 = 换一份独有字段 + 换一张表（服务端重新渲染，不做前端隐显）。顶部项目单选沿用列表页那套标签条（`partials.filterButtons`；2.7.0 给它加了可选的 `hrefFor(值)`，因为这一处每一项要带**各自**的记录 id），位置在**标题字段上方**（`editShell` 的 `top`）。编辑态切到另一种项目 = 改为"新增"（两张表的 id 不是一回事），页面上有一行提示；表单 `action` 同时带 `topic` 与 `id`，所以 POST 与 GET 认的是同一个项目，**项目名缺失/非法时直接给报错页、绝不回落到摩旅表**（"默认摩旅"的回落只留给行片段/预览/删除的旧路径）。旧的 `motorcycle_edit`/`outdoor_edit` 路由与 `entities.js` 里那两条写路径登记都已删除（`/admin/motorcycle_edit` 现在落到统一 404 页 —— 编辑页没有做 302，POST 过不了重定向）。③ 编辑页的【封面图 URL】与【视频地址】从左右两栏改成上下两行；封面预览从固定 288×162（16:9 裁剪）改成**居中 + 通栏 + 按原比率缩放**（`app/admin/static/css/admin.css` 的 `.cover-preview`，全后台共用这一份）。无接口、字段与 schema 变更，端上（`xapp/`）无需改动。守卫：`tests/admin_pages_system.test.mjs`（面板仍有 5 卡 + 3 个列表，`sparkline` 与 `substr(...) GROUP BY d` 都不再出现）、`tests/admin_pages_config.test.mjs`（合并页的项目单选 / 字段集 / 上下排版 / 各写各表 / 非法 topic 不写库）、`tests/admin_sidebar_menus.test.mjs`（两个旧编辑路由与写路径登记已删、只剩 `/admin/topics_edit`）、`tests/admin_submit_action.test.mjs`（`.cover-preview` 新样式）。
 
 8. **线上"又慢了"先看状态页的「D1 响应」**：它是一次真实 D1 往返的耗时（基线约 240ms）。接口/页面的耗时 ≈ **串行轮数 × 它**，所以"多了几百毫秒"基本都是多了一轮串行查询，而不是单条 SQL 变慢。
 9. **怎么量"串行轮数"**：本地用 `tests/stub.mjs` / `tests/admin_stub.mjs` 的桩，把每条 D1 语句包一层 `await sleep(240)`，再跑一次该页面/接口 —— `耗时 ÷ 240ms` 就是串行轮数（后台全部 GET 路径可从 `app/admin/pages/index.js` 的 `PAGE_ROUTES` 列出来）。2.5.2 的对照：控制面板 7 轮 → 2 轮、`/config/get_app_config` 6 轮 → 1 轮（命中缓存 0 轮）、`/news/list` 3 轮 → 1~2 轮、`/news/detail` 4 轮 → 2 轮。

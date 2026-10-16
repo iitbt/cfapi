@@ -216,6 +216,9 @@ test('筛选组: 六个管理页共用 partials.filterButtons 一份实现(结�
   const css = await readFile(new URL('../app/admin/static/css/admin.css', import.meta.url), 'utf8');
   assert.ok(!/\.nav-pills \.nav-link \{/.test(css), '旧胶囊样式应已删除');
   assert.match(css, /\.btn-group \{ flex-wrap: wrap; \}/, '手机端适配层要允许筛选组换行');
+  // 封面预览(2.7.0): 居中 + 通栏 + 按原比率缩放, 不再是固定的 288×162(16:9 裁剪)
+  assert.match(css, /\.cover-preview \{ display: block; width: 100%; height: auto; margin: 0 auto; \}/,
+    '封面预览要居中、左右拉伸、按原比率');
 });
 
 test('管理员页: 重置口令 / 删除 也用隐藏域(同类问题一并修)', async () => {

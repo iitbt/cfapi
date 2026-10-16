@@ -93,6 +93,25 @@ test('首页精选管理已合并: 菜单与路由不再有它, 写权限与状�
   assert.equal(gone.status, 404, '已删除的精选编辑地址落到 404');
 });
 
+test('专题编辑已合并(2.7.0): 摩旅/户外两个编辑路由与写路径登记都删了, 只剩一个 topics_edit', async () => {
+  assert.ok(PAGE_ROUTES.some((route) => route.path === '/admin/topics_edit' && route.methods.includes('POST')),
+    '合并后的编辑页要能 GET 也能 POST');
+  assert.ok(NORMAL_WRITE_PATHS.includes('/admin/topics_edit'), '合并后的编辑入口已登记写权限');
+  for (const gone of ['/admin/motorcycle_edit', '/admin/outdoor_edit']) {
+    assert.ok(!PAGE_ROUTES.some((route) => route.path === gone), `${gone} 路由已删除`);
+    assert.ok(!NORMAL_WRITE_PATHS.includes(gone), `${gone} 写路径登记已删除`);
+  }
+  // 列表/预览/删除/行片段仍按项目分开(本次只合并编辑页)
+  for (const kept of ['/admin/motorcycle_preview', '/admin/outdoor_preview', '/admin/motorcycle_delete', '/admin/outdoor_delete']) {
+    assert.ok(PAGE_ROUTES.some((route) => route.path === kept), `${kept} 仍在`);
+  }
+
+  const { env } = makeAdminEnv({ role: 'super' });
+  const cookie = await loginCookie(env);
+  const gone = await get('/admin/motorcycle_edit?id=0', env, cookie);
+  assert.equal(gone.status, 404, '旧的摩旅编辑地址落到 404');
+});
+
 test('用户笔记审核已彻底移除: 菜单、路由、权限清单、状态注册表都不再引用', async () => {
   assert.ok(!navLabels.includes('用户笔记审核'), '侧栏不该再有这个入口');
   assert.ok(!NAV_GROUPS.flatMap((group) => group.items).some((item) => item.href.includes('user_news')),

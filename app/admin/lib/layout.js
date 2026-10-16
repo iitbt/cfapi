@@ -20,7 +20,7 @@ const EXTRA_STYLE = [
   '.card-stat .num{font-size:26px;font-weight:600}',
   '.card-stat .lbl{color:#8a9099;font-size:13px}'
 ].join('');
-// 说明: sparkline / cover-thumb / cover-preview / action-cell 这些类旧站 admin.css 里已有定义,
+// 说明: cover-thumb / cover-preview / action-cell 这些类静态 admin.css 里已有定义,
 // 不要在这里重复声明 —— 覆盖旧值会造成"和旧后台长得不一样"的隐性偏差
 
 function renderSidebar(currentPage, isSuper) {

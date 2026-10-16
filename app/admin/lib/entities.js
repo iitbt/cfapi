@@ -181,8 +181,7 @@ export const NORMAL_WRITE_PATHS = [
   '/admin/notice_edit',
   '/admin/notice_delete',
   '/admin/notice_batch_delete',      // 批量删除公告(2.6.1; 与单条删除同档: 登录即可, 不额外限超管)
-  '/admin/motorcycle_edit',
-  '/admin/outdoor_edit',
+  '/admin/topics_edit',              // 2.7.0 起摩旅与户外共用这一个编辑页(?topic= 区分)
   '/admin/status_update',            // 全后台统一状态切换(部分 kind 在接口内按 superOnly 再判)
   '/admin/sql_tool'                  // 本次未迁移, 清单照旧保留
 ];

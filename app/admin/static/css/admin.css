@@ -175,7 +175,9 @@
   .cover-thumb, .cover-preview, .cover-detail { object-fit: cover; object-position: center;
     border-radius: 6px; background-color: #f1f5f9; }
   .cover-thumb { width: 128px; height: 72px; }
-  .cover-preview { width: 288px; height: 162px; }
+  /* 封面预览(2.7.0): 居中 + 通栏 + 按原比率缩放 —— 以前是固定的 288×162(16:9 裁剪),
+     竖版封面与超宽图都被裁得看不出原样; height:auto 后 object-fit 不再起作用(也就不会裁) */
+  .cover-preview { display: block; width: 100%; height: auto; margin: 0 auto; }
   .cover-detail { display: block; width: 100%; max-width: 640px; aspect-ratio: 16 / 9; margin: 0 auto; }
   /* 素材预览(2026-09-23 / v2.3.5, 删除确认页用): 与上面 .cover-* 同一套观感(圆角+浅底色),
      但 **不裁切**(object-fit: contain) —— 这是"看清即将删除的文件", 不是封面展示,

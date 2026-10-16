@@ -243,7 +243,7 @@ test('统一(2.3.3): 各 _edit?id=0 列表页的三行顺序 —— 新增按钮
   // [地址, 新增按钮 HTML, 标签条 aria-label(没有传 ''), 搜索表单里的字样]
   const cases = [
     ['/admin/news_manage', addButton('/admin/news_edit?id=0', '发布笔记'), '按分类筛选', '搜索标题/摘要'],
-    ['/admin/topics_manage', addButton('/admin/motorcycle_edit?id=0', '新增摩旅路线'), '按专题分类筛选', '搜索标题/简介等'],
+    ['/admin/topics_manage', addButton('/admin/topics_edit?topic=motorcycle&id=0', '新增摩旅路线'), '按专题分类筛选', '搜索标题/简介等'],
     ['/admin/notice_manage', addButton('/admin/notice_edit?id=0', '添加公告'), '', '按标题搜索'],
     ['/admin/app_text_manage', addButton('/admin/app_text_edit?id=0', '添加文案'), '', '全部分组']
   ];
@@ -283,7 +283,7 @@ test('统一(2.3.2): 各列表页的"添加/发布/新增"按钮是同一份实�
     ['/admin/app_text_manage', '添加文案', '/admin/app_text_edit?id=0'],
     ['/admin/app_category_manage', '添加分类', '/admin/app_category_edit?id=0'],
     ['/admin/notice_manage', '添加公告', '/admin/notice_edit?id=0'],
-    ['/admin/topics_manage', '新增摩旅路线', '/admin/motorcycle_edit?id=0'],
+    ['/admin/topics_manage', '新增摩旅路线', '/admin/topics_edit?topic=motorcycle&id=0'],
     ['/admin/news_manage', '发布笔记', '/admin/news_edit?id=0']
   ];
   for (const [path, label, href] of pages) {
@@ -341,7 +341,8 @@ test('统一(2.3.2): 各 *_edit 页面与 news_edit 同一骨架(单列居中 + 
     ['/admin/app_text_edit?id=0', '添加', '发布设置'],
     ['/admin/app_category_edit?id=0', '添加分类', '发布设置'],
     ['/admin/notice_edit?id=0', '添加公告', '发布设置'],
-    ['/admin/motorcycle_edit?id=0', '新增摩旅路线', '发布设置'],
+    // 2.7.0: 摩旅/户外两个编辑页合并成 topics_edit(?topic= 区分)
+    ['/admin/topics_edit?topic=motorcycle&id=0', '新增摩旅路线', '发布设置'],
     // 2.3.8: 精选的编辑页已并入 app_home_edit(?section=featured, 字段集与板块入口不同)
     ['/admin/app_home_edit?id=0&section=featured', '添加精选', '发布设置'],
     ['/admin/app_home_edit?id=0&section=main', '添加入口', '发布设置'],
@@ -460,14 +461,72 @@ test('专题旧地址: 302 到聚合页并带 topic', async () => {
 test('专题编辑: 必填项合并成一条文案, 状态非法时回落 approved', async () => {
   const { env, state } = envWith();
   const cookie = await loginCookie(env);
-  const missing = await post('/admin/motorcycle_edit?id=0', { title: '川藏线' }, env, cookie);
+  const missing = await post('/admin/topics_edit?topic=motorcycle&id=0', { title: '川藏线' }, env, cookie);
   assert.ok((await missing.text()).includes('请填写必填项: 简介、封面图 URL'));
-  const ok = await post('/admin/motorcycle_edit?id=0',
+  const ok = await post('/admin/topics_edit?topic=motorcycle&id=0',
     { title: '川藏线', description: '骑行', poster: 'p.jpg', videoUrl: '', status: 'weird', distance: '2000' }, env, cookie);
   assert.equal(ok.status, 302);
   const insert = findCall(state, /INSERT INTO motorcycle_trips/i);
   assert.equal(insert.args[4], 'approved', '非法状态回落 approved');
   assert.equal(insert.args[5], '2000', '额外字段要一起写入');
+});
+
+test('专题编辑(2.7.0 合并): 项目单选决定字段集与写哪张表, 缺/非法 topic 一律拒绝且不写库', async () => {
+  const { env, state } = envWith({
+    db: (sql, args, kind) => {
+      if (kind === 'first' && /FROM motorcycle_trips WHERE id = \?/i.test(sql)) {
+        return { id: 7, title: '川藏线', description: '骑行', poster: 'p.jpg', videoUrl: '', status: 'approved', distance: '2000', duration: '30 天', difficulty: '困难' };
+      }
+      return undefined;
+    }
+  });
+  const cookie = await loginCookie(env);
+  const navOf = (html) => html.slice(html.indexOf('选择项目类型') - 200, html.indexOf('选择项目类型') + 400);
+
+  // ① 新增摩旅: 顶部有项目单选, 只有摩旅的独有字段
+  const moto = await (await get('/admin/topics_edit?topic=motorcycle&id=0', env, cookie)).text();
+  const motoNav = navOf(moto);
+  assert.ok(motoNav.includes('btn-group btn-group-sm'), '单选沿用统一标签条(partials.filterButtons)');
+  assert.ok(motoNav.includes('href="/admin/topics_edit?topic=motorcycle&amp;id=0"') && motoNav.includes('aria-current="page"'), '摩旅项选中');
+  assert.ok(motoNav.includes('href="/admin/topics_edit?topic=outdoor&amp;id=0"'), '另一项目也能切');
+  for (const label of ['骑行里程(km)', '计划时长', '难度']) assert.ok(moto.includes(label), `摩旅字段缺 ${label}`);
+  for (const label of ['活动日期', '活动地点']) assert.ok(!moto.includes(label), `摩旅页不该有户外字段 ${label}`);
+  assert.ok(moto.indexOf('选择项目类型') < moto.indexOf('id="titleInput"'), '单选在标题字段上方');
+  // 封面与视频上下排: 两段不再包在同一个 row/col-md-6 里, 各占整行(上一段是封面、下一段是视频)
+  assert.ok(!moto.includes('<div class="col-md-6">'), '封面与视频改为上下排版');
+  assert.ok(moto.indexOf('id="posterFieldUrl"') < moto.indexOf('id="videoUrlFieldUrl"'), '封面在视频上方');
+
+  // ② 新增户外: 独有字段换成户外的, 单选跟着切换
+  const outdoor = await (await get('/admin/topics_edit?topic=outdoor&id=0', env, cookie)).text();
+  assert.ok(navOf(outdoor).includes('href="/admin/topics_edit?topic=outdoor&amp;id=0"'), '户外项可选中');
+  for (const label of ['活动日期', '活动地点']) assert.ok(outdoor.includes(label), `户外字段缺 ${label}`);
+  for (const label of ['骑行里程(km)', '计划时长', '难度']) assert.ok(!outdoor.includes(label), `户外页不该有摩旅字段 ${label}`);
+
+  // ③ 编辑态: 读的是本项目的表, 单选里本条记录保持 id, 另一种项目回到新增
+  const edit = await (await get('/admin/topics_edit?topic=motorcycle&id=7', env, cookie)).text();
+  assert.ok(edit.includes('川藏线'), '按 topic 读对应的表');
+  const editNav = navOf(edit);
+  assert.ok(editNav.includes('href="/admin/topics_edit?topic=motorcycle&amp;id=7"'), '本项目保持当前记录');
+  assert.ok(editNav.includes('href="/admin/topics_edit?topic=outdoor&amp;id=0"'), '换项目=新增另一种(两张表 id 不是一回事)');
+  assert.ok(edit.includes('name="title" id="titleInput" value="川藏线"') && edit.includes('name="distance"'), '字段带原值');
+
+  // ④ 保存各写各的表(互不串改)
+  const saved = await post('/admin/topics_edit?topic=outdoor&id=0',
+    { title: '雨崩', description: '徒步', poster: 'p.jpg', videoUrl: '', status: 'approved', date: '2013-11', location: '云南' }, env, cookie);
+  assert.equal(saved.status, 302);
+  assert.ok(saved.headers.get('location').includes('topic=outdoor'), '保存后回户外列表');
+  const insert = findCall(state, /INSERT INTO outdoor_activities/i);
+  assert.ok(insert && insert.args.includes('云南'), '户外内容写进户外表');
+  assert.equal(findCall(state, /INSERT INTO motorcycle_trips/i), null, '不会串写摩旅那张表');
+
+  // ⑤ 缺 / 非法 topic: 报错页, 不碰数据库
+  const before = state.calls.length;
+  for (const path of ['/admin/topics_edit?id=0', '/admin/topics_edit?topic=weird&id=0']) {
+    const bad = await post(path, { title: 'x', description: 'y', poster: 'z', location: '云南' }, env, cookie);
+    assert.ok((await bad.text()).includes('缺少或无效的项目参数'), `${path} 要报错`);
+  }
+  assert.equal(state.calls.slice(before).filter((item) => /INSERT|UPDATE/i.test(item.sql)).length, 0,
+    '缺/非法 topic 一律不写库(不回落摩旅表)');
 });
 
 test('专题预览: 只渲染非空的额外字段', async () => {

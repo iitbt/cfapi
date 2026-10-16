@@ -1,5 +1,6 @@
 // 专题精选(摩旅 / 户外): 聚合列表(tab 切换) / 行片段 / 新增编辑 / 预览 / 删除
 // 与旧站 fastapi/app/admin/topics.py 一致: 两份配置驱动同一套页面, 旧地址 302 到聚合页
+// 2.7.0: 两个编辑页(motorcycle_edit / outdoor_edit)合并成 /admin/topics_edit, 项目类型靠 ?topic=(与列表页同一参数)
 import { escapeHtml } from '../../core/html.js';
 import { all, one, run } from '../../core/db.js';
 import { assetUrl } from '../../core/media_scheme.js';
@@ -24,7 +25,6 @@ const CONFIGS = {
     itemLabel: '摩旅路线',
     title: '摩旅精选管理',
     manage: '/admin/motorcycle_manage',
-    edit: '/admin/motorcycle_edit',
     preview: '/admin/motorcycle_preview',
     rows: '/admin/motorcycle_rows',
     deletePath: '/admin/motorcycle_delete',
@@ -42,7 +42,6 @@ const CONFIGS = {
     itemLabel: '户外活动',
     title: '户外精选管理',
     manage: '/admin/outdoor_manage',
-    edit: '/admin/outdoor_edit',
     preview: '/admin/outdoor_preview',
     rows: '/admin/outdoor_rows',
     deletePath: '/admin/outdoor_delete',
@@ -57,14 +56,26 @@ const CONFIGS = {
 };
 
 const TOPIC_MANAGE_URL = '/admin/topics_manage';
+// 合并后的编辑页(2.7.0): 唯一入口, 项目类型靠 ?topic=
+const EDIT_URL = '/admin/topics_edit';
 const SEARCHABLE_COLS = ['title', 'description', 'location', 'difficulty', 'duration', 'distance', 'date'];
 const STATUS_OPTIONS = [['approved', '显示'], ['pending', '待审核']];
 
-// 认两种入参: 列表页的 ?topic=outdoor, 以及编辑/预览/删除的路径 /admin/outdoor_edit
+// 认两种入参: 列表/编辑页的 ?topic=outdoor, 以及预览/删除/行片段的旧路径 /admin/outdoor_*
 function configOf(raw) {
   const key = strOf(raw).toLowerCase();
   if (key.includes('outdoor')) return CONFIGS.outdoor;
   return CONFIGS.motorcycle;
+}
+
+// 合并编辑页只认写全的项目名: 认不出就报错, 绝不默认写摩旅那张表(否则户外的内容会写进摩旅表)
+function editConfigOf(raw) {
+  return CONFIGS[strOf(raw).toLowerCase()] || null;
+}
+
+// 编辑页地址: 项目类型与记录 id 都要带上(两张表的 id 不是一回事, 少了 topic 就写错表)
+function editUrl(config, id) {
+  return `${EDIT_URL}?topic=${config.kind}&id=${intOr(id, 0)}`;
 }
 
 function headerLabel(config, column) {
@@ -86,7 +97,7 @@ function actionsCell(ctx, config, row) {
   const page = clampPage(ctx.query.page, null);
   const buttons = statusButtons(config.kind, row);
   return `<div class="action-cell justify-content-center">
-    <a class="btn btn-sm btn-outline-primary" href="${config.edit}?id=${row.id}"><i class="bi bi-pencil" aria-hidden="true"></i> 编辑</a>
+    <a class="btn btn-sm btn-outline-primary" href="${editUrl(config, row.id)}"><i class="bi bi-pencil" aria-hidden="true"></i> 编辑</a>
     <a class="btn btn-sm btn-outline-secondary" href="${config.preview}?id=${row.id}" target="_blank" rel="noopener"><i class="bi bi-eye" aria-hidden="true"></i> 预览</a>
     ${buttons}
     <a class="btn btn-sm btn-outline-danger" href="/admin/delete_confirm?kind=${config.kind}&amp;id=${row.id}&amp;page=${page}&amp;back=${encodeURIComponent(config.manage)}">
@@ -128,11 +139,22 @@ function renderRows(ctx, config, rows) {
   }).join('');
 }
 
+const PROJECT_ITEMS = [['motorcycle', '摩旅精选'], ['outdoor', '户外精选']];
+
 // 专题分类切换: 走共用的筛选按钮组(见 lib/partials.js 的 filterButtons, 与留言管理页同一套), 参数是 ?topic=
 function tabNav(activeKind) {
   return filterButtons({
     baseUrl: TOPIC_MANAGE_URL, param: 'topic', active: activeKind, label: '按专题分类筛选',
-    items: [['motorcycle', '摩旅精选'], ['outdoor', '户外精选']]
+    items: PROJECT_ITEMS
+  });
+}
+
+// 编辑页顶部的项目单选(2.7.0 合并): 同一套标签条标记, 换项目 = 换一份独有字段 + 换一张表。
+// 本类型保持"当前记录"(新增时 id=0); 另一种类型一律回到"新增" —— 两张表的 id 不是一回事, 带过去会打开别的记录
+function projectNav(config, isNew, rowId) {
+  return filterButtons({
+    baseUrl: EDIT_URL, param: 'topic', active: config.kind, label: '选择项目类型', items: PROJECT_ITEMS,
+    hrefFor: (value) => editUrl(CONFIGS[value], value === config.kind && !isNew ? rowId : 0)
   });
 }
 
@@ -154,7 +176,7 @@ async function managePage(ctx) {
   const content = listShell({
     title: config.title, columns, rows: renderRows(ctx, config, rows),
     // 2.3.3 三行结构: ① 新增X ② 专题分类标签条 ③ 搜索表单
-    actions: addButton(`${config.edit}?id=0`, `新增${config.itemLabel}`),
+    actions: addButton(editUrl(config, 0), `新增${config.itemLabel}`),
     filters: tabNav(config.kind),
     search: searchForm,
     tbodyId: 'topicTbody', sentinelId: 'topicLoadMore', textId: 'topicLoadMoreText',
@@ -207,13 +229,19 @@ async function rowsFragment(ctx) {
 }
 
 const VIDEO_HINT = '填站内相对路径（如 video/video_xxx.mp4），或点右侧「本地上传」传新视频、「视频素材库」从服务器已有视频里选。';
-const POSTER_HINT = '封面建议使用 16:9 横版图片（如 1280×720），后台统一按 16:9 居中裁剪显示。';
+const POSTER_HINT = '封面建议使用 16:9 横版图片（如 1280×720）。下面是原图预览：居中、按原比率缩放，不再裁剪。';
 
-
-// 路由传入的配置是这一页唯一依据(见文件末尾 routes): 以前这里按 ?topic= 反推,
-// 于是 POST /admin/motorcycle_delete?topic=outdoor 会去写户外那张表 —— 路由名与操作对象对不上。
-async function editPage(ctx, routeConfig) {
-  const config = routeConfig || configOf(ctx.path);
+// 合并后的编辑页(2.7.0): 项目类型只从 ?topic= 认(表单 action 也带着它, 所以 GET 与 POST 认的是同一个项目);
+// 认不出来就报错, 不做"默认摩旅"的回落 —— 否则户外的表单会被写进摩旅那张表
+async function editPage(ctx) {
+  const config = editConfigOf(ctx.query.topic);
+  if (!config) {
+    return adminLayout({
+      title: '专题编辑', currentPage: 'topics_manage', admin: ctx.session.username,
+      isSuper: ctx.session.isSuper, version: ctx.version, error: '缺少或无效的项目参数',
+      content: '<div class="card"><div class="card-body">请从「专题精选管理」列表进入新增或编辑。</div></div>'
+    });
+  }
   const rowId = intOr(ctx.query.id, 0);
   const isNew = rowId <= 0;
   let error = ctx.error || '';
@@ -277,36 +305,39 @@ async function editPage(ctx, routeConfig) {
 function editView(ctx, config, { isNew, row, error, errorField }) {
   if (!row) {
     return adminLayout({
-      title: config.title, currentPage: config.manage.replace('/admin/', ''), admin: ctx.session.username,
+      title: config.title, currentPage: 'topics_manage', admin: ctx.session.username,
       isSuper: ctx.session.isSuper, version: ctx.version, error: error || '找不到该记录',
       content: '<div class="card"><div class="card-body">找不到该记录，可能已被删除。</div></div>'
     });
   }
+  // 顶部项目单选(在标题上方): 编辑中切到另一种项目会改为"新增", 提示一句免得以为在改同一条
+  const top = projectNav(config, isNew, row.id)
+    + (isNew ? '' : `<div class="alert alert-light border small mb-3">正在编辑${config.itemLabel}。切换到另一种项目会改为新增，这条记录不会被动到。</div>`);
   const main = textField({ name: 'title', label: config.labels.title, value: row.title, required: true, errorField })
     + textareaField({ name: 'description', label: config.labels.description, value: row.description, rows: 4, required: true, errorField })
-    + `<div class="row g-3">`
-    + `<div class="col-md-6">${imageUploadField({
+    // 封面与视频上下排(2.7.0): 预览通栏才看得清竖版封面, 以前左右各半栏把图压得很小
+    + imageUploadField({
       env: ctx.env, name: 'poster', label: config.labels.poster, value: row.poster,
       required: true, mediaPicker: true, errorField, colClass: 'mb-3', hint: POSTER_HINT
-    })}</div>`
-    + `<div class="col-md-6">${imageUploadField({
+    })
+    + imageUploadField({
       env: ctx.env, name: 'videoUrl', label: config.labels.videoUrl, value: row.videoUrl,
       mediaKind: 'video', mediaPicker: true, errorField, colClass: 'mb-3', hint: VIDEO_HINT
-    })}</div>`
-    + '</div>'
+    })
     + config.extraFields.map((field) => textField({
       name: field, label: config.labels[field] || field, value: row[field], errorField
     })).join('');
   const side = selectField({ name: 'status', label: config.labels.status, options: STATUS_OPTIONS, value: row.status, errorField });
   const content = editShell({
-    action: `${config.edit}${isNew ? '' : `?id=${row.id}`}`,
-    main, side, backUrl: TOPIC_MANAGE_URL, backLabel: '返回列表',
+    // 表单 action 带上项目类型与记录 id: POST 与 GET 认的是同一个项目, 不会串到另一张表
+    action: editUrl(config, isNew ? 0 : row.id),
+    top, main, side, backUrl: TOPIC_MANAGE_URL, backLabel: '返回列表',
     primaryLabel: isNew ? `新增${config.itemLabel}` : `保存修改${config.itemLabel}`
   }) + imageUploadModal({ name: 'poster', purpose: 'cover' })
     + imageUploadModal({ name: 'videoUrl', purpose: 'video', kind: 'video' })
     + mediaLibraryModal();
   return adminLayout({
-    title: config.title, currentPage: config.manage.replace('/admin/', ''), admin: ctx.session.username,
+    title: config.title, currentPage: 'topics_manage', admin: ctx.session.username,
     isSuper: ctx.session.isSuper, version: ctx.version, error, content
   });
 }
@@ -343,7 +374,7 @@ async function previewPage(ctx, routeConfig) {
   ${video ? `<a class="btn btn-outline-primary btn-sm mb-3" href="${escapeHtml(assetUrl(ctx.env, video, ''))}" target="_blank" rel="noopener"><i class="bi bi-play-circle" aria-hidden="true"></i> 查看视频</a>` : ''}
   ${extraRows ? `<div class="table-responsive"><table class="table table-sm align-middle"><tbody>${extraRows}</tbody></table></div>` : ''}
   <div class="d-flex gap-2">
-    <a class="btn btn-outline-primary btn-sm" href="${config.edit}?id=${row.id}">返回编辑</a>
+    <a class="btn btn-outline-primary btn-sm" href="${editUrl(config, row.id)}">返回编辑</a>
     <a class="btn btn-outline-secondary btn-sm" href="${TOPIC_MANAGE_URL}?topic=${config.kind}">返回列表</a>
   </div>
 </div></div>`;
@@ -387,8 +418,8 @@ export const routes = [
   { methods: ['GET', 'HEAD'], path: '/admin/outdoor_manage', handler: legacyRedirect('outdoor') },
   { methods: ['GET', 'HEAD'], path: '/admin/motorcycle_rows', handler: rowsFragment },
   { methods: ['GET', 'HEAD'], path: '/admin/outdoor_rows', handler: rowsFragment },
-  { methods: ['GET', 'POST'], path: '/admin/motorcycle_edit', handler: (ctx) => editPage(ctx, CONFIGS.motorcycle) },
-  { methods: ['GET', 'POST'], path: '/admin/outdoor_edit', handler: (ctx) => editPage(ctx, CONFIGS.outdoor) },
+  // 2.7.0: 原来两个编辑页(motorcycle_edit / outdoor_edit)合并成这一条, 项目类型走 ?topic=
+  { methods: ['GET', 'POST'], path: EDIT_URL, handler: editPage },
   { methods: ['GET', 'HEAD'], path: '/admin/motorcycle_preview', handler: (ctx) => previewPage(ctx, CONFIGS.motorcycle) },
   { methods: ['GET', 'HEAD'], path: '/admin/outdoor_preview', handler: (ctx) => previewPage(ctx, CONFIGS.outdoor) },
   { methods: ['POST'], path: '/admin/motorcycle_delete', handler: (ctx) => deleteSubmit(ctx, CONFIGS.motorcycle) },
