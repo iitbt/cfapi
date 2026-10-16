@@ -1,15 +1,20 @@
 /**
- * 素材库弹窗(「从素材库选择」)的**唯一实现**(2026-09-23 抽出): 服务笔记编辑(news_edit)
- * 与专题编辑(topic_edit)两个页面 —— 以前只写在 news_edit 里, 别的页面要用就得复制一份。
+ * 素材库弹窗(「从素材库选择」)的**唯一实现**: 服务笔记编辑(news_edit)与专题编辑(topic_edit)两个页面,
+ * 以前只写在 news_edit 里, 别的页面要用就得复制一份。
  *
  * 页面需要做两件事:
- *   ① 引入标记(模板 _media_library_modal.html 已包含本脚本, 页面里 include 那个文件即可);
+ *   ① 引入标记(弹窗 HTML 由 lib/partials.js 的 mediaLibraryModal 渲染, 外壳统一加本脚本);
  *   ② 若该页面需要"把素材插进富文本", 提供 window.MediaInsertFromLibrary(path, kind);
  *      只往输入框里写值(input 模式)的页面什么都不用提供。
  *
- * 打开弹窗的按钮上用 data-* 说明本次行为(见 _media_library_modal.html 顶部注释):
+ * 打开弹窗的按钮上用 data-* 说明本次行为:
  *   data-media-mode input|editor / data-media-kind image|video /
  *   data-media-lock-kind "1" / data-media-target / data-media-preview
+ *
+ * 列表是**逐层浏览 + 触底加载**: 取数、过滤、排序、分页与行 HTML 全在服务端(lib/mediaBrowse.js,
+ * 与素材库治理页同一份), 这里只负责拼 URL、追加行、画面包屑与子目录按钮。
+ * 为什么不再"一次列出全桶": 那样一撞到单次列举上限(1000)就静默截断, 表现就是"部分图片列不出来";
+ * 而且旧实现把缩略图拼成站点根路径, 凡不在 Worker 直出前缀里的对象一律裂图 —— 现在地址由服务端按媒体公开域拼。
  */
 (function () {
   'use strict';
@@ -19,7 +24,12 @@
   window.__mediaLibraryBound = true;
 
   var mediaModal = document.getElementById('mediaLibraryModal');
-  var mediaListEl = document.getElementById('mediaLibraryList');
+  var mediaListEl = document.getElementById('mediaLibraryList');        // 表格 <tbody>
+  var mediaScrollEl = document.getElementById('mediaLibraryScroll');    // 滚动容器(触底判定的 root)
+  var mediaMoreEl = document.getElementById('mediaLibraryLoadMore');    // 触底哨兵
+  var mediaMoreTextEl = document.getElementById('mediaLibraryLoadMoreText');
+  var mediaCrumbsEl = document.getElementById('mediaLibraryCrumbs');
+  var mediaDirsEl = document.getElementById('mediaLibraryDirs');
   var mediaQueryEl = document.getElementById('mediaLibraryQuery');
   var mediaHintEl = document.getElementById('mediaLibraryHint');
   var mediaManualEl = document.getElementById('mediaLibraryManual');
@@ -28,7 +38,7 @@
   var mediaTitleEl = document.getElementById('mediaLibraryModalLabel');
   var mediaMode = 'editor';   // 由打开弹窗的按钮决定
   var mediaKind = 'image';    // 当前分类(图片/视频): 由按钮决定, 弹窗内可切换
-  // 2026-09-23(v2.3.1): 分类可被"锁定" —— 「图片素材库」只显示图片、「视频素材库」只显示视频。
+  // 分类可被"锁定": 「图片素材库」只显示图片、「视频素材库」只显示视频。
   // 锁定时弹窗里连分类切换按钮都隐藏, 保证"按钮名字写了哪一类, 弹窗里就只有哪一类"。
   var mediaKindLocked = false;
   var mediaTarget = '';       // mode=input: 目标输入框选择器
@@ -36,13 +46,16 @@
   // 素材目录清单由模板下发(真值在 core/storage.js), 手工填写时用它判断"写全了没有"
   var mediaPrefixes = String((mediaModal && mediaModal.getAttribute('data-media-prefixes')) || 'image/,video/,news_uploads/')
     .split(',').map(function (p) { return p.trim(); }).filter(Boolean);
-  var mediaLoaded = {};       // {kind: true}: 每个分类成功拉过一次
-  // 2026-09-23(v2.3.2 修): 按分类缓存**数据**(不只是"拉没拉过"的标记)。
-  // 为什么必须存数据: 原实现只记 mediaLoaded[kind], 于是"切回已拉过的分类"时**跳过加载**,
-  // 而列表 DOM 里还留着上一个分类的行 —— 表现为"点图片素材库却是视频、点视频素材库却是图片",
-  // 必须手动点刷新(刷新直接调 mediaLoad, 不看这个标记)才恢复。现在改为: 有缓存就重画缓存,
-  // 没缓存才请求; 请求响应回来时还会校验分类是否仍是发起时那一类(丢弃过期响应)。
-  var mediaItems = {};        // {kind: {items, accept}}  仅在无关键词筛选时缓存
+  //: 服务端单层列举上限(与 lib/mediaBrowse.js 的 LEVEL_MAX 同值): 超了要在状态行里说清楚, 不能装作列全了
+  var MEDIA_LEVEL_MAX = 1000;
+  var mediaBase = '';         // 媒体公开域(服务端下发): 预览图地址按它拼, 不拼站点根路径
+  var mediaPrefix = '';       // 当前所在目录(带尾斜杠; 空串 = 存储桶最外层)
+  var mediaFolders = [];      // 当前这一层的子目录
+  var mediaPage = 0;          // 已加载到第几页
+  var mediaTotalPages = 1;
+  var mediaTotal = 0;         // 本层命中的素材总数
+  var mediaAccept = [];       // 本层可列出的扩展名
+  var mediaLoading = false;
 
   /** 关掉素材库弹窗(页面的插入函数也用得上, 见文件末尾的 window.MediaLibrary)。 */
   function closeModal() {
@@ -52,127 +65,192 @@
     }
   }
 
-  function mediaHumanSize(bytes) {
-    var n = Number(bytes) || 0;
-    if (n < 1024) { return n + ' B'; }
-    var units = ['KB', 'MB', 'GB', 'TB'], i = -1;
-    do { n = n / 1024; i++; } while (n >= 1024 && i < units.length - 1);
-    return (n >= 100 ? Math.round(n) : Math.round(n * 10) / 10) + ' ' + units[i];
-  }
-
   function mediaSetHint(text, isError) {
     if (!mediaHintEl) { return; }
     mediaHintEl.className = isError ? 'small text-danger mb-2' : 'small text-muted mb-2';
     mediaHintEl.textContent = text || '';
   }
 
-  // 用 DOM 建行(不用字符串拼 HTML): 文件名来自磁盘, 可能含引号/中文, 交给 textContent 最稳
-  function mediaRow(item) {
-    var btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'list-group-item list-group-item-action d-flex align-items-center gap-2';
-    btn.setAttribute('data-media-path', item.path || '');
-    btn.setAttribute('data-media-kind', item.kind || '');
-    // 图片给一张等比缩略展示(视频不做抽帧: 那要额外依赖 ffmpeg): 一眼认出是哪张, 少点错
-    if (item.kind === 'image' && item.path) {
-      var thumb = document.createElement('img');
-      thumb.className = 'media-thumb';
-      thumb.alt = '';
-      // 2.4.0: 派生缩略图已整体移除, 统一用原图(靠 loading=lazy 与加载失败隐藏兜住;
-      // 站点根路径: 编辑页在 /admin/ 下, 不加 '/' 取不到图)。
-      thumb.src = '/' + item.path;
-      thumb.loading = 'lazy';
-      thumb.onerror = function () { this.style.visibility = 'hidden'; };
-      btn.appendChild(thumb);
-    }
-    var left = document.createElement('span');
-    left.className = 'text-break small flex-grow-1';
-    left.textContent = item.name || '';
-    if (item.dir) {
-      var badge = document.createElement('span');
-      badge.className = 'badge bg-secondary ms-1';
-      badge.textContent = item.dir;
-      left.appendChild(badge);
-    }
-    var right = document.createElement('span');
-    right.className = 'text-muted small flex-shrink-0';
-    right.textContent = mediaHumanSize(item.size);
-    btn.appendChild(left);
-    btn.appendChild(right);
-    return btn;
+  /** 对象的父目录(带尾斜杠; 根目录返回空串): 先剥尾斜杠, 否则 'image/' 会算出它自己。 */
+  function mediaParentOf(key) {
+    var body = String(key || '').replace(/\/+$/, '');
+    var at = body.lastIndexOf('/');
+    return at < 0 ? '' : body.slice(0, at + 1);
   }
 
-  function mediaRender(items) {
-    if (!mediaListEl) { return; }
-    mediaListEl.innerHTML = '';
-    if (!items.length) {
-      var empty = document.createElement('div');
-      empty.className = 'text-muted small p-3';
-      empty.textContent = '没有匹配的' + (mediaKind === 'image' ? '图片' : '视频')
-        + '素材。可换个关键词，或改用下面的「手工填写路径」。';
-      mediaListEl.appendChild(empty);
+  // 面包屑/目录按钮一律用 DOM 建节点(不用字符串拼 HTML): 目录名来自磁盘, 可能含引号与中文, 交给 textContent 最稳
+  function mediaCrumb(label, prefix, current) {
+    if (current) {
+      var span = document.createElement('span');
+      span.className = 'fw-semibold';
+      span.textContent = label;
+      return span;
+    }
+    var link = document.createElement('a');
+    link.href = '#';
+    link.setAttribute('data-media-dir', prefix);
+    link.textContent = label;
+    return link;
+  }
+
+  function mediaSep() {
+    var span = document.createElement('span');
+    span.className = 'text-muted mx-1';
+    span.textContent = '/';
+    return span;
+  }
+
+  function mediaDirButton(label, prefix, icon) {
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn btn-sm btn-outline-secondary';
+    button.setAttribute('data-media-dir', prefix);
+    button.innerHTML = '<i class="bi ' + icon + '" aria-hidden="true"></i> ';
+    button.appendChild(document.createTextNode(label));
+    return button;
+  }
+
+  /** 面包屑与子目录按钮: 跟着当前目录换一层, 点任意一段回该层, 「上一级」退一层。 */
+  function mediaRenderNav() {
+    if (mediaCrumbsEl) {
+      mediaCrumbsEl.innerHTML = '';
+      var pieces = String(mediaPrefix || '').split('/').filter(Boolean);
+      mediaCrumbsEl.appendChild(mediaCrumb('存储桶', '', pieces.length === 0));
+      var walked = '';
+      pieces.forEach(function (piece, index) {
+        walked += piece + '/';
+        mediaCrumbsEl.appendChild(mediaSep());
+        mediaCrumbsEl.appendChild(mediaCrumb(piece + '/', walked, index === pieces.length - 1));
+      });
+    }
+    if (!mediaDirsEl) { return; }
+    mediaDirsEl.innerHTML = '';
+    // 面包屑也能回上一层, 但目录一多就要找半天 —— 单独给一个按钮
+    if (mediaPrefix) {
+      mediaDirsEl.appendChild(mediaDirButton('上一级', mediaParentOf(mediaPrefix), 'bi-arrow-up'));
+    }
+    mediaFolders.forEach(function (folder) {
+      mediaDirsEl.appendChild(mediaDirButton(folder.name + '/', folder.key, 'bi-folder2-open'));
+    });
+    if (!mediaDirsEl.children.length) {
+      var none = document.createElement('span');
+      none.className = 'text-muted small';
+      none.textContent = '这个目录下没有子目录';
+      mediaDirsEl.appendChild(none);
+    }
+  }
+
+  /** 触底提示条: 还有下一页就提示可继续滚, 到底了就报已加载多少。 */
+  function mediaSyncMore() {
+    if (!mediaMoreTextEl) { return; }
+    if (mediaPage < mediaTotalPages) {
+      mediaMoreTextEl.innerHTML = '<i class="bi bi-arrow-down-circle" aria-hidden="true"></i> 滚动到底自动加载更多';
       return;
     }
-    var frag = document.createDocumentFragment();
-    items.forEach(function (it) { frag.appendChild(mediaRow(it)); });
-    mediaListEl.appendChild(frag);
+    mediaMoreTextEl.textContent = mediaTotal ? '— 已全部加载 ' + mediaTotal + ' 个素材 —' : '';
   }
 
-  /** 列表底部那行统计/可列出扩展名的提示(按当前分类措辞)。 */
-  function mediaHintFor(count, accept) {
-    mediaSetHint('共 ' + count + ' 个' + (mediaKind === 'image' ? '图片' : '视频')
-      + '素材（按拷入时间倒序，最多显示 500 个）。可列出：'
-      + ((accept || []).join(' / ') || '—'));
+  /** 空态行: 只在第一页没有行时用(服务端给的行 HTML 里不会有它)。 */
+  function mediaEmptyRow() {
+    return '<tr><td colspan="6" class="text-muted py-3">这个目录下没有匹配的'
+      + (mediaKind === 'image' ? '图片' : '视频')
+      + '素材：换个关键词、进上面的子目录, 或用下面的「手工填写路径」。</td></tr>';
+  }
+
+  /** 状态行: 当前位置 + 本层命中数 + 单层上限提示(按当前分类措辞)。 */
+  function mediaHintFor(data) {
+    var label = mediaKind === 'image' ? '图片' : '视频';
+    var parts = [
+      '当前位置：' + (mediaPrefix ? '/' + mediaPrefix : '存储桶根目录'),
+      '本层 ' + (Number(data.levelCount) || 0) + ' 个对象、其中' + label + ' ' + mediaTotal + ' 个',
+      '可列出：' + (mediaAccept.join(' / ') || '—')
+    ];
+    if (data.truncated) {
+      parts.push('这一层超过单层上限 ' + MEDIA_LEVEL_MAX + ' 个, 只列了前一批 —— 用关键词或进子目录缩小范围');
+    }
+    mediaSetHint(parts.join(' · '));
   }
 
   /**
-   * 拉取/重画当前分类的素材列表。
-   * @param {boolean} [force] true = 强制重新请求(刷新按钮、改关键词、用户点分类);
-   *                          false/缺省 = 无关键词且有缓存时**直接重画缓存**(不重扫目录)
+   * 拉取当前目录的某一页。
+   * @param {number}  page   页码(从 1 起)
+   * @param {boolean} append true = 把返回的行追加在已有行后面(触底加载); false = 清空重画
+   *                         (进目录、换分类、改关键词、点刷新都走 false)
    */
-  function mediaLoad(force) {
-    if (!mediaListEl) { return; }
+  function mediaFetch(page, append) {
+    if (!mediaListEl || mediaLoading) { return; }
     var q = mediaQueryEl && mediaQueryEl.value ? mediaQueryEl.value.trim() : '';
-    // 无关键词 + 有该类缓存 → 直接重画。这一步同时修掉"列表停在上一个分类"的老问题:
-    // 每次打开/切到某分类都会走到这里, 保证屏幕上的行与 mediaKind 一致。
-    if (force !== true && !q && mediaItems[mediaKind]) {
-      mediaRender(mediaItems[mediaKind].items);
-      mediaHintFor(mediaItems[mediaKind].items.length, mediaItems[mediaKind].accept);
-      return;
-    }
-    // 记下"这次请求是为哪一类发的": 响应回来时用它判断是否已经过期
+    // 记下这次请求是为哪一类、哪个目录发的: 响应回来时用它判断是否已经过期
     var reqKind = mediaKind;
-    mediaSetHint('正在读取' + (reqKind === 'image' ? '图片' : '视频') + '素材目录…');
+    var reqPrefix = mediaPrefix;
+    mediaLoading = true;
+    if (!append) {
+      mediaListEl.innerHTML = '';
+      mediaSetHint('正在读取素材目录…');
+    }
     var url = '/admin/media_library?kind=' + encodeURIComponent(reqKind)
+      + '&prefix=' + encodeURIComponent(reqPrefix)
+      + '&page=' + encodeURIComponent(page)
       + (q ? '&q=' + encodeURIComponent(q) : '');
     // X-Requested-With: 与后台其它 AJAX 同口径 —— 会话过期时后端回 JSON, 而不是 302 到登录页
     fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
       .then(function (resp) { return resp.json(); })
-      .then(function (d) {
-        if (!d || d.success !== true) { throw new Error((d && d.message) || '读取失败'); }
-        // 无关键词的结果才进缓存(有关键词的结果只反映那一次筛选, 不该被下次打开复用)
-        if (!q) { mediaItems[reqKind] = { items: d.items || [], accept: d.accept || [] }; }
-        mediaLoaded[reqKind] = true;
-        // 关键: 等待期间分类若已改变(用户切了分类/关掉又开另一类), 这次响应**只入缓存不画面**,
-        // 否则会把"图片的结果"画到"视频"的标题下(这正是需要手动刷新才能恢复的根因之一)。
-        if (reqKind !== mediaKind) { return; }
-        mediaRender(d.items || []);
-        mediaHintFor(d.total || 0, d.accept || []);
+      .then(function (data) {
+        mediaLoading = false;
+        if (!data || data.success !== true) { throw new Error((data && data.message) || '读取失败'); }
+        // 关键: 等待期间分类或目录若已改变, 这次响应只丢不画 —— 否则会把上一个目录的行画到新目录下面
+        if (reqKind !== mediaKind || reqPrefix !== mediaPrefix) { return; }
+        mediaBase = data.base || '';
+        mediaAccept = data.accept || [];
+        mediaFolders = data.folders || [];
+        mediaPrefix = data.prefix || '';
+        mediaPage = Number(data.page) || 1;
+        mediaTotalPages = Number(data.totalPages) || 1;
+        mediaTotal = Number(data.total) || 0;
+        if (append) {
+          if (data.rows) { mediaListEl.insertAdjacentHTML('beforeend', data.rows); }
+        } else {
+          mediaListEl.innerHTML = data.rows || mediaEmptyRow();
+        }
+        mediaRenderNav();
+        mediaHintFor(data);
+        mediaSyncMore();
       })
       .catch(function (err) {
-        if (reqKind !== mediaKind) { return; }   // 过期请求的失败也不该影响当前分类的界面
-        mediaRender([]);
+        mediaLoading = false;
+        if (reqKind !== mediaKind || reqPrefix !== mediaPrefix) { return; }   // 过期请求的失败不该影响当前目录
+        if (!append) { mediaListEl.innerHTML = ''; }
         mediaSetHint('读取素材失败：' + ((err && err.message) || '网络异常')
           + '（不影响使用 —— 可直接用下面的「手工填写路径」）', true);
+        mediaSyncMore();
       });
   }
 
-  // 切换分类(图片/视频): 同一份列表结构, 只换请求参数。
-  // force=true(用户主动点分类)一定重新拉; 打开弹窗时按需拉 —— 每个分类本次会话只扫一次目录。
-  // 2026-09-23(v2.3.1): 分类可被按钮**锁定**(图片素材库 / 视频素材库) ——
-  //   fromOpen=true 表示"这是打开弹窗时由按钮指定的分类", 锁定时只有它能生效;
-  //   用户点分类按钮(不带 fromOpen)在锁定态下直接忽略。
-  function mediaSetKind(kind, force, fromOpen) {
+  /** 进目录: 目录变了就从第 1 页重画(已经追加的行属于上一个目录)。 */
+  function mediaEnterDir(prefix) {
+    mediaPrefix = String(prefix || '');
+    mediaFolders = [];
+    mediaFetch(1, false);
+    if (window.a11yAnnounce) { window.a11yAnnounce('进入素材目录 ' + (mediaPrefix || '存储桶')); }
+  }
+
+  /** 触底加载: 哨兵在滚动容器里, 滚到它附近就取下一页(与治理页同一个思路, root 换成弹窗的滚动区)。 */
+  function mediaInitMore() {
+    if (!mediaMoreEl || !mediaScrollEl || !('IntersectionObserver' in window)) { return; }
+    var io = new IntersectionObserver(function (entries) {
+      if (!entries[0].isIntersecting) { return; }
+      if (mediaLoading || mediaPage >= mediaTotalPages) { return; }
+      mediaFetch(mediaPage + 1, true);
+    }, { root: mediaScrollEl, rootMargin: '0px 0px 120px 0px' });
+    io.observe(mediaMoreEl);
+  }
+
+  /**
+   * 切换分类(图片/视频): 同一份列表结构, 只换请求参数。
+   * fromOpen=true 表示"这是打开弹窗时由按钮指定的分类", 锁定时只有它能生效;
+   * 用户点分类按钮(不带 fromOpen)在锁定态下直接忽略。
+   */
+  function mediaSetKind(kind, fromOpen) {
     if (mediaKindLocked && !fromOpen && kind !== mediaKind) { return; }
     mediaKind = kind === 'video' ? 'video' : 'image';
     Array.prototype.forEach.call(mediaKindBtns, function (b) {
@@ -184,10 +262,11 @@
       // 手工填写框的示例跟随分类与目录口径(避免误导: 图片分类下的示例却是 .mp4)
       mediaManualEl.placeholder = mediaKind === 'image' ? 'image/cover_xxx.png' : 'video/video_xxx.mp4';
     }
-    // 2026-09-23(v2.3.2 修): 这里原来是 `if (force || !mediaLoaded[mediaKind]) mediaLoad();` ——
-    // "拉过就不再拉", 但列表 DOM 里仍留着上一个分类的行, 于是切回来时画面与分类不符。
-    // 现在无条件走 mediaLoad: 有缓存就按**当前分类**重画, 没缓存才请求(见 mediaLoad 注释)。
-    mediaLoad(force === true);
+    // 换分类等于从头看: 回存储桶根目录、清掉关键词, 免得"上一个分类的目录位置"带进来
+    mediaPrefix = '';
+    mediaFolders = [];
+    if (mediaQueryEl) { mediaQueryEl.value = ''; }
+    mediaFetch(1, false);
   }
 
   function mediaApply(item) {
@@ -204,8 +283,8 @@
       // 封面这类字段还带预览图: 一并刷新, 否则会出现"地址换了、预览还是旧的"
       var preview = mediaPreview ? document.querySelector(mediaPreview) : null;
       if (preview) {
-        // 同上: 预览也用原图(站点根路径, 编辑页在 /admin/ 下)
-        preview.src = '/' + item.path;
+        // 预览走媒体公开域: 站点根路径只对 Worker 直出的那几个前缀有效, 别的对象会 404
+        preview.src = mediaBase ? mediaBase + '/' + item.path : '/' + item.path;
         preview.classList.remove('d-none');
       }
     } else {
@@ -255,43 +334,50 @@
       mediaMode = attr('data-media-mode') === 'input' ? 'input' : 'editor';
       mediaTarget = attr('data-media-target');
       mediaPreview = attr('data-media-preview');
-      // 2026-09-23(v2.3.1): 「图片素材库」/「视频素材库」这类按钮带 data-media-lock-kind,
+      // 「图片素材库」/「视频素材库」这类按钮带 data-media-lock-kind:
       // 打开后只显示对应类型素材(隐藏分类切换); 标题也写明是哪一类, 免得用户以为还能切。
       mediaKindLocked = attr('data-media-lock-kind') === '1';
-      mediaSetKind(attr('data-media-kind') || 'image', false, true);
+      mediaSetKind(attr('data-media-kind') || 'image', true);
       if (mediaTitleEl) {
         mediaTitleEl.textContent = mediaKindLocked
           ? (mediaKind === 'video' ? '从视频素材库选择' : '从图片素材库选择')
           : '从素材库选择';
       }
     });
-    if (mediaListEl) {
-      mediaListEl.addEventListener('click', function (e) {
-        var el = e.target && e.target.closest ? e.target.closest('[data-media-path]') : null;
-        if (el) {
-          mediaApply({
-            path: el.getAttribute('data-media-path'),
-            kind: el.getAttribute('data-media-kind') || mediaKind
-          });
-        }
+    // 行与目录按钮都在弹窗里: 统一在弹窗上委托一次, 不逐个绑(行是触底加载追加进来的)
+    mediaModal.addEventListener('click', function (event) {
+      var target = event.target;
+      if (!target || !target.closest) { return; }
+      var dirEl = target.closest('[data-media-dir]');
+      if (dirEl) {
+        event.preventDefault();     // 面包屑是 <a href="#">
+        mediaEnterDir(dirEl.getAttribute('data-media-dir') || '');
+        return;
+      }
+      var chooseEl = target.closest('[data-media-choose]');
+      if (!chooseEl) { return; }
+      var row = chooseEl.closest('[data-media-row]');
+      if (!row) { return; }
+      mediaApply({
+        path: row.getAttribute('data-media-pick-key') || '',
+        kind: row.getAttribute('data-media-pick-kind') || mediaKind
       });
-    }
+    });
     Array.prototype.forEach.call(mediaKindBtns, function (b) {
       b.addEventListener('click', function () {
         if (mediaKindLocked) { return; }   // 锁定时不给切(该按钮组此时也已隐藏)
-        mediaSetKind(b.getAttribute('data-media-kind-btn'), true);
+        mediaSetKind(b.getAttribute('data-media-kind-btn'));
       });
     });
-    // 2026-09-23(v2.3.2): 这三处必须**显式传 force=true** ——
-    // 直接写 addEventListener('click', mediaLoad) 会把事件对象当 force 传进去(碰巧是真值),
-    // 搜索框那两处则相反(事件对象不是 true, 会走"缓存优先"而不重新请求, 筛完还是老结果)。
+    // 为什么显式写 false: 直接写 addEventListener('click', mediaFetch) 会把事件对象当 append 传进去
+    // (碰巧是真值), 于是刷新变成"往旧列表后面再追加一页"。
     var reloadBtn = document.getElementById('mediaLibraryReload');
-    if (reloadBtn) { reloadBtn.addEventListener('click', function () { mediaLoad(true); }); }
+    if (reloadBtn) { reloadBtn.addEventListener('click', function () { mediaFetch(1, false); }); }
     if (mediaQueryEl) {
       mediaQueryEl.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') { e.preventDefault(); mediaLoad(true); }
+        if (e.key === 'Enter') { e.preventDefault(); mediaFetch(1, false); }
       });
-      mediaQueryEl.addEventListener('search', function () { mediaLoad(true); });  // 「×」清空也重新拉
+      mediaQueryEl.addEventListener('search', function () { mediaFetch(1, false); });  // 「×」清空也重新拉
     }
     var manualBtn = document.getElementById('mediaLibraryManualInsert');
     if (manualBtn) {
@@ -309,6 +395,7 @@
         if (e.key === 'Enter') { e.preventDefault(); manualBtn.click(); }
       });
     }
+    mediaInitMore();
   })();
 
   // 给页面用的小 API(编辑页"插入失败"时把原因写回弹窗、插完关弹窗)

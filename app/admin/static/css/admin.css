@@ -261,6 +261,9 @@
    固定 40×40 并 object-fit: cover, 避免长宽比各异的素材把行高撑得参差不齐。 */
 .media-thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 4px;
                background: #f5f5f5; flex-shrink: 0; }
+/* 素材库弹窗的目录浏览区: 表格自带滚动, 滚到底由 media_library.js 取下一页。
+   高度按视口给(50vh), 小屏笔记本上也留得下几行。 */
+.media-library-scroll { max-height: 50vh; overflow: auto; }
 /* 页面底部操作按钮组: 居中(2026-09-23 需求一)。
    预览页的两个「返回」按钮用它居中; 抽到共用样式, 各页不必再各写一份 flex 组合。 */
 .page-actions-center { display: flex; flex-wrap: wrap; justify-content: center; gap: .5rem; }

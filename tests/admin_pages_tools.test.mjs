@@ -1087,11 +1087,18 @@ test('存储桶(2.4.6): 逐层浏览整个桶(根层目录/深层对象/引用�
   const avatarLevel = await (await at('avatar/')).text();
   assert.ok(avatarLevel.includes('value="avatar/u.png"'), '站内自有目录也能浏览(2.4.6)');
   assert.ok(avatarLevel.includes('>—</span>'), '非素材路径不做引用扫描(引用列 —)');
-  // 素材选择器仍然只给素材(image/+news_uploads/+根目录树): 站点图标与头像不进选择器
+  // 素材选择器: 逐层浏览同一个桶, 只是把站内自有目录(头像/站点图标)整棵子树挡在外面
   const library = await (await get('/admin/media_library?kind=image', env, cookie)).json();
-  const paths = (library.items || []).map((one) => one.path);
-  assert.ok(paths.includes('logo.png') && paths.includes('素材/子/深图.png'), '选择器含根目录整块');
-  assert.ok(!paths.includes('avatar/u.png') && !paths.includes('images/icon.png'), '站点图标与头像不进素材选择器');
+  assert.equal(library.success, true);
+  assert.equal(library.prefix, '', '默认从存储桶根目录开始');
+  assert.ok(library.rows.includes('logo.png'), '选择器根层给根下素材');
+  assert.ok(library.folders.some((one) => one.key === '素材/'), '选择器根层给子目录');
+  assert.ok(!library.folders.some((one) => one.key === 'avatar/' || one.key === 'images/'),
+    '站点图标与头像目录不进素材选择器');
+  const libraryDeep = await (await get(`/admin/media_library?kind=image&prefix=${encodeURIComponent('素材/子/')}`, env, cookie)).json();
+  assert.ok(libraryDeep.rows.includes('素材/子/深图.png'), '进子目录才看得到深层素材');
+  const libraryAvatar = await (await get(`/admin/media_library?kind=image&prefix=${encodeURIComponent('avatar/')}`, env, cookie)).json();
+  assert.equal(libraryAvatar.success, false, '手填 URL 也绕不进站内自有目录');
 
   // ④ 真上传一个"根目录 + 选文件夹"的对象, 再走详情 / 改名(桩的 head 只认 put 过的对象)
   const form = new FormData();

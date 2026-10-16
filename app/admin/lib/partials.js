@@ -251,11 +251,13 @@ export function imageUploadModal(options = {}) {
 }
 
 // 素材库弹窗: 全后台只有一个(打开它的按钮用 data-media-* 描述行为)
+// 列表是"逐层浏览 + 触底加载"(取数/分页与素材治理页共用 lib/mediaBrowse.js): 面包屑与子目录按钮在上、表格在下。
+// 不再一次性列出整个桶 —— 旧实现撞到单次列举上限(1000)就静默截断, 表现正是"部分图片列不出来"。
 export function mediaLibraryModal() {
   // data-media-prefixes: 素材目录清单下发到前端(手工填路径时判断"写全目录没有"), 真值在 core/storage.js
   return `<div class="modal fade" id="mediaLibraryModal" tabindex="-1" aria-labelledby="mediaLibraryModalLabel"
      data-media-prefixes="${escapeHtml(MEDIA_PREFIXES.join(','))}">
-  <div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable"><div class="modal-content">
     <div class="modal-header">
       <h6 class="modal-title" id="mediaLibraryModalLabel">从素材库选择</h6>
       <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
@@ -270,14 +272,31 @@ export function mediaLibraryModal() {
         </button>
       </div>
       <div class="input-group search-group mb-2">
-        <label class="visually-hidden" for="mediaLibraryQuery">按文件名筛选素材</label>
-        <input type="search" class="form-control form-control-sm" id="mediaLibraryQuery" placeholder="按文件名筛选（如 封面、摩旅、news）">
+        <label class="visually-hidden" for="mediaLibraryQuery">按文件名或目录筛选素材</label>
+        <input type="search" class="form-control form-control-sm" id="mediaLibraryQuery" placeholder="按文件名/目录筛选（如 封面、摩旅、news_uploads）">
         <button type="button" class="btn btn-sm btn-outline-secondary" id="mediaLibraryReload">
           <i class="bi bi-arrow-clockwise" aria-hidden="true"></i> 刷新
         </button>
       </div>
       <div class="small text-muted mb-2" id="mediaLibraryHint" role="status" aria-live="polite"></div>
-      <div class="list-group" id="mediaLibraryList" style="max-height:52vh;overflow:auto"></div>
+      <nav class="small mb-2" id="mediaLibraryCrumbs" aria-label="当前素材目录"></nav>
+      <div class="d-flex flex-wrap gap-2 mb-2" id="mediaLibraryDirs" role="group" aria-label="素材子目录"></div>
+      <div class="table-responsive media-library-scroll" id="mediaLibraryScroll">
+        <table class="table table-hover align-middle text-center mb-0" aria-label="素材列表">
+          <thead class="table-light"><tr>
+            <th scope="col">预览</th>
+            <th scope="col">文件</th>
+            <th scope="col">类型</th>
+            <th scope="col">大小</th>
+            <th scope="col">修改时间</th>
+            <th scope="col" class="text-end">操作</th>
+          </tr></thead>
+          <tbody id="mediaLibraryList"></tbody>
+        </table>
+        <div class="text-center text-muted small py-2" id="mediaLibraryLoadMore">
+          <span id="mediaLibraryLoadMoreText"></span>
+        </div>
+      </div>
       <hr>
       <label class="form-label small" for="mediaLibraryManual">或手工填写素材路径</label>
       <div class="input-group">

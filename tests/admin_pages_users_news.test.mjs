@@ -521,7 +521,7 @@ test('上传: 视频素材落 video/ 目录, 图片目录不混进视频', async
   assert.deepEqual(state.puts, [body.url]);
 });
 
-test('素材库: 新目录与历史目录一起列, 头像/异类不混进来(2.4.0 起历史缩略图也照列)', async () => {
+test('素材库: 逐层浏览(根层只给目录、进目录才看对象), 头像与异类不混进来', async () => {
   const { env } = makeAdminEnv({
     mediaObjects: [
       { key: 'image/new.png', size: 30, uploaded: '2026-10-05T00:00:00Z' },
@@ -533,21 +533,29 @@ test('素材库: 新目录与历史目录一起列, 头像/异类不混进来(2.
     ]
   });
   const cookie = await loginCookie(env);
-  const images = await (await get('/admin/media_library?kind=image', env, cookie)).json();
-  assert.equal(images.success, true);
-  // 2.4.0: 缩略图规则移除后, 桶里历史遗留的 _thumb 对象就是普通素材(出现在清单里才能被清理)
-  // 排序: 时间倒序, 同时间按名字(`_` 比字母小, 所以 _thumb 那条排在 a.png 前)
-  assert.deepEqual(images.items.map((item) => item.name), ['new.png', '_thumb/480/a.webp', 'a.png'],
-    '新目录在前(按时间倒序)、历史缩略图照列、视频不混进图片、头像不参与素材库');
-  // 前端靠这两个字段画预览与目录徽章, 缺了会"列表里没有图"
-  assert.deepEqual(images.items.map((item) => item.kind), ['image', 'image', 'image']);
-  assert.deepEqual(images.items.map((item) => item.dir), ['image', 'news_uploads', 'news_uploads'],
-    '历史缩略图那一条的目录仍是 news_uploads(它就是一个普通对象)');
-  assert.ok(images.accept.includes('png'));
+  const lib = (query) => get(`/admin/media_library?${query}`, env, cookie).then((res) => res.json());
 
-  const videos = await (await get('/admin/media_videos', env, cookie)).json();
-  assert.deepEqual(videos.items.map((item) => item.name), ['new.mp4', 'moto.mp4']);
-  assert.deepEqual(videos.items.map((item) => item.dir), ['video', 'news_uploads']);
+  // 根层: 只列"当前这一层"的目录与对象 —— 素材都在目录里, 所以根层没有图片;
+  // 站内自有的 avatar/(头像)整棵子树不给(选择器不是桶浏览器)
+  const root = await lib('kind=image');
+  assert.equal(root.success, true);
+  assert.equal(root.prefix, '');
+  assert.deepEqual(root.folders.map((one) => one.key).sort(), ['image/', 'news_uploads/', 'video/']);
+  assert.equal(root.total, 0, '根层没有图片对象');
+  assert.ok(root.accept.includes('png'));
+
+  // 分类在本层内生效: 图片层里只有图片, 视频不混进来
+  const imageLevel = await lib('kind=image&prefix=' + encodeURIComponent('image/'));
+  assert.ok(imageLevel.rows.includes('image/new.png'), '图片分类列出该层图片');
+  assert.equal((await lib('kind=image&prefix=' + encodeURIComponent('video/'))).total, 0, '图片分类不把视频算进来');
+  const videoLevel = await lib('kind=video&prefix=' + encodeURIComponent('video/'));
+  assert.ok(videoLevel.rows.includes('video/new.mp4'), '视频分类列出该层视频');
+  // 旧地址 media_videos 与 kind=video 等价
+  assert.ok((await (await get('/admin/media_videos?prefix=' + encodeURIComponent('video/'), env, cookie)).json())
+    .rows.includes('video/new.mp4'), '旧地址 media_videos 仍是视频分类');
+  // 历史遗留的 _thumb 对象就是普通素材(出现在清单里才能被清理), 再进一层才看得到
+  const thumbLevel = await lib('kind=image&prefix=' + encodeURIComponent('news_uploads/_thumb/480/'));
+  assert.ok(thumbLevel.rows.includes('news_uploads/_thumb/480/a.webp'), '历史缩略图照列');
 });
 
 const RECYCLE_ROW = {

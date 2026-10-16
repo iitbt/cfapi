@@ -46,6 +46,10 @@
 //     与进度条同一份队列(等待/上传中/成功/失败都在行内显示, 失败仍可重试/跳过)。
 //   · **目录按钮** —— 原先写死 存储桶根目录/image//video//news_uploads/ 五个; 现在跟着当前位置动态一层
 //     (常态 = 存储桶根目录 + 根下子目录, 进了子目录就换成它的子目录), 返回上一层仍用面包屑或「上一级」。
+// 2.7.1 变化(抽共用, 页面行为不变):
+//   · 逐层列举 + 类型/关键词过滤 + 排序 + 分页, 以及"预览格 + 类型/大小/修改时间三格"抽到 lib/mediaBrowse.js,
+//     与素材选择器(素材库弹窗)共用一份 —— 两处的列口径、预览地址规则、上传时间格式因此不会各走各的;
+//   · 行里的修改时间由 fmtDatetime(new Date(...)) 换成共用的 fmtUploadTime(北京时间, 不依赖运行时区)。
 import { escapeHtml } from '../../core/html.js';
 import { settings } from '../../core/config.js';
 import { all } from '../../core/db.js';
@@ -56,12 +60,16 @@ import {
   mediaPrefixOf, moveObject, relPathsIn, removeObjects
 } from '../../core/storage.js';
 import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES } from '../lib/mediaUpload.js';
+import {
+  LEVEL_MAX, SORT_CHOICES, browseLevel, fmtUploadTime, kindOfFile, mediaBaseOf, mediaUrlOf, metaCells,
+  parentOf, previewCell
+} from '../lib/mediaBrowse.js';
 import { adminLayout } from '../lib/layout.js';
 import {
   backButton, deleteConfirmCard, filterButtons, listFoot, listMeta, listToolbar, pageHeader,
   pagerScript, searchBar, searchInput, searchSelect, selectField, staticScript, textField
 } from '../lib/partials.js';
-import { PER_PAGE, auditLog, fmtDatetime, strOf, urlenc } from '../lib/utils.js';
+import { PER_PAGE, auditLog, strOf, urlenc } from '../lib/utils.js';
 import { json, redirect } from '../lib/http.js';
 
 const LIST_URL = '/admin/media_manage';
@@ -75,9 +83,6 @@ const UPLOAD_URL = '/admin/image_upload';
 //: 一次批量最多几个: 一批 = 9 条引用扫描(D1, 并发) + 1 次 R2 批量删除;
 //  免费套餐单请求子请求上限 50, 留余量给列表列举, 所以封在 20。
 const BATCH_MAX = 20;
-//: 列表里直接给原图预览的体积上限(缩略图移除后的折中): 小图直出看得见, 大图给占位,
-//  否则一页 10 条几十 MB 的原图会拖慢治理页(详情页仍可看原图/视频)。
-const PREVIEW_INLINE_MAX = 512 * 1024;
 
 //: 根目录(存储桶最外层, 不带任何前缀)在**上传卡片**里的表示值:
 //  空串已经被"没传 = 默认目录"占用, 所以另取一个哨兵值; 上传接口也认这个 `/`(见 lib/mediaUpload 的 safeTargetDir)。
@@ -91,19 +96,8 @@ const KIND_CHOICES = [['all', '全部类型'], ['image', '图片'], ['video', '�
 //: 目录级移动一次最多几个对象: 每个对象 = head + get + put + delete(4 次 R2 子请求),
 //  免费套餐单请求 50 次子请求, 10 个 = 40 次, 留余量给列举与引用扫描(超出会提示"还有 N 个, 可再次提交")。
 const DIR_MOVE_MAX = 10;
-//: 单层列举上限(R2 单次 list 上限就是 1000): 超过只列前 1000 个, 页面会提示用前缀缩小范围
-const LEVEL_MAX = 1000;
 //: 目录级操作(移动/删除)的确认与执行端点
 const DIR_URL = '/admin/media_manage_dir';
-
-//: 排序选项(与旧站 _SORT_CHOICES 同口径)
-const SORT_CHOICES = [
-  ['time_desc', '最新优先'],
-  ['time_asc', '最早优先'],
-  ['size_desc', '体积从大到小'],
-  ['size_asc', '体积从小到大'],
-  ['name_asc', '文件名 A→Z']
-];
 
 //: 其它引用来源(表, 列, 中文名) —— 只列"可能装素材相对路径的列"(与旧站 _OTHER_REF_SOURCES 一致)
 const OTHER_REF_SOURCES = [
@@ -278,17 +272,6 @@ function singleKeys(rawPath) {
   return checked.ok ? [checked.key] : [];
 }
 
-/** 对象键的父目录(带尾斜杠; 桶根返回空串)。 */
-function parentOf(key) {
-  const slash = String(key || '').lastIndexOf('/');
-  return slash < 0 ? '' : String(key).slice(0, slash + 1);
-}
-
-/** 文件类型: 按扩展名判(image/video/other), 与素材库口径一致(kindOfExt)。 */
-function kindOfFile(key) {
-  return kindOfExt(extOf(String(key || ''))) || 'other';
-}
-
 /**
  * 这个键是不是"素材"(决定要不要做引用扫描、以及引用列显示什么):
  *   · 素材目录下的(`image/`、`video/`、`news_uploads/`)一律算(历史目录里可能混着非媒体文件, 但仍按素材口径查);
@@ -299,17 +282,6 @@ function isMediaKey(key) {
   const text = String(key || '');
   if (mediaPrefixOf(text)) return true;
   return isRootTreePath(text) && Boolean(kindOfExt(extOf(text)));
-}
-
-/** 本层里的对象排序(2.4.6): 与旧的 sortItems 同口径, 只是数据换成 {key,name,size,mtime}。 */
-function sortFiles(items, sort) {
-  const list = items.slice();
-  if (sort === 'time_asc') list.sort((a, b) => a.mtime - b.mtime || a.name.localeCompare(b.name));
-  else if (sort === 'time_desc') list.sort((a, b) => b.mtime - a.mtime || a.name.localeCompare(b.name));
-  else if (sort === 'size_desc') list.sort((a, b) => b.size - a.size || a.name.localeCompare(b.name));
-  else if (sort === 'size_asc') list.sort((a, b) => a.size - b.size || a.name.localeCompare(b.name));
-  else list.sort((a, b) => a.name.localeCompare(b.name));
-  return list;
 }
 
 /** 面包屑 + 「上一级」(2.4.6): 每一段都可点回该层; 根目录就是存储桶本身。 */
@@ -480,54 +452,51 @@ const ROWS_URL = '/admin/media_manage_rows';
 
 /**
  * 目录浏览取数(2.4.6, 取代 2.4.1~2.4.5 的"全桶素材清单"):
- *   · **一次列举当前这一层**(前缀 + `delimiter: '/'`): 拿到子目录与直接对象 —— 按需加载, 不再全桶扫描;
- *   · 过滤(类型/关键词)、排序、分页都在**本层**内做(语义就是"当前目录里的这些对象");
+ *   · 逐层列举与"类型/关键词过滤 + 排序 + 分页"共用 lib/mediaBrowse.js 的 browseLevel(与素材选择器同一份);
  *   · 引用: 只有本层确实含素材键时才扫(素材目录里或根目录树里), 默认只查**本页**那几条(省 9 条 D1 查询);
  *     带"引用状态"筛选时才查本层全部(否则没法分页);
- *   · `truncated` = 这一层超过 LEVEL_MAX(1000) 个, 页面会提示用前缀/关键词缩小范围。
+ *   · `truncated` = 这一层超过单层上限(1000) 个, 页面会提示用前缀/关键词缩小范围。
  */
 async function browseQuery(ctx) {
-  const rawPrefix = strOf(ctx.query.prefix);
-  const prefixCheck = rawPrefix === '' ? { ok: true, key: '' } : checkObjectKey(rawPrefix, { asDir: true });
-  const prefix = prefixCheck.ok ? prefixCheck.key : '';
-  const q = strOf(ctx.query.q).toLowerCase();
-  const kind = KIND_CHOICES.some(([value]) => value === strOf(ctx.query.kind)) ? strOf(ctx.query.kind) : 'all';
-  const sort = SORT_CHOICES.some(([value]) => value === strOf(ctx.query.sort)) ? strOf(ctx.query.sort) : 'name_asc';
   const ref = strOf(ctx.query.ref) === 'used' ? 'used' : strOf(ctx.query.ref) === 'unused' ? 'unused' : '';
-  const wantsPage = Math.max(1, Number(strOf(ctx.query.page)) || 1);
-
-  const level = await listLevel(ctx.env, prefix, { limit: LEVEL_MAX });
-  let files = level.objects;
-  if (kind !== 'all') files = files.filter((one) => kindOfFile(one.key) === kind);
-  if (q) files = files.filter((one) => one.key.toLowerCase().includes(q));
-  // 浏览 avatar/、站点资源这类目录时不做引用扫描(白花 9 条 D1 查询)
-  const mediaish = files.some((one) => isMediaKey(one.key));
+  // 引用扫描的结果由 prepare 里回填(见下), 页面与行片段都要用, 所以放在这个作用域
+  let mediaish = false;
   let refs = {};
   let refsOk = true;
-  if (mediaish && ref) {
-    const scan = await scanReferences(ctx.env, files.map((one) => one.key));
-    refs = scan.refs;
-    refsOk = scan.ok;
-  }
-  const sorted = sortFiles(files, sort);
-  // 没扫全时不做"已引用/未引用"筛选: 那会把整层都当成"未引用", 比不筛更误导
-  const filtered = ref && refsOk
-    ? sorted.filter((one) => (ref === 'used' ? (refs[one.key] || []).length > 0 : (refs[one.key] || []).length === 0))
-    : sorted;
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PER_PAGE));
-  const page = Math.min(wantsPage, totalPages);
-  const pageItems = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE);
+  const data = await browseLevel(ctx.env, {
+    prefix: strOf(ctx.query.prefix),
+    q: strOf(ctx.query.q),
+    kind: KIND_CHOICES.some(([value]) => value === strOf(ctx.query.kind)) ? strOf(ctx.query.kind) : 'all',
+    sort: strOf(ctx.query.sort),
+    page: strOf(ctx.query.page),
+    perPage: PER_PAGE,
+    // 分页前: 只有本层确实含素材键才扫引用(浏览 avatar/、站点资源这类目录白花 9 条 D1 查询);
+    // 带"引用状态"筛选时必须先扫本层全部再筛, 否则分页数对不上; 不带筛选则只扫本页(见函数末尾)
+    prepare: async (files) => {
+      mediaish = files.some((one) => isMediaKey(one.key));
+      if (!mediaish || !ref) return files;
+      const scan = await scanReferences(ctx.env, files.map((one) => one.key));
+      refs = scan.refs;
+      refsOk = scan.ok;
+      // 没扫全时不做筛选: 那会把整层都当成"未引用", 比不筛更误导
+      if (!refsOk) return files;
+      return files.filter((one) => (ref === 'used'
+        ? (refs[one.key] || []).length > 0
+        : (refs[one.key] || []).length === 0));
+    }
+  });
+  const { pageItems } = data;
   if (mediaish && !ref) {
     const scan = await scanReferences(ctx.env, pageItems.map((one) => one.key));
     refs = scan.refs;
     refsOk = scan.ok;
   }
-  return {
-    prefix, q, kind, sort, ref, folders: level.folders, filtered, totalPages, page, pageItems, refs, refsOk,
-    truncated: level.truncated, levelCount: level.objects.length, mediaish,
-    base: String(settings(ctx.env).mediaBase || '').replace(/\/+$/, ''),
+  return Object.assign({}, data, {
+    ref, refs, refsOk, mediaish,
+    // 行渲染仍按"过滤后的本层"取数(listPage 的统计条与全选都以它为准)
+    filtered: data.files,
     currentUrl: ctx.url.pathname + ctx.url.search
-  };
+  });
 }
 
 //: 文件行 HTML(首屏与触底加载共用): 必须一处渲染, 否则两处的列/文案会各走各的
@@ -535,7 +504,6 @@ function levelRows(files, data) {
   return files.map((item) => {
     const itemRefs = data.refs[item.key] || [];
     const recycle = itemRefs.some((ref) => ref.recycle);
-    const kind = kindOfFile(item.key);
     const refCell = !data.mediaish
       ? '<span class="text-muted">—</span>'
       : (data.refsOk === false
@@ -544,12 +512,9 @@ function levelRows(files, data) {
         : (itemRefs.length
           ? `<a href="${REFS_URL}?path=${urlenc(item.key)}" target="_blank" rel="noopener">${itemRefs.length} 处</a>${recycle ? ' <span class="badge text-bg-warning">含回收站</span>' : ''}`
           : '<span class="text-muted">未引用</span>'));
-    const url = data.base ? `${data.base}/${item.key}` : '';
-    // 2.4.0: 缩略图没了 —— 小图(≤512KB)直接给原图预览, 其它给图标;
-    // 免得"打开治理页顺带下几十 MB 原图"; 要看原图/视频点「详情」。
-    const thumb = kind === 'image' && item.size <= PREVIEW_INLINE_MAX && url
-      ? `<img src="${escapeHtml(url)}" class="cover-thumb" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`
-      : `<span class="text-muted small"><i class="bi ${kind === 'video' ? 'bi-camera-video' : (kind === 'image' ? 'bi-image' : 'bi-file-earmark')}" aria-hidden="true"></i> ${kind === 'image' ? '无预览' : (kind === 'video' ? '视频' : '文件')}</span>`;
+    // 预览格与类型/大小/修改时间三格走共用实现(2.7.1): 地址一律媒体公开域, 展示项与选择器逐字一致
+    const url = mediaUrlOf(data.base, item.key);
+    const thumb = previewCell(data.base, item, 'cover-thumb');
     const open = url
       ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(item.key)}</a>`
       : escapeHtml(item.key);
@@ -558,9 +523,7 @@ function levelRows(files, data) {
       <td><input type="checkbox" class="form-check-input" data-media-pick value="${escapeHtml(item.key)}" aria-label="选择 ${escapeHtml(item.key)}"></td>
       <td>${thumb}</td>
       <td class="cell-title"><div class="text-truncate" title="${escapeHtml(item.key)}">${open}</div></td>
-      <td class="text-nowrap">${kind === 'image' ? '图片' : (kind === 'video' ? '视频' : '<span class="text-muted">其它</span>')}</td>
-      <td class="text-nowrap">${fmtBytes(item.size)}</td>
-      <td class="text-nowrap">${escapeHtml(fmtDatetime(item.uploaded ? new Date(item.mtime) : ''))}</td>
+      ${metaCells(item)}
       <td class="text-nowrap"><code class="small">${escapeHtml(String(item.etag || '').slice(0, 10))}</code></td>
       <td>${refCell}</td>
       <td class="text-end text-nowrap">
@@ -775,8 +738,8 @@ async function detailPage(ctx) {
   const scan = media ? await scanReferences(ctx.env, [key]) : { ok: true, refs: {} };
   const refs = scan.refs[key] || [];
   const meta = head.httpMetadata || {};
-  const base = String(settings(ctx.env).mediaBase || '').replace(/\/+$/, '');
-  const url = base ? `${base}/${key}` : '';
+  const base = mediaBaseOf(ctx.env);
+  const url = mediaUrlOf(base, key);
   const kind = kindOfFile(key);
   const parent = parentOf(key);
   // 2.4.0: 缩略图功能整体移除, 预览直接用原图(不再探测 <目录>_thumb/)
@@ -793,7 +756,7 @@ async function detailPage(ctx) {
       <a class="btn btn-sm btn-outline-secondary ms-2" href="${LIST_URL}?prefix=${urlenc(parent)}">去这一层</a>`],
     ['类型', kind === 'image' ? '图片' : (kind === 'video' ? '视频' : '<span class="text-muted">其它（不是图片/视频）</span>')],
     ['大小', fmtBytes(head.size)],
-    ['修改时间', escapeHtml(fmtDatetime(head.uploaded ? new Date(head.uploaded) : ''))],
+    ['修改时间', escapeHtml(fmtUploadTime({ uploaded: head.uploaded }))],
     ['Content-Type', escapeHtml(String(meta.contentType || '（对象没记类型）'))],
     ['缓存口径', `<code>${escapeHtml(String(meta.cacheControl || '（未设置，用公开域默认值）'))}</code>`],
     ['ETag', `<code>${escapeHtml(String(head.etag || ''))}</code>`],

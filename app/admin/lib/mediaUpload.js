@@ -3,7 +3,7 @@
 // 白名单与大小上限照旧站 core/storage.py: 图片 8MB / 视频 64MB, 并且**不看扩展名只看内容**(前端 accept 可绕过)
 import { settings } from '../../core/config.js';
 import {
-  CACHE_CONTROL_MEDIA, IMAGE_PREFIX, VIDEO_PREFIX, listNewsMedia, mediaContentType, safeRelPath
+  CACHE_CONTROL_MEDIA, IMAGE_PREFIX, VIDEO_PREFIX, mediaContentType, safeRelPath
 } from '../../core/storage.js';
 
 export const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
@@ -214,17 +214,7 @@ export async function saveUpload(env, options) {
   return { ok: true, url: key, kind, message: '上传成功' };
 }
 
-// 素材库列举: 复用核心层的列举(已覆盖 image/ 与 video/ 两个新目录 + 历史 news_uploads/, 并带 kind/dir)
-export async function listMedia(env, kind, query) {
-  const wanted = kind === 'video' ? 'video' : 'image';
-  const keyword = String(query || '').trim().toLowerCase();
-  const listed = await listNewsMedia(env, wanted);
-  if (listed.failed) return { success: false, message: '读取素材失败，请稍后重试' };
-  const items = keyword
-    ? listed.items.filter((item) => item.name.toLowerCase().includes(keyword))
-    : listed.items;
-  const accept = wanted === 'video' ? LISTABLE_VIDEO_EXTS : LISTABLE_IMAGE_EXTS;
-  return { success: true, kind: wanted, items, total: items.length, accept, truncated: listed.truncated };
-}
-
+// 2.7.1: 原来的 listMedia(全桶扫描的素材清单)已删除 —— 素材选择器与治理页一起改走
+// lib/mediaBrowse.js 的逐层浏览, 不再有第二条"列素材"的实现(全桶扫描留给 core/storage.js 的
+// listNewsMedia: 占用统计还在用它)。
 // 2.4.0: 缩略图相关的导出(thumbKeyOf 转发、thumbUrlOf)已删除 —— 素材库与弹窗直接用原图。

@@ -1,6 +1,6 @@
 # 狼牙极限运动笔记 · 主后端（cfapi / Cloudflare Workers）
 
-> **版本**：`v2.7.0` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
+> **版本**：`v2.7.1` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
 > **主域名**：**https://lyjx.250036.xyz**（对外 API + `/admin` 管理后台同一域名）。
 > **素材域名**：**https://storage.250036.xyz**（R2 公开域，与接口域名分离）。
 > **定位**：微信小程序「狼牙极限运动笔记」的**主要后端**。今后小程序的开发、接口变更、联调、发版均以本工程为准；FastAPI 工程（`../fastapi/`）为**备用后端**。
@@ -199,7 +199,7 @@ cfapi/
 | `comments.js` | 留言管理：列表 / 通过·拒绝·删除 |
 | `dbTools.js` | 数据库管理（表浏览 / 字段总览 / 结构 / 数据编辑 / SQL 执行） |
 | `deleteConfirm.js` | 通用删除确认页（先摊开影响面再提交） |
-| `media.js` | 素材上传 `POST /admin/image_upload` + 素材库 `GET /admin/media_library` |
+| `media.js` | 素材上传 `POST /admin/image_upload` + 素材库 `GET /admin/media_library`（**2.7.1 起逐层浏览**：可选 `prefix`/`q`/`page`，返回 `rows`(渲染好的行 HTML)/`folders`/`prefix`/`page`/`totalPages`/`hasMore`/`total`/`levelCount`/`truncated`/`base`/`accept`；只带 `kind` 的老调用照旧可用。取数/过滤/排序/分页与行结构都在 `lib/mediaBrowse.js`，与素材库治理页同一份） |
 | `mediaGovern.js` | 素材库治理（R2 桶资源管理器：浏览/改名/复制/删除/引用检查，仅超管）。**目录按钮 2.6.5 起跟着当前位置动态一层**（常态 =「存储桶根目录」+ 根下子目录，进了子目录就换成它的子目录；原固定的 `image/`/`video/`/`news_uploads/` 按钮并入这一层），**上传卡片的「目标路径」下拉 2.6.6 起只列桶根下的一级子目录**（2.6.5 曾扫全桶把各级目录都列出来，选项太长所以收回），**2.6.7 起与「存储桶根目录」后面那排按钮逐字一致**（站在根目录直接复用本页 `browseQuery` 的根层数据，不再另扫一份、不再多一层"站内自有目录不进"的过滤），更深的目录用「其它（手动填写）」写。**2.6.8 起上传卡片改两处**：命名默认值从「自动生成」变成「保留原名」（重名顺延 `_1`/`_2`，「自动生成」仍是可选项），并新增一份可滚动的**待上传清单**（缩略图/图标 + 相对路径 + 大小/类型/状态，可按单个文件或整个文件夹移除） |
 | `news.js` | 笔记管理：列表 / 发布编辑 / 预览 / 软删 / 复制 / 回收站 / 恢复 / 彻底删 |
 | `notices.js` | 通知公告：列表（可按接收人筛选 + **多选批量删除**，2.6.1）/ 编辑 / 删除。**接收人四档**（所有用户 / 内部测试用户 / 普通用户 / 指定用户）仅超管可改；选「指定用户」时用 `name=action value=search_user` 的普通提交按钮重画本页来搜人、用每位后面的「移除」按钮摘掉收件人（都不引入弹窗与接口），**2.6.0 起可一次指定多位**（同名多值 `target_user_id`，由 `app/admin/index.js` 的 `readForm` 拼成逗号串），非超管提交时保留库里的原接收人 |
@@ -216,7 +216,7 @@ cfapi/
 | `db_tools.js` | 数据库管理页：复制、表名本地筛选、单行 JSON/INSERT/UPDATE、SQL 控制台（快捷语句/历史/结果） |
 | `news_batch.js` | 笔记管理页：批量勾选与提交 |
 | `infinite_scroll.js` | 触底加载 `AdminListLoader`（各列表页共用，由 `pagerScript` 引入） |
-| `admin-shell.js` / `status-toggle.js` / `sidebar-groups.js` / `live_time.js` / `image_upload.js` / `media_library.js` | 外壳交互 / 状态就地切换 / 侧栏分组 / 相对时间 / 上传弹窗 / 素材库弹窗 |
+| `admin-shell.js` / `status-toggle.js` / `sidebar-groups.js` / `live_time.js` / `image_upload.js` / `media_library.js` | 外壳交互 / 状态就地切换 / 侧栏分组 / 相对时间 / 上传弹窗 / 素材库弹窗（2.7.1 起逐层浏览 + 触底加载：面包屑与子目录按钮 + 表格，滚到底取下一页） |
 
 ### 6.5 `app/sql/`（建表脚本，按序执行）
 
@@ -402,7 +402,7 @@ cfapi/
 | --- | --- | --- |
 | 技术栈 | Cloudflare Workers + D1 + R2，零运行时依赖 | Python + FastAPI + SQLite/MySQL（双驱动） |
 | 域名 | `lyjx.250036.xyz` | `api0.250036.xyz`、`api.250036.xyz` |
-| 版本号 | `API_VERSION=2.6.1` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.5.4`） |
+| 版本号 | `API_VERSION=2.7.1` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.5.4`） |
 | 接口 | 34 条业务接口已全量实现并自测 | 历史「唯一后端」，接口同构可互切（**缺 `/user/apply_test` 与 `test_applied`**） |
 | 后台 | 17 页面（字符串拼 HTML） | 同样 17+ 模块（Jinja2 服务端渲染） |
 | 口令哈希 | PBKDF2-SHA256（Workers CPU 限制，不用 bcrypt） | bcrypt |
@@ -446,6 +446,8 @@ cfapi/
 19. **控制面板精简与「后台图片兜底」（2.6.9）**：① 控制面板卡片 14 → 5：保留 总用户数（含今日新增与较昨日）、近 7 日新增用户（含较上期）、笔记（总数 + 已显示/待审核 并进同一张卡）、留言（总数 + 待审核）、互动（点赞/收藏）；删掉的 轮播图 / 摩旅精选 / 户外精选（各自管理页的统计条里就能看到）、管理页面（后台已全部迁完，侧栏本身就是入口清单）、以及分散的「待审核笔记/待审核留言」两张卡（并进主卡，仍然带 `text-warning` 高亮）；同时把统计 SQL 里那三张表的 COUNT 一并去掉（少读几行）。版本 / 服务器时间 / 依赖状态 / 表数量 / 记录总数 / 存储占用这些口径在「系统信息」页与对外状态页已有，控制面板不再重复。2 张趋势卡与 3 个最新列表（注册用户 / 笔记 / 留言，各自带「查看全部」）保持不变 —— 列表那一行同时承担"常用入口"的作用。② 图片兜底：`admin/news_preview`、`admin/news_manage`（含回收站）、`admin/banner_manage`、`admin/app_home_manage`（列表封面 + 编辑页的封面预览）、`admin/topics_manage`（列表 + 详情）这几处的 `<img>` 一律改走 `app/admin/lib/partials.js` 的 `imageTag()`（或挂同一份 `IMG_FALLBACK_ATTR`）：**加载失败就换成 `app/lucky.jpg`**，兜底图自己再失败才 `visibility:hidden` 收起（用 `this.src.indexOf('/lucky.jpg')` 判断，不会无限触发 error）。原先是各页各写一套（`visibility:hidden` / `display:none` / `classList.add('d-none')` 三种写法），现在换兜底图只改一处。预览页正文里的配图在 `pages/news.js` 里"改绝对地址"的同一步注入兜底 —— 注入点必须在 `sanitizeHtml` 之后，否则会被清洗掉。首页三块内容的列表封面在 `lib/homeSections.js` 的 `previewCell`（先前漏了这一处，是 2.6.9 里唯一没接上的调用点）。③ 兜底图的托管方式（与 favicon 同一手法）：仓库文件 `app/lucky.jpg` → `node tools/embed_favicon.mjs` 生成 `app/core/lucky.js`（base64 内联 + ETag + `?v=` 指纹，当前 6657 字节）→ `main.js` 在根路径 `/lucky.jpg` 直出（不走 R2、不受 `MEDIA_BASE` 影响、未登录也能取；`?v=` 只用于破缓存，路由按 pathname 匹配）。换图流程见 `DEPLOY.md`「第 10.5 步」。④ 正文编辑器（`static/js/news_editor.js`）同一口径：编辑区里的图片也挂兜底（地址由 `pages/news.js` 经 `#contentEditor` 的 `data-img-fallback` 下发同一份 `IMAGE_FALLBACK_SRC`；编辑中新粘进来的图片由既有的 MutationObserver 补挂，Slate 重画后重挂），同时把正文图片的显示地址从"站点根路径"改成**媒体域绝对地址**（`data-media-base` 下发 `mediaBase`，与后端 `assetUrl` 同口径）：站内目录两种写法都能取到，但"上传到存储桶最外层"的素材（2.4.4 起允许）只有媒体域能取 —— 原先在编辑区里是 404 裂图（小程序与预览页正常，因为那两处本就走 `assetUrl`）。提交前 `toStoredHtml` 把媒体域地址还原成库内相对值（编辑期临时改成兜底图的 DOM 不影响入库值：`getHtml()` 读的是编辑器模型）。⑤ 未覆盖的地方：头像（`users.js`/`notices.js`）与素材库缩略图（`mediaGovern.js`）仍保持"加载失败就隐藏" —— 这两处的槽位比例是给头像/原图的，塞一张 447×252 的兜底图会更奇怪；要一起改再说。守卫：`tests/api_reads.test.mjs`（`/lucky.jpg` 直出字节与类型）、`tests/admin_pages_config.test.mjs`（六个页面逐张数 `img`，必须张张带兜底）、`tests/admin_pages_system.test.mjs`（5 张卡、删掉的卡片按 `<div class="lbl">` 标记断言、统计 SQL 不再查那三张表）。
 
 20. **控制面板去掉 7 日趋势、专题两个编辑页合并（2.7.0）**：① 控制面板删掉「近 7 日新增用户趋势」「近 7 日笔记发布趋势」两张折线卡，连同它们的取数与渲染实现（`routes.js` 里的 `trend()`、每次一发的 `substr(...) GROUP BY d`、以及 `sparkline()`）一并删除，面板只剩 5 张数字卡 + 3 个最新列表；一次并发请求从 6 条降到 4 条。② `admin/motorcycle_edit` 与 `admin/outdoor_edit` 合并成一个 **`/admin/topics_edit?topic=motorcycle|outdoor`**（沿用列表页那个 `?topic=` 参数）：共用 标题 / 简介 / 封面图 URL / 视频地址 / 状态，各自独有 摩旅（骑行里程·计划时长·难度）与 户外（活动日期·活动地点），字段集仍由 `CONFIGS[kind].extraFields` 驱动 —— 换项目 = 换一份独有字段 + 换一张表（服务端重新渲染，不做前端隐显）。顶部项目单选沿用列表页那套标签条（`partials.filterButtons`；2.7.0 给它加了可选的 `hrefFor(值)`，因为这一处每一项要带**各自**的记录 id），位置在**标题字段上方**（`editShell` 的 `top`）。编辑态切到另一种项目 = 改为"新增"（两张表的 id 不是一回事），页面上有一行提示；表单 `action` 同时带 `topic` 与 `id`，所以 POST 与 GET 认的是同一个项目，**项目名缺失/非法时直接给报错页、绝不回落到摩旅表**（"默认摩旅"的回落只留给行片段/预览/删除的旧路径）。旧的 `motorcycle_edit`/`outdoor_edit` 路由与 `entities.js` 里那两条写路径登记都已删除（`/admin/motorcycle_edit` 现在落到统一 404 页 —— 编辑页没有做 302，POST 过不了重定向）。③ 编辑页的【封面图 URL】与【视频地址】从左右两栏改成上下两行；封面预览从固定 288×162（16:9 裁剪）改成**居中 + 通栏 + 按原比率缩放**（`app/admin/static/css/admin.css` 的 `.cover-preview`，全后台共用这一份）。无接口、字段与 schema 变更，端上（`xapp/`）无需改动。守卫：`tests/admin_pages_system.test.mjs`（面板仍有 5 卡 + 3 个列表，`sparkline` 与 `substr(...) GROUP BY d` 都不再出现）、`tests/admin_pages_config.test.mjs`（合并页的项目单选 / 字段集 / 上下排版 / 各写各表 / 非法 topic 不写库）、`tests/admin_sidebar_menus.test.mjs`（两个旧编辑路由与写路径登记已删、只剩 `/admin/topics_edit`）、`tests/admin_submit_action.test.mjs`（`.cover-preview` 新样式）。
+
+21. **素材库弹窗"部分图片列不出来"与缩略图裂图（2.7.1）**：① 旧弹窗走 `core/storage.js::listNewsMedia` 一次扫全桶（根目录树 + `image/` + `news_uploads/`），撞到 `MAX_SCAN_OBJECTS`(1000) 就**静默截断**（界面还写着"最多显示 500 个"）—— 桶里素材一多就只列出一部分，且把图片传进 `video/` 这类"素材库不扫的目录"的对象永远列不到（上传卡片的「目标路径」本来就允许，见第 16 条）。② 缩略图拼的是**站点根路径** `/<key>`，而 Worker 只直出 `image/`、`video/`、`news_uploads/` 三个前缀，根目录素材与 `images/` 下的对象一律 404 裂图。现在弹窗改成与素材库治理页**同一套取数**（`lib/mediaBrowse.js::browseLevel`）：一次只列**当前这一层**（前缀 + `delimiter /`），类型/关键词/排序/分页都在本层内做，翻页由弹窗里的触底加载取下一页（每页 30 条，哨兵在弹窗自己的滚动区里，不复用 `AdminListLoader` —— 它按 `location.search` 拼参数，弹窗的目录/关键词在内存里）；面包屑与子目录按钮跟着当前位置换一层，行由服务端渲染（`pages/media.js::pickRows`，预览地址一律按**媒体公开域**拼，`base` 随接口下发）。单层确实超过 1000 个时不再假装列全：状态行直接说明"只列了前一批，用关键词或进子目录缩小范围"（`truncated`）。站内自有目录（`avatar/`、`avatar_uploads/`、`images/`）在选择器里整棵子树都不给，手填 `prefix` 也绕不进去（`hideInternal`）。接口向后兼容：只带 `kind` 的老调用照旧返回第一层。手工填路径、`input`/`editor` 两种插入模式与分类锁定（「图片素材库」/「视频素材库」）都没变。守卫：`tests/admin_pages_users_news.test.mjs`「素材库: 逐层浏览」、`tests/admin_pages_tools.test.mjs`「存储桶(2.4.6)」里的选择器断言（按 `rows`/`folders` 断言，站内自有目录必须被挡）。
 
 8. **线上"又慢了"先看状态页的「D1 响应」**：它是一次真实 D1 往返的耗时（基线约 240ms）。接口/页面的耗时 ≈ **串行轮数 × 它**，所以"多了几百毫秒"基本都是多了一轮串行查询，而不是单条 SQL 变慢。
 9. **怎么量"串行轮数"**：本地用 `tests/stub.mjs` / `tests/admin_stub.mjs` 的桩，把每条 D1 语句包一层 `await sleep(240)`，再跑一次该页面/接口 —— `耗时 ÷ 240ms` 就是串行轮数（后台全部 GET 路径可从 `app/admin/pages/index.js` 的 `PAGE_ROUTES` 列出来）。2.5.2 的对照：控制面板 7 轮 → 2 轮、`/config/get_app_config` 6 轮 → 1 轮（命中缓存 0 轮）、`/news/list` 3 轮 → 1~2 轮、`/news/detail` 4 轮 → 2 轮。
