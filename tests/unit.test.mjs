@@ -6,7 +6,7 @@ import { routeTable } from '../main.js';
 import { md5Hex } from '../app/core/md5.js';
 import { beijingNow, nowEpoch, toEpoch, windowStart } from '../app/core/timeutil.js';
 import { assetUrl, iconAssetUrl } from '../app/core/media_scheme.js';
-import { checkObjectKey, isRootTreePath, listLevel, listNewsMedia, listUnder, mediaContentType, normRel, relPathsIn } from '../app/core/storage.js';
+import { checkObjectKey, isRootTreePath, listLevel, listNewsMedia, listUnder, mediaContentType, normRel, relPathsIn, scanObjects } from '../app/core/storage.js';
 import { safeRelPath, safeTargetDir, saveUpload } from '../app/admin/lib/mediaUpload.js';
 import { parentOf } from '../app/admin/lib/mediaBrowse.js';
 import { absolutizeMedia, sanitizeHtml } from '../app/core/sanitize.js';
@@ -239,6 +239,29 @@ test('单层列举(2.7.3): 目录与对象共享 limit, 截断时继续翻页把
   const small = await listLevel(env, 'zadmin/', { limit: 1000 });
   assert.deepEqual(small.folders.map((one) => one.key), ['zadmin/vendor/']);
   assert.equal(small.truncated, false);
+});
+
+test('全盘扫描(2.7.4): 一页页扫完整个桶, 到上限才标 truncated', async () => {
+  const mediaObjects = [];
+  for (let i = 0; i < 1500; i += 1) {
+    mediaObjects.push({ key: `image/a${String(i).padStart(4, '0')}.png`, size: 1, uploaded: '2026-10-01T00:00:00Z' });
+  }
+  // 字典序排在最后 → 只有翻到第 2 页才扫得到(选择器的"全盘"搜索就是靠它跨目录)
+  mediaObjects.push({ key: 'news_uploads/摩旅封面.png', size: 2, uploaded: '2026-10-02T00:00:00Z' });
+  const { env } = makeAdminEnv({ role: 'super', mediaObjects: mediaObjects });
+
+  const all = await scanObjects(env, { max: 2000 });
+  assert.equal(all.scanned, 1501, '上限 2000 要翻 2 页, 1501 个对象全收');
+  assert.equal(all.truncated, false, '没到上限就不算截断');
+  const deep = all.objects.find((one) => one.key === 'news_uploads/摩旅封面.png');
+  assert.ok(deep, '别的目录里的对象也扫得到');
+  // name 放完整相对路径: 跨目录的结果里只给文件名会分不清是哪张图
+  assert.equal(deep.name, 'news_uploads/摩旅封面.png');
+
+  // 上限 1000 只扫一页, 并明确标 truncated(页面据此提示换更具体的关键词)
+  const capped = await scanObjects(env, { max: 1000 });
+  assert.equal(capped.scanned, 1000);
+  assert.equal(capped.truncated, true);
 });
 
 test('上一级 parentOf(2.7.2): 目录前缀与对象键都要给出真的上一层', () => {

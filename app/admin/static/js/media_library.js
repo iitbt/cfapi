@@ -19,6 +19,10 @@
  * 路径与「上一级」同一行显示: `存储桶/admin/vendor/fonts/` 后面跟【上一级】;
  * 每段自带尾斜杠、段间不再另插分隔符(否则就是 `存储桶/admin//vendor/`), 根目录只显示「存储桶」且不显示「上一级」。
  * 目录清单与治理页逐字一致: 桶里有什么列什么(站内自有目录也列), 不再各带一层过滤。
+ *
+ * 搜索范围(2.7.4): 下拉有「本目录 / 全盘」——「本目录」只过滤当前这一层(默认, 与改前一样),
+ * 「全盘」忽略目录扫整个桶(core/storage.js::scanObjects, 上限 3000 个对象, 必须配关键词);
+ * 全盘结果按**完整相对路径**显示, 目录导航(上一级/子目录)在这时隐藏。按钮文案与图标跟全站搜索条一致。
  */
 (function () {
   'use strict';
@@ -35,6 +39,7 @@
   var mediaCrumbsEl = document.getElementById('mediaLibraryCrumbs');
   var mediaDirsEl = document.getElementById('mediaLibraryDirs');
   var mediaQueryEl = document.getElementById('mediaLibraryQuery');
+  var mediaScopeEl = document.getElementById('mediaLibraryScope');      // 「本目录 / 全盘」范围下拉
   var mediaHintEl = document.getElementById('mediaLibraryHint');
   var mediaManualEl = document.getElementById('mediaLibraryManual');
   var mediaKindBtns = mediaModal ? mediaModal.querySelectorAll('[data-media-kind-btn]') : [];
@@ -52,13 +57,16 @@
     .split(',').map(function (p) { return p.trim(); }).filter(Boolean);
   //: 服务端单层列举上限(与 lib/mediaBrowse.js 的 LEVEL_MAX 同值): 超了要在状态行里说清楚, 不能装作列全了
   var MEDIA_LEVEL_MAX = 1000;
+  //: 全盘搜索的对象上限(与 core/storage.js 的 SCAN_MAX 同值): 扫不完同样要在状态行说清楚
+  var MEDIA_SCAN_MAX = 3000;
   var mediaBase = '';         // 媒体公开域(服务端下发): 预览图地址按它拼, 不拼站点根路径
   var mediaPrefix = '';       // 当前所在目录(带尾斜杠; 空串 = 存储桶最外层)
   var mediaFolders = [];      // 当前这一层的子目录
   var mediaPage = 0;          // 已加载到第几页
   var mediaTotalPages = 1;
-  var mediaTotal = 0;         // 本层命中的素材总数
-  var mediaAccept = [];       // 本层可列出的扩展名
+  var mediaTotal = 0;         // 命中的素材总数(本层或全盘)
+  var mediaAccept = [];       // 可列出的扩展名
+  var mediaScope = 'dir';     // 搜索范围: dir = 只在当前目录里搜(默认), all = 忽略目录扫整个桶
   var mediaLoading = false;
 
   /** 关掉素材库弹窗(页面的插入函数也用得上, 见文件末尾的 window.MediaLibrary)。 */
@@ -111,8 +119,10 @@
    * 面包屑与子目录按钮: 跟着当前目录换一层, 点任意一段回该层。
    * 每段自带尾斜杠、段间**不再另插分隔符** —— 插了就是 `存储桶/admin//vendor/` 这种双斜杠。
    * 「上一级」跟在已打开路径后面、与面包屑同一行; 根目录没有上一层, 按钮不显示。
+   * 全盘搜索时结果跨目录, 目录导航(上一级/子目录)没有意义 —— 只留面包屑指明"从哪来的"。
    */
   function mediaRenderNav() {
+    var allScope = mediaScope === 'all';
     if (mediaCrumbsEl) {
       mediaCrumbsEl.innerHTML = '';
       var pieces = String(mediaPrefix || '').split('/').filter(Boolean);
@@ -123,13 +133,14 @@
         walked += piece + '/';
         mediaCrumbsEl.appendChild(mediaCrumb(piece + '/', walked, index === pieces.length - 1));
       });
-      // 面包屑也能回上一层, 但目录一多就要找半天 —— 末尾再给一个按钮
-      if (mediaPrefix) {
+      // 面包屑也能回上一层, 但目录一多就要找半天 —— 末尾再给一个按钮(全盘时不画)
+      if (mediaPrefix && !allScope) {
         mediaCrumbsEl.appendChild(mediaDirButton('上一级', mediaParentOf(mediaPrefix), 'bi-arrow-up'));
       }
     }
     if (!mediaDirsEl) { return; }
     mediaDirsEl.innerHTML = '';
+    if (allScope) { return; }   // 全盘结果不属于任何一层, 子目录按钮不画
     mediaFolders.forEach(function (folder) {
       mediaDirsEl.appendChild(mediaDirButton(folder.name + '/', folder.key, 'bi-folder2-open'));
     });
@@ -153,14 +164,26 @@
 
   /** 空态行: 只在第一页没有行时用(服务端给的行 HTML 里不会有它)。 */
   function mediaEmptyRow() {
-    return '<tr><td colspan="6" class="text-muted py-3">这个目录下没有匹配的'
+    return '<tr><td colspan="6" class="text-muted py-3">'
+      + (mediaScope === 'all' ? '整个存储桶里' : '这个目录下') + '没有匹配的'
       + (mediaKind === 'image' ? '图片' : '视频')
-      + '素材：换个关键词、进上面的子目录, 或用下面的「手工填写路径」。</td></tr>';
+      + '素材：换个关键词, 或用下面的「手工填写路径」。</td></tr>';
   }
 
-  /** 状态行: 当前位置 + 本层命中数 + 单层上限提示(按当前分类措辞)。 */
+  /** 状态行: 当前位置 + 命中数 + 上限提示; 全盘搜索时换成"扫了多少个对象"(按当前分类措辞)。 */
   function mediaHintFor(data) {
     var label = mediaKind === 'image' ? '图片' : '视频';
+    if (mediaScope === 'all') {
+      var scanned = [
+        '全盘搜索（忽略当前目录）',
+        '已扫 ' + (Number(data.scanned) || 0) + ' 个对象、命中' + label + ' ' + mediaTotal + ' 个'
+      ];
+      if (data.truncated) {
+        scanned.push('只扫了前 ' + MEDIA_SCAN_MAX + ' 个对象, 结果可能不全 —— 换个更具体的关键词');
+      }
+      mediaSetHint(scanned.join(' · '));
+      return;
+    }
     var parts = [
       '当前位置：' + (mediaPrefix ? '/' + mediaPrefix : '存储桶根目录'),
       '本层 ' + (Number(data.levelCount) || 0) + ' 个对象、其中' + label + ' ' + mediaTotal + ' 个',
@@ -173,17 +196,27 @@
   }
 
   /**
-   * 拉取当前目录的某一页。
+   * 拉取某一页结果(当前目录, 或"全盘"范围下的跨目录结果)。
    * @param {number}  page   页码(从 1 起)
    * @param {boolean} append true = 把返回的行追加在已有行后面(触底加载); false = 清空重画
-   *                         (进目录、换分类、改关键词、点刷新都走 false)
+   *                         (进目录、换分类、换范围、改关键词、点搜索都走 false)
    */
   function mediaFetch(page, append) {
     if (!mediaListEl || mediaLoading) { return; }
     var q = mediaQueryEl && mediaQueryEl.value ? mediaQueryEl.value.trim() : '';
-    // 记下这次请求是为哪一类、哪个目录发的: 响应回来时用它判断是否已经过期
+    // 全盘搜索没有关键词 = 把整个桶倒出来: 一个子请求都别发, 直接提示(服务端也会把它回落成本目录)
+    if (mediaScope === 'all' && !q) {
+      mediaListEl.innerHTML = '';
+      mediaFolders = [];
+      mediaRenderNav();
+      mediaSyncMore();
+      mediaSetHint('「全盘」范围要先输入关键词（「本目录」可以留空）', true);
+      return;
+    }
+    // 记下这次请求是为哪一类、哪个目录、哪个范围发的: 响应回来时用它判断是否已经过期
     var reqKind = mediaKind;
     var reqPrefix = mediaPrefix;
+    var reqScope = mediaScope;
     mediaLoading = true;
     if (!append) {
       mediaListEl.innerHTML = '';
@@ -192,6 +225,7 @@
     var url = '/admin/media_library?kind=' + encodeURIComponent(reqKind)
       + '&prefix=' + encodeURIComponent(reqPrefix)
       + '&page=' + encodeURIComponent(page)
+      + '&scope=' + encodeURIComponent(reqScope)
       + (q ? '&q=' + encodeURIComponent(q) : '');
     // X-Requested-With: 与后台其它 AJAX 同口径 —— 会话过期时后端回 JSON, 而不是 302 到登录页
     fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
@@ -199,8 +233,10 @@
       .then(function (data) {
         mediaLoading = false;
         if (!data || data.success !== true) { throw new Error((data && data.message) || '读取失败'); }
-        // 关键: 等待期间分类或目录若已改变, 这次响应只丢不画 —— 否则会把上一个目录的行画到新目录下面
-        if (reqKind !== mediaKind || reqPrefix !== mediaPrefix) { return; }
+        // 关键: 等待期间分类/目录/范围若已改变, 这次响应只丢不画 —— 否则会把上一个条件的行画到新条件下
+        if (reqKind !== mediaKind || reqPrefix !== mediaPrefix || reqScope !== mediaScope) { return; }
+        // 范围以服务端回传的为准(没关键词时"全盘"会被它回落成本目录), 下拉跟着对齐
+        mediaSetScope(data.scope === 'all' ? 'all' : 'dir');
         mediaBase = data.base || '';
         mediaAccept = data.accept || [];
         mediaFolders = data.folders || [];
@@ -219,7 +255,8 @@
       })
       .catch(function (err) {
         mediaLoading = false;
-        if (reqKind !== mediaKind || reqPrefix !== mediaPrefix) { return; }   // 过期请求的失败不该影响当前目录
+        // 过期请求的失败不该影响当前结果
+        if (reqKind !== mediaKind || reqPrefix !== mediaPrefix || reqScope !== mediaScope) { return; }
         if (!append) { mediaListEl.innerHTML = ''; }
         mediaSetHint('读取素材失败：' + ((err && err.message) || '网络异常')
           + '（不影响使用 —— 可直接用下面的「手工填写路径」）', true);
@@ -263,11 +300,19 @@
       // 手工填写框的示例跟随分类与目录口径(避免误导: 图片分类下的示例却是 .mp4)
       mediaManualEl.placeholder = mediaKind === 'image' ? 'image/cover_xxx.png' : 'video/video_xxx.mp4';
     }
-    // 换分类等于从头看: 回存储桶根目录、清掉关键词, 免得"上一个分类的目录位置"带进来
+    // 换分类等于从头看: 回存储桶根目录、清掉关键词、范围回「本目录」——
+    // 免得"上一个分类的目录位置/范围"带进来(「全盘」还要求关键词, 一起清干净才不会留下空列表)
     mediaPrefix = '';
     mediaFolders = [];
     if (mediaQueryEl) { mediaQueryEl.value = ''; }
+    mediaSetScope('dir');
     mediaFetch(1, false);
+  }
+
+  /** 切搜索范围: 同步下拉(服务端回落时也要跟着改回来), 调用方决定要不要重查。 */
+  function mediaSetScope(value) {
+    mediaScope = value === 'all' ? 'all' : 'dir';
+    if (mediaScopeEl && mediaScopeEl.value !== mediaScope) { mediaScopeEl.value = mediaScope; }
   }
 
   function mediaApply(item) {
@@ -370,15 +415,23 @@
         mediaSetKind(b.getAttribute('data-media-kind-btn'));
       });
     });
+    // 按钮文案是「搜索」: 它的作用就是把当前的关键词/范围/目录提交查一次(不是重扫目录)。
     // 为什么显式写 false: 直接写 addEventListener('click', mediaFetch) 会把事件对象当 append 传进去
-    // (碰巧是真值), 于是刷新变成"往旧列表后面再追加一页"。
+    // (碰巧是真值), 于是搜索变成"往旧列表后面再追加一页"。
     var reloadBtn = document.getElementById('mediaLibraryReload');
     if (reloadBtn) { reloadBtn.addEventListener('click', function () { mediaFetch(1, false); }); }
     if (mediaQueryEl) {
       mediaQueryEl.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') { e.preventDefault(); mediaFetch(1, false); }
       });
-      mediaQueryEl.addEventListener('search', function () { mediaFetch(1, false); });  // 「×」清空也重新拉
+      mediaQueryEl.addEventListener('search', function () { mediaFetch(1, false); });  // 「×」清空也重新查
+    }
+    if (mediaScopeEl) {
+      // 换范围就按新范围查一次(不追加旧结果); 「全盘」没关键词时 mediaFetch 直接给提示、不发请求
+      mediaScopeEl.addEventListener('change', function () {
+        mediaSetScope(mediaScopeEl.value);
+        mediaFetch(1, false);
+      });
     }
     var manualBtn = document.getElementById('mediaLibraryManualInsert');
     if (manualBtn) {

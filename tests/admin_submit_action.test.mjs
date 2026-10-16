@@ -155,79 +155,103 @@ test('素材库弹窗: 目录清单由模板下发(前端不自己写死 news_up
   assert.ok(!/v = 'news_uploads\/' \+ v/.test(picker), '手工填路径不该再强行补历史前缀');
 });
 
-test('素材库弹窗(2.7.3): 路径单斜杠拼接, 「上一级」与路径同行并排在末尾', async () => {
-  const src = await readFile(new URL('../app/admin/static/js/media_library.js', import.meta.url), 'utf8');
-
-  // 最小 DOM 桩: 只登记节点与 appendChild(不解析 HTML) —— 够媒体库面板画面包屑与目录按钮。
-  // 用 new Function 真跑脚本(与 infinite_scroll.js 的测法一致), 而不是拿正则扫源码。
-  function buildCrumbs(prefix) {
-    const nodes = new Map();
-    function makeNode(id) {
-      const node = {
-        id: id || '', className: '', textContent: '', _html: '',
-        children: [], attrs: {}, listeners: {}, classSet: new Set()
-      };
-      node.classList = {
-        add: (name) => node.classSet.add(name),
-        remove: (name) => node.classSet.delete(name),
-        contains: (name) => node.classSet.has(name),
-        toggle: (name, on) => {
-          const want = on === undefined ? !node.classSet.has(name) : Boolean(on);
-          if (want) { node.classSet.add(name); } else { node.classSet.delete(name); }
-        }
-      };
-      node.appendChild = (child) => {
-        node.children.push(child);
-        // 桩不解析 HTML: 文本节点得手动累加到 textContent(按钮的图标是 innerHTML, 不参与)
-        if (child && child.textContent) { node.textContent += child.textContent; }
-        return child;
-      };
-      node.setAttribute = (name, value) => { node.attrs[name] = String(value); };
-      node.getAttribute = (name) => (name in node.attrs ? node.attrs[name] : null);
-      node.addEventListener = (type, fn) => { (node.listeners[type] = node.listeners[type] || []).push(fn); };
-      node.insertAdjacentHTML = () => {};
-      node.querySelectorAll = () => [];
-      Object.defineProperty(node, 'innerHTML', {
-        get: () => node._html,
-        set: (value) => {
-          node._html = String(value);
-          if (!value) { node.children = []; node.textContent = ''; }
-        }
-      });
-      return node;
-    }
-    for (const id of ['mediaLibraryModal', 'mediaLibraryList', 'mediaLibraryScroll', 'mediaLibraryLoadMore',
-      'mediaLibraryLoadMoreText', 'mediaLibraryCrumbs', 'mediaLibraryDirs', 'mediaLibraryQuery', 'mediaLibraryHint',
-      'mediaLibraryManual', 'mediaLibraryKindSwitch', 'mediaLibraryModalLabel', 'mediaLibraryReload',
-      'mediaLibraryManualInsert']) {
-      nodes.set(id, makeNode(id));
-    }
-    nodes.get('mediaLibraryModal').setAttribute('data-media-prefixes', 'image/,video/,news_uploads/');
-    const fakeFetch = () => Promise.resolve({
-      json: () => Promise.resolve({
-        success: true, base: 'https://media.example.com', accept: ['png'], folders: [],
-        prefix: prefix, page: 1, totalPages: 1, total: 0, levelCount: 0, rows: ''
-      })
-    });
-    const document = {
-      getElementById: (id) => nodes.get(id) || null,
-      createElement: () => makeNode(''),
-      createTextNode: (text) => ({ textContent: String(text) })
-    };
-    const window = { addEventListener: () => {} };
-    new Function('window', 'document', 'fetch', src)(window, document, fakeFetch);
-    // 打开弹窗(带 data-media-kind 的按钮): 面板随即按分类请求一次, 响应回来才画面包屑
-    const trigger = {
-      getAttribute: (name) => ({
-        'data-media-kind': 'image', 'data-media-mode': 'input', 'data-media-target': '#cover'
-      }[name] || null)
-    };
-    for (const fn of nodes.get('mediaLibraryModal').listeners['show.bs.modal'] || []) {
-      fn({ relatedTarget: trigger });
-    }
-    return nodes.get('mediaLibraryCrumbs');
+let mediaPickerSrc = '';
+async function mediaPickerSource() {
+  if (!mediaPickerSrc) {
+    mediaPickerSrc = await readFile(new URL('../app/admin/static/js/media_library.js', import.meta.url), 'utf8');
   }
+  return mediaPickerSrc;
+}
 
+/** 等脚本里那条 fetch 链走完(一层 json() then)。 */
+const settle = () => new Promise((resolve) => { setTimeout(resolve, 0); });
+
+/**
+ * 素材库弹窗的 DOM 桩 + 真跑脚本(与 infinite_scroll.js 的测法一致): 只登记节点与 appendChild,
+ * 不解析 HTML —— 够面板画面包屑/目录按钮/范围下拉用。payload 给固定对象或 `(url) => 对象`。
+ * 返回的 requests 记录每次请求的 URL; 服务端回传的 scope 按 URL 里的范围回(模拟"生效范围"回落语义)。
+ */
+async function makeMediaPanel(payload) {
+  const src = await mediaPickerSource();
+  const nodes = new Map();
+  function makeNode(id) {
+    const node = {
+      id: id || '', className: '', textContent: '', value: '', _html: '',
+      children: [], attrs: {}, listeners: {}, classSet: new Set()
+    };
+    node.classList = {
+      add: (name) => node.classSet.add(name),
+      remove: (name) => node.classSet.delete(name),
+      contains: (name) => node.classSet.has(name),
+      toggle: (name, on) => {
+        const want = on === undefined ? !node.classSet.has(name) : Boolean(on);
+        if (want) { node.classSet.add(name); } else { node.classSet.delete(name); }
+      }
+    };
+    node.appendChild = (child) => {
+      node.children.push(child);
+      // 桩不解析 HTML: 文本节点得手动累加到 textContent(按钮的图标是 innerHTML, 不参与)
+      if (child && child.textContent) { node.textContent += child.textContent; }
+      return child;
+    };
+    node.setAttribute = (name, value) => { node.attrs[name] = String(value); };
+    node.getAttribute = (name) => (name in node.attrs ? node.attrs[name] : null);
+    node.addEventListener = (type, fn) => { (node.listeners[type] = node.listeners[type] || []).push(fn); };
+    node.insertAdjacentHTML = () => {};
+    node.querySelectorAll = () => [];
+    Object.defineProperty(node, 'innerHTML', {
+      get: () => node._html,
+      set: (value) => {
+        node._html = String(value);
+        if (!value) { node.children = []; node.textContent = ''; }
+      }
+    });
+    return node;
+  }
+  for (const id of ['mediaLibraryModal', 'mediaLibraryList', 'mediaLibraryScroll', 'mediaLibraryLoadMore',
+    'mediaLibraryLoadMoreText', 'mediaLibraryCrumbs', 'mediaLibraryDirs', 'mediaLibraryQuery', 'mediaLibraryScope',
+    'mediaLibraryHint', 'mediaLibraryManual', 'mediaLibraryKindSwitch', 'mediaLibraryModalLabel',
+    'mediaLibraryReload', 'mediaLibraryManualInsert']) {
+    nodes.set(id, makeNode(id));
+  }
+  nodes.get('mediaLibraryModal').setAttribute('data-media-prefixes', 'image/,video/,news_uploads/');
+  const requests = [];
+  const fakeFetch = (url) => {
+    const target = String(url);
+    requests.push(target);
+    const body = typeof payload === 'function' ? payload(target) : payload;
+    return Promise.resolve({
+      json: () => Promise.resolve(Object.assign({}, body, { scope: /scope=all/.test(target) ? 'all' : 'dir' }))
+    });
+  };
+  const document = {
+    getElementById: (id) => nodes.get(id) || null,
+    createElement: () => makeNode(''),
+    createTextNode: (text) => ({ textContent: String(text) })
+  };
+  const window = { addEventListener: () => {} };
+  new Function('window', 'document', 'fetch', src)(window, document, fakeFetch);
+  return {
+    nodes: nodes,
+    requests: requests,
+    // 打开弹窗(带 data-media-kind 的按钮): 面板随即按分类请求一次, 响应回来才画面
+    open: (attrs) => {
+      const trigger = {
+        getAttribute: (name) => (Object.assign({
+          'data-media-kind': 'image', 'data-media-mode': 'input', 'data-media-target': '#cover'
+        }, attrs || {})[name] || null)
+      };
+      for (const fn of nodes.get('mediaLibraryModal').listeners['show.bs.modal'] || []) {
+        fn({ relatedTarget: trigger });
+      }
+    },
+    fire: (id, type) => {
+      for (const fn of nodes.get(id).listeners[type] || []) { fn({ preventDefault() {} }); }
+    }
+  };
+}
+
+test('素材库弹窗(2.7.3): 路径单斜杠拼接, 「上一级」与路径同行并排在末尾', async () => {
   // 根目录只显示「存储桶」、不显示「上一级」; 进了子目录则把「上一级」接在路径末尾(同一行)
   const cases = [
     ['', ['存储桶'], null],
@@ -235,8 +259,13 @@ test('素材库弹窗(2.7.3): 路径单斜杠拼接, 「上一级」与路径同
     ['admin/vendor/fonts/', ['存储桶/', 'admin/', 'vendor/', 'fonts/', '上一级'], 'admin/vendor/']
   ];
   for (const [prefix, expectLabels, expectUp] of cases) {
-    const crumbs = buildCrumbs(prefix);
-    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    const panel = await makeMediaPanel({
+      success: true, base: 'https://media.example.com', accept: ['png'], folders: [],
+      prefix: prefix, page: 1, totalPages: 1, total: 0, levelCount: 0, rows: ''
+    });
+    panel.open();
+    await settle();
+    const crumbs = panel.nodes.get('mediaLibraryCrumbs');
     const labels = crumbs.children.map((one) => one.textContent);
     assert.deepEqual(labels, expectLabels, `${prefix || '(根目录)'} 的路径与「上一级」位置`);
     assert.ok(!labels.join('').includes('//'), '路径拼接不许出现双斜杠');
@@ -244,6 +273,60 @@ test('素材库弹窗(2.7.3): 路径单斜杠拼接, 「上一级」与路径同
     const up = crumbs.children.find((one) => one.textContent === '上一级');
     assert.equal(up.getAttribute('data-media-dir'), expectUp, '「上一级」的目标前缀');
   }
+});
+
+test('素材库弹窗(2.7.4): 范围下拉「本目录/全盘」, 按钮叫「搜索」且交互不变', async () => {
+  const { mediaLibraryModal } = await import('../app/admin/lib/partials.js');
+  const html = mediaLibraryModal();
+  assert.ok(html.includes('<i class="bi bi-search" aria-hidden="true"></i> 搜索'),
+    '按钮图标与文案跟全站搜索条一致(它只是把当前条件提交查一次, 不是重扫目录)');
+  assert.ok(!html.includes('bi-arrow-clockwise'), '"刷新"那套图标已去掉');
+  assert.ok(html.includes('id="mediaLibraryScope"') && html.includes('value="dir" selected')
+    && html.includes('value="all"'), '范围下拉有「本目录(默认)/全盘」两档');
+  assert.ok(html.indexOf('id="mediaLibraryScope"') < html.indexOf('id="mediaLibraryQuery"'),
+    '范围下拉排在输入框前面(先选范围再填关键词)');
+
+  const panel = await makeMediaPanel({
+    success: true, base: 'https://media.example.com', accept: ['png'], folders: [],
+    prefix: '', page: 1, totalPages: 1, total: 0, levelCount: 0, rows: ''
+  });
+  panel.open();
+  await settle();
+  assert.equal(panel.requests.length, 1, '打开面板查一次');
+  assert.ok(panel.requests[0].includes('scope=dir'), '默认范围是「本目录」');
+
+  // 切「全盘」但没关键词: 一个子请求都不发, 只给提示(倒整个桶既没意义又费请求)
+  panel.nodes.get('mediaLibraryScope').value = 'all';
+  panel.fire('mediaLibraryScope', 'change');
+  await settle();
+  assert.equal(panel.requests.length, 1, '「全盘」没关键词时不发请求');
+  assert.match(panel.nodes.get('mediaLibraryHint').textContent, /全盘.*关键词/, '提示先填关键词');
+
+  // 填上关键词点「搜索」: 范围与关键词都带给服务端(回车/清空走的是同一条路)
+  panel.nodes.get('mediaLibraryQuery').value = '摩旅';
+  panel.fire('mediaLibraryReload', 'click');
+  await settle();
+  assert.equal(panel.requests.length, 2, '点「搜索」查一次');
+  assert.ok(panel.requests[1].includes('scope=all') && panel.requests[1].includes('q=%E6%91%A9%E6%97%85'),
+    '范围与关键词都带过去');
+
+  // 全盘结果不属于任何一层: 目录导航(上一级/子目录)不画
+  const allPanel = await makeMediaPanel({
+    success: true, base: 'https://media.example.com', accept: ['png'],
+    folders: [{ key: 'image/', name: 'image' }],
+    prefix: 'admin/', page: 1, totalPages: 1, total: 0, levelCount: 0, rows: '', scanned: 120
+  });
+  allPanel.open({ 'data-media-kind': 'image' });
+  await settle();
+  allPanel.nodes.get('mediaLibraryQuery').value = '摩旅';
+  allPanel.nodes.get('mediaLibraryScope').value = 'all';
+  allPanel.fire('mediaLibraryScope', 'change');
+  await settle();
+  assert.equal(allPanel.nodes.get('mediaLibraryDirs').children.length, 0, '全盘时不画子目录按钮');
+  assert.ok(!allPanel.nodes.get('mediaLibraryCrumbs').children.some((one) => one.textContent === '上一级'),
+    '全盘时不画「上一级」');
+  assert.match(allPanel.nodes.get('mediaLibraryHint').textContent, /全盘搜索.*已扫 120 个对象/,
+    '状态行说明扫了多少个对象');
 });
 
 test('列宽: .cell-title 是固定宽度(桌面 360 / 手机 200), 且生成物里已带上', async () => {

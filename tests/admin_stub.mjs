@@ -34,7 +34,11 @@ export function makeAdminEnv(options = {}) {
         const limit = Number((opts && opts.limit) || 1000);
         const all = (options.mediaObjects || []).filter((object) => String(object.key || '').startsWith(prefix));
         if (!delimiter) {
-          return { objects: all.slice(0, limit), truncated: all.length > limit };
+          // 整桶列举按 cursor 分页: 选择器的"全盘"搜索就是一页页扫过去的
+          const start = Number((opts && opts.cursor) || 0);
+          const page = all.slice(start, start + limit);
+          const truncated = start + limit < all.length;
+          return { objects: page, truncated: truncated, cursor: truncated ? String(start + limit) : undefined };
         }
         // delimiter 分支按真 R2 的三点语义来: ① 结果按 key 字典序; ② limit 是"对象 + 目录"的合计配额
         // (根下对象多时目录排在后面会被整批截掉 —— 桩不实现这一条, 就测不出"文件夹显示不全"); ③ 截断时给 cursor 续取。

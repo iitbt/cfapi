@@ -92,6 +92,51 @@ export async function listUnder(env, prefix, options = {}) {
 // 目录必须收全(否则界面表现为"文件夹显示不全"), 所以截断时继续按 cursor 取; 常态只有一页, 不会多花子请求。
 const MAX_LEVEL_ROUNDS = 3;
 
+/** R2 对象 → 页面条目; name 由调用方给(层内给短名, 全盘扫描给完整相对路径)。 */
+function entryOf(object, name) {
+  return {
+    key: String(object.key || ''),
+    name: name,
+    size: Number(object.size) || 0,
+    etag: String(object.etag || ''),
+    uploaded: object.uploaded || '',
+    // mtime 给页面排序/展示用(list 返回的是 uploaded 时间戳)
+    mtime: object.uploaded ? new Date(object.uploaded).getTime() : 0
+  };
+}
+
+//: 全盘扫描上限(2.7.4, 选择器的"全盘"搜索): 每 1000 个一次子请求, 3 次封顶 —— 桶再大也只扫这么多,
+//  扫不完就靠 truncated 让页面提示"用更具体的关键词"。为什么不用逐层遍历: 那样每层一次子请求,
+//  目录一多就撞 Worker 的子请求上限, 面板会明显变慢。
+const SCAN_MAX = 3000;
+const SCAN_PAGE = 1000;
+
+/**
+ * 前缀扫描整个桶(不带 delimiter), 按 cursor 顺序读对象 —— 选择器"全盘"范围用它做跨目录搜索。
+ * name 放**完整相对路径**: 跨目录的结果里只给文件名会分不清是哪张图。过滤/排序/分页仍在调用方那一段做。
+ */
+export async function scanObjects(env, options = {}) {
+  const max = Math.max(1, Number(options.max) || SCAN_MAX);
+  const storage = settings(env).storage;
+  const objects = [];
+  let cursor;
+  let scanned = 0;
+  for (let round = 0; round < Math.ceil(max / SCAN_PAGE); round += 1) {
+    const listed = await storage.list({ prefix: '', limit: SCAN_PAGE, cursor });
+    for (const object of (listed && listed.objects) || []) {
+      const key = String(object.key || '');
+      if (!key) continue;
+      scanned += 1;
+      objects.push(entryOf(object, key));
+    }
+    const more = Boolean(listed && listed.truncated);
+    cursor = listed && listed.cursor;
+    if (!more || !cursor) break;
+  }
+  // folders 恒为空数组: 返回形状与 listLevel 对齐, 调用方不必分两套取数分支去读字段
+  return { folders: [], objects, scanned, truncated: scanned >= max };
+}
+
 /**
  * 列一个"目录层"(2.4.6 桶浏览器): 一次 R2 列举拿到该前缀下的**子目录**(delimitedPrefixes, 带尾斜杠)
  * 与**直接对象**(不带 delimiter 的话整个桶都会被回给我们)。`truncated` 为真表示这一层超过 limit(上限 1000)。
@@ -113,15 +158,7 @@ export async function listLevel(env, prefix = '', options = {}) {
       for (const object of (listed && listed.objects) || []) {
         const key = String(object.key || '');
         if (!key || !key.startsWith(base) || key === base) continue;
-        objects.push({
-          key,
-          name: key.slice(base.length),
-          size: Number(object.size) || 0,
-          etag: String(object.etag || ''),
-          uploaded: object.uploaded || '',
-          // mtime 给页面排序/展示用(list 返回的是 uploaded 时间戳)
-          mtime: object.uploaded ? new Date(object.uploaded).getTime() : 0
-        });
+        objects.push(entryOf(object, key.slice(base.length)));
       }
     }
     for (const one of (listed && listed.delimitedPrefixes) || []) { folderKeys.add(String(one)); }

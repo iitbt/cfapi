@@ -10,7 +10,7 @@
 import { escapeHtml } from '../../core/html.js';
 import { settings } from '../../core/config.js';
 import { fmtBytes } from '../../core/overview.js';
-import { checkObjectKey, extOf, kindOfExt, listLevel, publicUrl } from '../../core/storage.js';
+import { checkObjectKey, extOf, kindOfExt, listLevel, publicUrl, scanObjects } from '../../core/storage.js';
 
 //: 单层列举上限(R2 单次 list 就是 1000): 超过只列前 1000, 调用方必须把 truncated 说出来
 export const LEVEL_MAX = 1000;
@@ -101,17 +101,18 @@ export function fmtUploadTime(item) {
 
 
 /**
- * 取"当前这一层"的内容(治理页与选择器唯一入口)。
+ * 取"当前这一层"的内容(治理页与选择器唯一入口); scope=all 时改成"全盘搜关键词"(2.7.4)。
  * options:
  *   prefix          当前前缀(目录形态, 空串 = 存储桶最外层)
  *   kind            all | image | video | other
- *   q               关键词(按对象键在本层内过滤)
+ *   q               关键词(按对象键过滤: 本层内等于按文件名, 全盘时按完整相对路径)
  *   sort            SORT_CHOICES 里的值, 默认 name_asc
  *   page / perPage  分页(页码从 1 起)
+ *   scope           dir(默认) = 只在当前目录内搜; all = 忽略目录、扫整个桶(要配关键词)
  *   prepare         (可选)async(排序后的本层文件) => 分页前的最后一道加工 —— 治理页用它做引用扫描与
  *                   "已引用/未引用"筛选(必须赶在切片之前, 否则按引用筛选就没法分页); 选择器不传。
- * 返回: { prefix, prefixOk, folders, files(本层全部命中), pageItems(本页), page, totalPages,
- *         total, perPage, levelCount, truncated, base, kind, q, sort }
+ * 返回: { prefix, prefixOk, folders, files(全部命中), pageItems(本页), page, totalPages,
+ *         total, perPage, levelCount, truncated, base, kind, q, sort, scope, scanned }
  */
 export async function browseLevel(env, options = {}) {
   const rawPrefix = options.prefix === undefined || options.prefix === null ? '' : String(options.prefix);
@@ -122,8 +123,12 @@ export async function browseLevel(env, options = {}) {
   const sort = SORT_CHOICES.some(([value]) => value === options.sort) ? options.sort : 'name_asc';
   const perPage = Math.min(200, Math.max(1, Number(options.perPage) || PICK_PER_PAGE));
   const wantsPage = Math.max(1, Number(options.page) || 1);
+  // 全盘搜索: 忽略当前目录扫整个桶。没有关键词就等于"把桶倒出来"(没意义又费子请求), 按目录模式走
+  const scope = options.scope === 'all' && q ? 'all' : 'dir';
 
-  const level = await listLevel(env, prefix, { limit: LEVEL_MAX });
+  const level = scope === 'all'
+    ? await scanObjects(env)
+    : await listLevel(env, prefix, { limit: LEVEL_MAX });
   let files = level.objects;
   if (kind !== 'all') files = files.filter((one) => kindOfFile(one.key) === kind);
   if (q) files = files.filter((one) => one.key.toLowerCase().includes(q));
@@ -137,6 +142,6 @@ export async function browseLevel(env, options = {}) {
     prefix, prefixOk: prefixCheck.ok, prefixMessage: prefixCheck.message || '',
     folders, files: prepared, pageItems, page, totalPages, total: prepared.length, perPage,
     levelCount: level.objects.length, truncated: level.truncated,
-    base: mediaBaseOf(env), kind, q, sort
+    base: mediaBaseOf(env), kind, q, sort, scope, scanned: Number(level.scanned) || 0
   };
 }

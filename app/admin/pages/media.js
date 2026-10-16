@@ -7,6 +7,8 @@
 // 参数新增 prefix/q/page(都可选, 只带 kind 的老调用照旧可用), 返回体多了 prefix/folders/base/rows/page 等。
 // 2.7.3: 目录口径与治理页**逐字一致** —— 不再过滤站内自有目录(原先少列 avatar/、avatar_uploads/、images/,
 // 表现为"文件夹显示不全"); 桶里有什么目录就列什么, 点进去也能浏览。
+// 2.7.4: 关键词多了 scope(dir=本目录默认 / all=全盘, 忽略目录扫整个桶, 上限 3000 个对象);
+// 返回体多了 scope 与 scanned。只带 kind/q 的老调用照旧(scope 缺省 = dir)。
 import { escapeHtml } from '../../core/html.js';
 import { listableExts } from '../../core/storage.js';
 import { PICK_PER_PAGE, browseLevel, kindOfFile, metaCells, previewCell } from '../lib/mediaBrowse.js';
@@ -63,7 +65,7 @@ async function libraryHandler(ctx) {
   try {
     data = await browseLevel(ctx.env, {
       prefix: ctx.query.prefix, q: ctx.query.q, kind, page: ctx.query.page,
-      perPage: PICK_PER_PAGE
+      perPage: PICK_PER_PAGE, scope: ctx.query.scope
     });
   } catch (error) {
     console.error('读取素材目录失败', error && error.message);
@@ -75,7 +77,7 @@ async function libraryHandler(ctx) {
     kind,
     prefix: data.prefix,
     base: data.base,
-    // 子目录交给前端画成一排按钮(弹窗里比表格行省地方)
+    // 子目录交给前端画成一排按钮(弹窗里比表格行省地方); 全盘搜索时服务端给空数组
     folders: data.folders.map((one) => ({ key: one.key, name: one.name })),
     rows: pickRows(data.pageItems, data.base),
     page: data.page,
@@ -84,6 +86,10 @@ async function libraryHandler(ctx) {
     levelCount: data.levelCount,
     perPage: data.perPage,
     hasMore: data.page < data.totalPages,
+    // 搜索范围(2.7.4): dir = 本目录, all = 全盘; 没关键词时全盘会被回落成 dir, 前端据此对齐下拉
+    scope: data.scope,
+    // 全盘搜索扫了多少个对象(上限 3000): 页面据此提示"只扫了前一批, 换个更具体的关键词"
+    scanned: data.scanned,
     // 单层超过 R2 单次列举上限(1000)时提示缩小范围, 不再像旧实现那样静默截断
     truncated: data.truncated,
     accept: listableExts(kind)

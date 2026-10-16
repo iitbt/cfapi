@@ -568,6 +568,19 @@ test('素材库: 逐层浏览(根层只给目录、进目录才看对象), 分�
   // 历史遗留的 _thumb 对象就是普通素材(出现在清单里才能被清理), 再进一层才看得到
   const thumbLevel = await lib('kind=image&prefix=' + encodeURIComponent('news_uploads/_thumb/480/'));
   assert.ok(thumbLevel.rows.includes('news_uploads/_thumb/480/a.webp'), '历史缩略图照列');
+
+  // 搜索范围(2.7.4): 「本目录」只过当前这一层, 「全盘」忽略目录扫整个桶
+  const inDir = await lib('kind=image&q=a');
+  assert.equal(inDir.scope, 'dir', '不传 scope 时就是本目录');
+  assert.equal(inDir.total, 0, '根目录这一层没有名字带 a 的图片');
+  const allScope = await lib('kind=image&q=a&scope=all');
+  assert.equal(allScope.scope, 'all');
+  assert.ok(allScope.scanned > 0, '回传实际扫描量');
+  assert.ok(allScope.rows.includes('>news_uploads/a.png</div>'),
+    '全盘搜得到别的目录里的素材, 且按完整相对路径显示(跨目录才分得清)');
+  assert.ok(allScope.rows.includes('>avatar/avatar_7_1.png<'), '站内自有目录也在全盘范围内(与治理页同口径)');
+  // 全盘没有关键词 = 把整个桶倒出来: 服务端回落成本目录(前端也会先拦一道, 不发请求)
+  assert.equal((await lib('kind=image&scope=all')).scope, 'dir', '全盘无关键词时回落成本目录');
 });
 
 const RECYCLE_ROW = {
