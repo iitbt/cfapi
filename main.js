@@ -25,8 +25,8 @@ import { LUCKY_PATH, luckyResponse } from './app/core/lucky.js';
 import { settings } from './app/core/config.js';
 import { SERVED_PREFIXES, mediaContentType } from './app/core/storage.js';
 
-// 版本号(**唯一来源**): 
-export const API_VERSION = '2.7.4';
+// 版本号(**唯一来源**):
+export const API_VERSION = '2.7.5';
 
 // ==== 路由装配(对应旧站 main.py 的 include_router 段) ====
 const router = createRouter();

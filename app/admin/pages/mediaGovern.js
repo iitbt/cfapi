@@ -1,55 +1,5 @@
-// 素材库管理(治理页, 仅超管) —— 逐条对齐旧站 app/admin/media_admin.py
-//
-// 旧站头注释点名的三条口径, 这里原样继承:
-//   ① 这一页做的是**治理**(看占用 / 查引用 / 删无用文件), 不是"选素材" —— 选素材在字段旁的弹窗里;
-//   ② **引用判定只有一个来源**: 列表列 /「查看引用」/ 删除前复查三处都调 scanReferences();
-//      (旧站 v2.3.4 的 BUG 就是两处判定不一致: 等值比较 vs LIKE, 导致正文里的引用永远显示未引用)
-//   ③ **引用检查必须包含回收站**: 软删除的笔记仍在库里、content 里仍写着路径,
-//      否则会出现"删素材 → 恢复回收站 → 裂图"的静默事故。
-//
-// 平台差异(已在 README「已知差异」声明):
-//   · 素材来源: 旧站 os.walk 本地目录 → 这里 R2 list(新目录 image//video/ + 历史目录 news_uploads/);
-//   · 15 秒扫描短缓存: Worker 没有进程内状态, 不实现(每次真扫, 但对 R2 是读元信息, 成本低);
-//   · 重命名: R2 没有 rename, 是"读→写→删"三步(见 core/storage.js 的 moveMediaFile);
-//   · 批量删除: R2 的 delete 收数组(单次 ≤1000), 一批只花 1 次子请求 —— 但仍按 BATCH_MAX 分批,
-//     因为引用扫描(9 条 D1) 要留在单请求的子请求预算内(免费套餐 50 次/请求)。
-//
-// 2.3.9 新增(全部复用既有接口与共用实现, 没有另造一套):
-//   · 上传卡片 → 复用既有的 POST /admin/image_upload;
-//   · 详情页 /admin/media_manage_detail(体积/类型/上传时间/Content-Type/引用明细 + 原图/视频预览);
-//   · 改名/移动 /admin/media_manage_rename(改 key; 源或目标**任一有引用就拒绝**, 不擅自改写笔记内容);
-//   · 删除扩成批量(同一个 /admin/media_manage_delete, 新增 `paths=` 逗号列表; 原来的 `path=` 仍兼容);
-//   · 筛选新增"目录"与"引用状态"(前者复用共用的 searchSelect, 后者沿用 URL 参数 + 标签条那一套)。
-//
-// 2.4.0 变化:
-//   · **缩略图(派生文件)整体移除** —— 列表不再探测/显示缩略图, 详情页直接用原图;
-//     桶里历史遗留的 `<素材目录>_thumb/` 对象现在会作为普通素材出现在清单里(便于清理, 不自动删)。
-//   · **上传升级** —— 文件/文件夹两种入口(文件夹保留内部子目录)、命名策略(自动生成 / 保留原名,
-//     重名自动加 `_1` 绝不覆盖)、按内容分流到 image//video/、逐文件进度条 + 成功失败计数 + 失败重试/跳过。
-//     前端用 XHR 的 upload.onprogress 拿进度(浏览器没有服务端进度), 一次请求一个文件、顺序上传。
-//
-// 2.6.5 三处修复(都不动上传的其它功能: 进度条/命名策略/目录结构保留一字未改):
-//   · **引用误判** —— 根目录素材原先按"子串"判命中, 于是 `image/food/2017-2018.jpg` 会把根目录的
-//     `2018.jpg` 判成"被引用"。现在按"整段路径相等"判(唯一实现在 core/storage.js 的 relPathsIn, 见那里的说明),
-//     列表列/「查看引用」/详情/删除前复查仍共用 scanReferences 一处。
-//   · **目标路径可选项** —— 原先只列"当前浏览层"的子目录, 站在 image/food/ 连 image/ 的兄弟目录都选不到;
-//     2.6.5 改成扫全桶后又把各级目录全列出来(选项太长), 2.6.6 定为**只列桶根下的一级子目录**(列一层, 见 listPage)。
-// 2.6.6 变化:
-//   · 目标路径下拉只给桶根下的一级子目录(根目录选项、各入口默认项、手填入口都不变), 更深的目录仍用「其它（手动填写）」写;
-//     少扫几十层目录, 素材库页也就少几十次 R2 子请求。
-// 2.6.7 修复:
-//   · 下拉原先另扫一份根层、还多一层"站内自有目录不进"的过滤, 与【存储桶根目录】后面那排按钮对不上(下拉少几个);
-//     现在下拉直接用页面那份数据(根层) 或同参数的 listLevel(子目录时), 不再额外过滤。
-// 2.6.8 变化(只动上传卡片的前端交互, 进度条机制/命名策略的服务端口径/目标路径都没动):
-//   · 命名默认值由「自动生成」改成「保留原名」(重名顺延 _1/_2, 同目录才算、各子目录独立计数);
-//   · 选完文件/文件夹多一份**待上传清单**(缩略图/图标 + 相对路径 + 大小/类型/状态), 可按文件或按文件夹移除,
-//     与进度条同一份队列(等待/上传中/成功/失败都在行内显示, 失败仍可重试/跳过)。
-//   · **目录按钮** —— 原先写死 存储桶根目录/image//video//news_uploads/ 五个; 现在跟着当前位置动态一层
-//     (常态 = 存储桶根目录 + 根下子目录, 进了子目录就换成它的子目录), 返回上一层仍用面包屑或「上一级」。
-// 2.7.1 变化(抽共用, 页面行为不变):
-//   · 逐层列举 + 类型/关键词过滤 + 排序 + 分页, 以及"预览格 + 类型/大小/修改时间三格"抽到 lib/mediaBrowse.js,
-//     与素材选择器(素材库弹窗)共用一份 —— 两处的列口径、预览地址规则、上传时间格式因此不会各走各的;
-//   · 行里的修改时间由 fmtDatetime(new Date(...)) 换成共用的 fmtUploadTime(北京时间, 不依赖运行时区)。
+// 素材库管理(治理页, 仅超管): 看占用 / 查引用 / 删无用文件; "选素材"在字段旁的弹窗里, 不是这一页。
+// 引用判定只有一处 scanReferences(列表列 /「查看引用」/ 删除与改名前复查), 两处不一致就是"正文里的引用永远显示未引用"; 且引用必须含回收站。
 import { escapeHtml } from '../../core/html.js';
 import { settings } from '../../core/config.js';
 import { all } from '../../core/db.js';
@@ -66,7 +16,7 @@ import {
 } from '../lib/mediaBrowse.js';
 import { adminLayout } from '../lib/layout.js';
 import {
-  backButton, deleteConfirmCard, filterButtons, listFoot, listMeta, listToolbar, pageHeader,
+  IMG_FALLBACK_ATTR, backButton, deleteConfirmCard, filterButtons, listFoot, listMeta, listToolbar, pageHeader,
   pagerScript, searchBar, searchInput, searchSelect, selectField, staticScript, textField
 } from '../lib/partials.js';
 import { PER_PAGE, auditLog, strOf, urlenc } from '../lib/utils.js';
@@ -80,26 +30,22 @@ const RENAME_URL = '/admin/media_manage_rename';
 //: 上传仍走既有端点(旧地址 /admin/news_image_upload 等价), 不新增上传接口
 const UPLOAD_URL = '/admin/image_upload';
 
-//: 一次批量最多几个: 一批 = 9 条引用扫描(D1, 并发) + 1 次 R2 批量删除;
-//  免费套餐单请求子请求上限 50, 留余量给列表列举, 所以封在 20。
+//: 批量删除上限: 一批 = 9 条引用扫描 + 1 次 R2 批量删除, 单请求子请求上限 50, 得留余量给列表列举
 const BATCH_MAX = 20;
 
-//: 根目录(存储桶最外层, 不带任何前缀)在**上传卡片**里的表示值:
-//  空串已经被"没传 = 默认目录"占用, 所以另取一个哨兵值; 上传接口也认这个 `/`(见 lib/mediaUpload 的 safeTargetDir)。
+//: 上传卡片里表示"存储桶最外层"的哨兵值(空串已被"没传 = 默认目录"占用), 上传接口也认它
 const ROOT_DIR = '/';
 const isRootDir = (value) => value === ROOT_DIR;
-
 
 //: 类型筛选(按扩展名判定; 其它 = 既不是图片也不是视频)
 const KIND_CHOICES = [['all', '全部类型'], ['image', '图片'], ['video', '视频'], ['other', '其它']];
 
-//: 目录级移动一次最多几个对象: 每个对象 = head + get + put + delete(4 次 R2 子请求),
-//  免费套餐单请求 50 次子请求, 10 个 = 40 次, 留余量给列举与引用扫描(超出会提示"还有 N 个, 可再次提交")。
+//: 一次移动几个: 每个对象 = head + get + put + delete(4 次 R2 子请求), 10 个已占掉 40 次子请求预算
 const DIR_MOVE_MAX = 10;
-//: 目录级操作(移动/删除)的确认与执行端点
+//: 目录(或选中项)的移动与删除: 确认页(GET)与执行(POST)共用这个端点
 const DIR_URL = '/admin/media_manage_dir';
 
-//: 其它引用来源(表, 列, 中文名) —— 只列"可能装素材相对路径的列"(与旧站 _OTHER_REF_SOURCES 一致)
+//: 其它引用来源(表, 列, 中文名): 只列"可能装素材路径的列"
 const OTHER_REF_SOURCES = [
   ['banner_images', 'image_url', '轮播图'],
   ['motorcycle_trips', 'poster', '摩旅精选封面'],
@@ -114,7 +60,7 @@ function redirectTo(url) {
   return new Response(null, { status: 302, headers: { location: url } });
 }
 
-/** 返回地址收敛: 只接受本页地址(防开放重定向, 旧站 _safe_back 同口径)。 */
+//: 返回地址收敛: 只接受本页地址(防开放重定向, 旧站 _safe_back 同口径)
 function safeBack(raw) {
   const value = strOf(raw);
   if (!value.startsWith(LIST_URL) || value.startsWith('//')) return LIST_URL;
@@ -136,18 +82,13 @@ function backWith(back, params) {
 const REF_SCAN_LIMIT = 2000;
 const OTHER_REF_SCAN_LIMIT = 500;
 
-/**
- * 全库引用扫描 —— **唯一判定实现**(列表列 /「查看引用」/ 删除前复查三处共用)。
- * only 传入时只保留这批路径(列表页用, 免得为几百条素材攒无用条目)。
- * 返回 { ok, refs, truncated }: ok=false 表示**没扫全**(有一条查询失败, 或命中取行上限) ——
- * 把"扫不到"当成"没被引用"就会删掉仍在使用的素材(2026-10-07 线上事故), 所以调用方必须据 ok 拒绝破坏性操作。
- */
+//: 全库引用扫描 —— 唯一判定实现(列表列 /「查看引用」/ 删除与改名前复查三处共用); only 传入时只保留这批路径。
+//: ok=false 表示没扫全(查询失败或命中取行上限), 此时"扫不到"不等于"没被引用"(2026-10-07 事故), 调用方必须拒绝。
 export async function scanReferences(env, only = null) {
   const hits = {};
   let failed = false;
   const keep = only ? new Set(only) : null;
-  // 根目录那一块的记录值(裸文件名或根下自定义目录里的路径)没有"前缀"可筛, 只能按候选名单精确命中;
-  // 只收图片/视频(站内资源如 assets/app.js 笔记引用不到, 收进来只会多匹配)
+  // 根目录素材的记录值是裸文件名, 没有前缀可筛, 只能按候选名单精确命中; 只收图片/视频
   const rootNames = keep
     ? [...keep].filter((one) => isRootTreePath(one) && Boolean(kindOfExt(extOf(one))))
     : [];
@@ -159,15 +100,8 @@ export async function scanReferences(env, only = null) {
     }
   };
 
-  // 粗筛: 任一素材目录命中就取回(真正的判定在 relPathsIn 的归一化等值比较)。
-  // ⚠️ 每个 LIKE 都要写全列名: 曾经拼成 "image LIKE ? OR LIKE ? OR LIKE ?"(后两个没有列名),
-  //    SQLite 直接语法报错, 又被下面的 catch 吞成"零命中" → 引用列整列显示"未引用"、
-  //    删除前复查也一起失效(2026-10-07 线上事故; 桩测试看不出语法错, 见 tests 里那条 SQL 形状检查)。
-  //
-  // 2.4.4 根目录素材: 记录值就是 `logo.png` 这种裸文件名, 没有前缀可筛 ——
-  //   · 粗筛加一组"按扩展名"的 LIKE(`%.png` 等): 与根目录里有多少文件无关, 多取到的行由 relPathsIn 精确判定;
-  //   · 只有在**本次要查的集合里真的有根目录素材**时才加这组条件(否则保持原来的扫描量)。
-  // 注: 这组条件会多取一些行, LIMIT 2000/500 的口径不变(与原来"凡是含 image/ 的行都取回"是同一类取舍)。
+  // ⚠️ 每个 LIKE 都要写全列名: 曾拼成 "image LIKE ? OR LIKE ?" → SQLite 语法错被 catch 吞成"零命中" → 引用列整列"未引用"、删除前复查一起失效(2026-10-07 事故, 桩测试看不出语法错)。
+  // 根目录素材再补一组"按扩展名"的 LIKE(%.png 等), 多取的行由 relPathsIn 精确判定; 只有本次确实要查根目录素材时才加。
   const wantRoot = keep ? rootNames.length > 0 : true;
   const ROOT_LIKE_SUFFIXES = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.mp4', '.mov', '.m4v', '.webm'];
   function likeGroup(column) {
@@ -181,8 +115,7 @@ export async function scanReferences(env, only = null) {
     }
     return { sql: `(${parts.join(' OR ')})`, args };
   }
-  // 查询失败要能在日志里看见(静默 catch 正是上面的“零命中”藏了两周的原因); 同时记 failed,
-  // 让调用方知道"这次没扫全", 而不是拿着半份结果去删素材
+  // 失败要在日志里看得见并置 failed: 静默 catch 正是"零命中"藏了两周的原因
   const softFail = (what) => (error) => {
     console.error('引用扫描失败', what, error && error.message);
     failed = true;
@@ -242,11 +175,7 @@ function jsonOrForm(ctx) {
   return ctx.form && Object.keys(ctx.form).length ? ctx.form : ctx.body || {};
 }
 
-/**
- * 批量参数解析: `paths` 是 **JSON 数组**。
- * 为什么不用逗号分隔: 对象键里允许逗号, `image/a,b.png` 会被拆成两个键 —— 那就删错对象了。
- * 解析不出来就回空数组(调用方按"参数错误"处理), 绝不"尽力而为"地拆。
- */
+//: 批量参数 paths 是 JSON 数组 —— 对象键里允许逗号, 逗号分隔会拆错键(那就删错对象了); 解析不出来回空数组
 function keysOf(rawPaths) {
   const text = strOf(rawPaths);
   if (!text) return [];
@@ -266,25 +195,20 @@ function keysOf(rawPaths) {
   return list;
 }
 
-/** 单条路径(旧地址 ?path= / 行内删除链接) → [键](不合法回空数组)。 */
+//: 单条路径(?path= 或行内删除链接) → [键], 不合法回空数组
 function singleKeys(rawPath) {
   const checked = checkObjectKey(strOf(rawPath));
   return checked.ok ? [checked.key] : [];
 }
 
-/**
- * 这个键是不是"素材"(决定要不要做引用扫描、以及引用列显示什么):
- *   · 素材目录下的(`image/`、`video/`、`news_uploads/`)一律算(历史目录里可能混着非媒体文件, 但仍按素材口径查);
- *   · 根目录树里的**必须带图片/视频扩展名**才算 —— `assets/app.js`、`images/site.png` 这类是站内资源,
- *     笔记引用不到它们, 白扫 9 条 D1 查询还会把"未引用"写得到处都是。
- */
+//: 这个键算不算"素材"(决定要不要做引用扫描): 素材目录下的一律算; 根目录树里的必须带图片/视频扩展名(站内资源笔记引用不到, 白扫 9 条 D1)。
 function isMediaKey(key) {
   const text = String(key || '');
   if (mediaPrefixOf(text)) return true;
   return isRootTreePath(text) && Boolean(kindOfExt(extOf(text)));
 }
 
-/** 面包屑 + 「上一级」(2.4.6): 每一段都可点回该层; 根目录就是存储桶本身。 */
+//: 面包屑 + 「上一级」: 每一段都可点回该层, 根目录就是存储桶本身
 function crumbsHtml(prefix) {
   const pieces = String(prefix || '').split('/').filter(Boolean);
   const links = [`<a href="${LIST_URL}">存储桶</a>`];
@@ -307,10 +231,7 @@ function mbOf(bytes) {
   return `${Math.floor(Number(bytes) / 1024 / 1024)} MB`;
 }
 
-/**
- * 引用明细区块(详情页与改名确认页共用): 逐条给出中文来源 + 跳转, 笔记直接链到编辑页。
- * ok=false 表示这次扫描没扫全(见 scanReferences 的返回值): 必须先警告"结果可能不全", 不能说"没有任何引用"。
- */
+//: 引用明细(详情页与改名确认页共用): 没扫全(ok=false)时必须说"结果可能不全", 不能说"没有任何引用"
 function refsBlock(refs, ok = true) {
   const incomplete = ok
     ? ''
@@ -330,25 +251,15 @@ function refsBlock(refs, ok = true) {
     <ul class="mb-0">${rows}</ul>`;
 }
 
-//: 引用扫描没扫全时的统一拒绝文案(确认页与提交处共用, 免得两处口径不一致)
+//: 扫描没扫全时的统一拒绝文案(确认页与提交处共用, 免得两处口径不一致)
 const REF_SCAN_INCOMPLETE = '引用扫描未完成（查询失败或超出取行上限），已拒绝本次操作，请稍后重试';
 
-/**
- * 上传卡片(2.4.1 拆分入口 + 2.4.2 文案与目录保留):
- *   · 图片与视频分成两个入口, 类型由入口决定(图片→image/、视频→video/), 服务端仍按文件头校验内容。
- *   · 每个入口两个按钮:「选择文件」= 多选文件、「选择文件夹」= 整个文件夹(含子目录)。
- *     原生 file 控件的按钮文字由浏览器决定(webkitdirectory 在 Chrome 里也只显示"选择文件"),
- *     所以这里把 input 隐藏(visually-hidden, 仍可被键盘聚焦与触发), 用 label 按钮显示我们自己的文案。
- *   · 文件夹上传会把**整棵目录树**带上(含选中的那层文件夹名), 两种命名模式都保留目录(见 send() 与 lib/mediaUpload)。
- */
+//: 上传卡片: 图片/视频两个入口(类型由入口决定, 服务端仍按文件头校验); 原生 file 控件按钮文字由浏览器决定, 所以藏起 input 只借行为; 文件夹上传带整棵目录树。
 function uploadCard(dirs = []) {
-  // 两个入口共用同一段结构(2.4.1 是两段逐字复制的标记, 文案与属性很容易改漏一处)
-  // 2.4.3: 每个入口多一个「目标路径」下拉 —— 原生 select 给"桶里已存在的目录", 也可以手填新目录。
+  // 两个入口共用同一段结构: 逐字复制两份时文案与属性很容易改漏一处
   const pickers = ({ tab, title, icon, dir, purpose, accept, limit, unit }) => {
     const root = `${dir}/`;
-    // 可选项(2.6.7): 根目录 → 本入口根目录(默认) → 桶根下的一级子目录(与【存储桶根目录】后面那排按钮同一份数据) → 「其它（手动填写）」兜底。
-    // 只给一级子目录是刻意的: 更深层级用「其它」手填(下拉选项太多反而难选), 见 listPage 处的说明。
-    // 不再额外过滤任何目录(2.6.7 删掉了原来的"站内自有目录不进下拉"): 下拉与桶页那排按钮必须逐字一致, 否则就是"显示不全"。
+    // 选项 = 根目录 → 本入口根目录(默认) → 桶根下的一级子目录 → 「其它（手动填写）」; 只列一级是刻意的, 候选必须与桶根那排按钮同源
     const others = dirs.filter((one) => one !== root);
     const options = [[ROOT_DIR, '根目录（存储桶最外层）'], [root, `${root}（默认）`]]
       .concat(others.map((one) => [one, one]))
@@ -430,8 +341,7 @@ function uploadCard(dirs = []) {
         </div>
         <div class="small text-muted mt-1" id="mediaUploadOverall" role="status" aria-live="polite">等待选择文件…</div>
         <div class="small text-muted" id="mediaUploadCurrent"></div>
-        <!-- 待上传清单(2.6.8): 一行一个文件(缩略图/图标 + 相对路径 + 大小/类型/状态), 与下面的进度条联动;
-             选文件夹时按"选中的那层文件夹"分组、组头整组移除; 列表本身可滚动, 多层级也不会把页面撑长 -->
+        <!-- 待上传清单: 一行一个文件(缩略图 + 相对路径 + 大小/类型/状态), 与进度条联动; 列表可滚动, 多层级不会撑长页面 -->
         <div class="upload-list mt-2 d-none" id="mediaUploadListBox">
           <ul class="list-unstyled mb-0" id="mediaUploadList"></ul>
         </div>
@@ -441,22 +351,15 @@ function uploadCard(dirs = []) {
   </div></div>`;
 }
 
-//: 页面脚本已搬到 static/js/media_govern.js(2.5.0): 放在模板字符串里改一处极易整段崩坏
-//: (反斜杠会被求值吃掉、反引号会截断脚本)。这里只保留它需要的两个常量, 通过 window 注入。
+//: 脚本要的常量由页面注入(脚本已搬到 static/js/media_govern.js: 写在模板字符串里会被求值吃掉反斜杠、被反引号截断)
 const MEDIA_GOVERN_CFG = `<script>window.__mediaGovernCfg = ${JSON.stringify({
-  batchMax: BATCH_MAX, uploadUrl: UPLOAD_URL
+  batchMax: BATCH_MAX, moveMax: DIR_MOVE_MAX, uploadUrl: UPLOAD_URL, moveUrl: DIR_URL
 })};</script>`;
 
 //: 触底加载的行片段端点(只给**路径**, 查询参数由前端按 location.search 拼 —— 带筛选翻页才不丢条件)
 const ROWS_URL = '/admin/media_manage_rows';
 
-/**
- * 目录浏览取数(2.4.6, 取代 2.4.1~2.4.5 的"全桶素材清单"):
- *   · 逐层列举与"类型/关键词过滤 + 排序 + 分页"共用 lib/mediaBrowse.js 的 browseLevel(与素材选择器同一份);
- *   · 引用: 只有本层确实含素材键时才扫(素材目录里或根目录树里), 默认只查**本页**那几条(省 9 条 D1 查询);
- *     带"引用状态"筛选时才查本层全部(否则没法分页);
- *   · `truncated` = 这一层超过单层上限(1000) 个, 页面会提示用前缀/关键词缩小范围。
- */
+//: 目录浏览取数(逐层列举 + 过滤/排序/分页都走 lib/mediaBrowse.js 的 browseLevel, 与素材选择器同一份): 只有本层含素材键才扫引用, 不带"引用状态"筛选时只扫本页(省 9 条 D1)。
 async function browseQuery(ctx) {
   const ref = strOf(ctx.query.ref) === 'used' ? 'used' : strOf(ctx.query.ref) === 'unused' ? 'unused' : '';
   // 引用扫描的结果由 prepare 里回填(见下), 页面与行片段都要用, 所以放在这个作用域
@@ -470,8 +373,7 @@ async function browseQuery(ctx) {
     sort: strOf(ctx.query.sort),
     page: strOf(ctx.query.page),
     perPage: PER_PAGE,
-    // 分页前: 只有本层确实含素材键才扫引用(浏览 avatar/、站点资源这类目录白花 9 条 D1 查询);
-    // 带"引用状态"筛选时必须先扫本层全部再筛, 否则分页数对不上; 不带筛选则只扫本页(见函数末尾)
+    // 引用扫描必须赶在切片之前, 否则"按引用筛选"就没法分页(浏览 avatar/ 这类非素材目录则整层不扫)
     prepare: async (files) => {
       mediaish = files.some((one) => isMediaKey(one.key));
       if (!mediaish || !ref) return files;
@@ -555,8 +457,7 @@ function folderRows(folders, currentUrl) {
 
 async function listPage(ctx) {
   if (!isSuper(ctx)) return denied(ctx);
-  // 目标路径下拉必须与【存储桶根目录】后面那排目录一致(2.6.7): 站在根目录就直接复用页面这份数据(零额外列举),
-  // 站在子目录时才补一次**同参数**的根层列举 —— 两处始终出自 listLevel, 不再各扫一份、各有各的过滤
+  // 目标路径下拉必须与【存储桶根目录】那排按钮同源: 站根时直接复用本页数据(零额外列举), 站子目录才补一次同参数的根层列举
   const data = await browseQuery(ctx);
   const rootLevel = data.prefix === '' ? data : await listLevel(ctx.env, '', { limit: LEVEL_MAX });
   const dirs = rootLevel.folders.map((one) => one.key);
@@ -576,14 +477,18 @@ async function listPage(ctx) {
       + searchSelect({ name: 'ref', value: data.ref, items: [['', '全部引用状态'], ['used', '已引用'], ['unused', '未引用']] })
       + searchInput({ name: 'q', value: strOf(ctx.query.q), placeholder: '按对象键搜索（本层）' })
   });
-  // 目录按钮(2.6.5): 跟着当前位置动 —— 常态是「存储桶根目录」(在根时高亮) + 根下的子目录;
-  // 进了某个子目录就换成该子目录下的子目录。原先写死的 image/ / video/ / news_uploads/ 三个按钮已并入这一层
-  // (它们本来就是根目录的子目录), 不再单独占位。返回上一层用上面的面包屑或「上一级」。
+  // 目录按钮跟着当前位置动一层: 在根时高亮「存储桶根目录」+ 列根下子目录, 进了子目录就换成它的子目录(返回上一层走面包屑或「上一级」)
   const quick = [`<a class="btn btn-sm ${data.prefix === '' ? 'btn-primary' : 'btn-outline-secondary'}"`
     + ` href="${LIST_URL}">存储桶根目录</a>`]
     .concat(data.folders.map((folder) => `<a class="btn btn-sm btn-outline-secondary"`
       + ` href="${LIST_URL}?prefix=${urlenc(folder.key)}">${escapeHtml(folder.name)}/</a>`))
     .join('');
+
+  // 空状态要分清"这层本来就没东西"和"被筛选筛没了", 否则用户会以为文件丢了
+  const filtered = Boolean(strOf(ctx.query.q) || data.kind !== 'all' || data.ref);
+  const emptyHint = filtered
+    ? '这一层没有符合筛选条件的对象（关键词 / 类型 / 引用状态），清空筛选或换一层再看'
+    : '此目录暂无文件（对象存储里没有"空的目录"；换个前缀看看，或用上面的上传卡片传一个）';
 
   const content = `${pageHeader({ icon: 'bi-hdd-stack', title: '存储桶资源管理' })}
 ${uploadCard(dirs)}
@@ -604,8 +509,10 @@ ${uploadCard(dirs)}
     <form method="get" action="${DELETE_URL}" id="mediaBatchForm" class="d-flex flex-wrap align-items-center gap-2 mb-2">
       <input type="hidden" name="paths" id="mediaBatchPaths">
       <input type="hidden" name="back" value="${escapeHtml(data.currentUrl)}">
-      <span class="small text-muted">删除不可恢复；素材路径（含根目录树）仍做引用检查，有一个被引用就整批拒绝（一次最多 ${BATCH_MAX} 个）。</span>
+      <span class="small text-muted">删除不可恢复；移动会换掉对象键（笔记里的引用不会自动改写）。两者都做引用检查，有一个被引用就整批拒绝（删除一次最多 ${BATCH_MAX} 个、移动 ${DIR_MOVE_MAX} 个）。</span>
       <button class="btn btn-sm btn-outline-danger" type="submit" id="mediaBatchDelete" disabled>删除所选</button>
+      <button class="btn btn-sm btn-outline-secondary" type="button" id="mediaBatchMove"
+              title="把选中的对象搬到同一个目标前缀（文件名不变）" disabled>移动所选…</button>
       <span class="small" id="mediaBatchCount">已选 0 个</span>
     </form>
     <div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0">
@@ -613,7 +520,7 @@ ${uploadCard(dirs)}
         <th><input type="checkbox" class="form-check-input" id="mediaPickAll" aria-label="全选已加载的文件"></th>
         <th>预览</th><th>对象键</th><th>类型</th><th>大小</th><th>修改时间</th><th>ETag</th><th>引用</th><th></th>
       </tr></thead>
-      <tbody id="mediaTbody">${rows || `<tr><td colspan="9" class="text-muted">这个目录下没有内容（对象存储里没有"空的目录"，换个前缀或先上传一个文件）</td></tr>`}</tbody>
+      <tbody id="mediaTbody">${rows || `<tr><td colspan="9" class="text-muted">${emptyHint}</td></tr>`}</tbody>
     </table></div>
     ${listFoot({
     sentinelId: 'mediaLoadMore', textId: 'mediaLoadMoreText',
@@ -630,6 +537,7 @@ ${uploadCard(dirs)}
       "空目录"也不存在（没有对象的目录自然消失）。
       <br>· 移动 / 复制 / 删除都<strong>绝不覆盖已有对象</strong>（目标已存在就拒绝）；素材路径（<code>image/</code>、<code>video/</code>、<code>news_uploads/</code> 与根目录树）仍受引用检查保护：
       有引用就整批拒绝，且<strong>不擅自改写笔记里的引用</strong>（要先在笔记里改地址）。
+      <br>· <strong>「移动所选…」</strong>把勾选的对象搬到同一个目标前缀下（文件名不变）：与删除一样先出确认页，被引用一样整批拒绝。
       <br>· 缩略图（派生文件）已按 2.4.0 移除，列表/详情/预览一律用原图；新上传对象带
       <code>Cache-Control: ${escapeHtml(CACHE_CONTROL_MEDIA)}</code>。全桶媒体占用统计在「系统信息」页（这里不再全桶扫描，只列举当前层）。
     </div>
@@ -638,8 +546,7 @@ ${uploadCard(dirs)}
 
   return adminLayout(Object.assign({}, ctx, {
     title: '存储桶资源管理', currentPage: 'media_manage', content,
-    // 触底加载与回到顶部全部走共用的 infinite_scroll.js(与笔记/用户/留言等页同一实现)
-    // rowsUrl 只给端点路径: 参数由 AdminListLoader 按 location.search 拼, 带 prefix/kind/ref/q 翻页都不会串
+    // 触底加载与回到顶部走共用的 infinite_scroll.js; rowsUrl 只给端点路径(参数由 AdminListLoader 按 location.search 拼)
     scripts: pagerScript({
       tbodyId: 'mediaTbody', sentinelId: 'mediaLoadMore', textId: 'mediaLoadMoreText',
       rowsUrl: ROWS_URL, currentPage: data.page, totalPages: data.totalPages, total: data.filtered.length,
@@ -693,8 +600,7 @@ async function deleteGet(ctx) {
   const refs = scan.refs;
   const blocked = mediaKeys.filter((path) => (refs[path] || []).length > 0);
 
-  // 只要有一个还被引用就整批拒绝(部分成功最容易让人以为"都删了") —— 删了不可恢复。
-  // 单条走原来那句文案(与旧站一致), 批量才用"整批拒绝"的说法。
+  // 只要有一个还被引用就整批拒绝(部分成功最容易让人以为"都删了"); 单条用原句文案, 批量才用"整批拒绝"
   const body = blocked.length
     ? (keys.length === 1
       ? `<div class="alert alert-warning mb-3">这个素材还被 ${(refs[keys[0]] || []).length} 处引用，<b>不能删除</b>。请先改掉引用（或清理回收站）再来。</div>
@@ -724,7 +630,7 @@ async function deleteGet(ctx) {
   return adminLayout(Object.assign({}, ctx, { title: '删除对象', currentPage: 'media_manage', content }));
 }
 
-/** 对象详情页(2.4.6 泛化到任意对象键): 对象键/所在目录/大小/类型/时间/ETag/Content-Type/缓存口径 + 引用明细 + 原图或视频预览。 */
+//: 对象详情页: 对象键/所在层/大小/类型/时间/ETag/Content-Type/缓存口径 + 引用明细 + 原图或视频预览
 async function detailPage(ctx) {
   if (!isSuper(ctx)) return denied(ctx);
   const checked = checkObjectKey(strOf(ctx.query.path));
@@ -742,11 +648,11 @@ async function detailPage(ctx) {
   const url = mediaUrlOf(base, key);
   const kind = kindOfFile(key);
   const parent = parentOf(key);
-  // 2.4.0: 缩略图功能整体移除, 预览直接用原图(不再探测 <目录>_thumb/)
+  // 预览一律用原图(派生缩略图已移除); 图片挂共用的兜底属性, 加载失败换 /lucky.jpg
   const preview = kind === 'video'
     ? (url ? `<video class="media-preview" controls preload="metadata" src="${escapeHtml(url)}"></video>` : '（未配置 MEDIA_BASE，无法预览）')
     : (kind === 'image' && url
-      ? `<img class="cover-detail" src="${escapeHtml(url)}" alt="" loading="lazy">`
+      ? `<img class="cover-detail" src="${escapeHtml(url)}" alt="" loading="lazy" decoding="async" ${IMG_FALLBACK_ATTR}>`
       : '（不是图片/视频，或未配置 MEDIA_BASE，无法预览）');
   const rows = [
     ['对象键', `<code>${escapeHtml(key)}</code>`],
@@ -788,12 +694,7 @@ async function detailPage(ctx) {
   return adminLayout(Object.assign({}, ctx, { title: '对象详情', currentPage: 'media_manage', content }));
 }
 
-/**
- * 改名 / 移动 / 复制(GET = 确认页; 2.4.6 起目标目录可填**任意前缀**, 并多了「复制」开关):
- * **素材路径的源或目标任一有引用就拒绝** —— 本站不做"引用同步改写"(那要重写笔记正文, 风险最高),
- * 也不允许把已被引用的路径覆盖掉。非素材对象(站点资源等)不做引用检查(笔记引用不到)。
- * 被引用而想留副本时, 页面直接给出"改为复制"的入口(复制不动原对象, 因此不受这条限制)。
- */
+//: 改名 / 移动 / 复制(目标目录可填任意前缀): 素材路径的源或目标任一有引用就拒绝(本站不改写笔记正文); 想留副本就用「复制」, 它不动原对象。
 async function renameGet(ctx) {
   if (!isSuper(ctx)) return denied(ctx);
   const checked = checkObjectKey(strOf(ctx.query.path));
@@ -911,52 +812,69 @@ async function renamePost(ctx) {
   return redirectTo(backWith(back, { message: `${copy ? '已复制为' : '已改为'} ${to}` }));
 }
 
-/**
- * 目录级操作(2.4.6): 「移动」/「删除」某个前缀下的对象。
- * R2 没有目录实体, 所以这两件事都是"对该前缀下的对象批量做"; 受单请求子请求预算限制,
- * 一次只处理一小批(移动 10 个 / 删除 20 个), 剩下的提示"可再次提交"。
- * 批量里只要有一个仍被引用就**整批拒绝**(与单条删除同一口径), 且不改写任何笔记。
- */
+//: 目录级(或勾选项)的移动/删除确认页: "移动目录"就是对前缀下的对象分批做(移动 10 个 / 删除 20 个), 剩下的提示可再次提交, 被引用就整批拒绝。
+//: paths 形式只做移动: 列表页勾选的若干个对象, 文件名不变、搬到同一个目标前缀。
 async function dirPage(ctx) {
   if (!isSuper(ctx)) return denied(ctx);
   const action = strOf(ctx.query.action) === 'delete' ? 'delete' : 'move';
   const back = safeBack(ctx.query.back);
-  const checked = checkObjectKey(strOf(ctx.query.prefix), { asDir: true });
-  if (!checked.ok || !checked.key) return redirectTo(backWith(LIST_URL, { error: '参数错误' }));
-  const prefix = checked.key;
-  const under = await listUnder(ctx.env, prefix, { limit: LEVEL_MAX });
-  if (!under.objects.length) {
-    return redirectTo(backWith(back, { error: '这个前缀下已经没有对象了（对象存储里没有"空目录"）' }));
-  }
   const limit = action === 'delete' ? BATCH_MAX : DIR_MOVE_MAX;
-  const take = under.objects.slice(0, limit);
+  const picked = strOf(ctx.query.paths) ? keysOf(ctx.query.paths) : [];
+  if (picked.length && action === 'delete') {
+    return redirectTo(backWith(back, { error: '批量删除请从列表页的「删除所选」走确认页' }));
+  }
+  const byPicked = picked.length > 0;
+  let prefix = '';
+  let take = [];
+  let totalBytes = 0;
+  let totalCount = 0;
+  let remaining = 0;
+  if (byPicked) {
+    take = picked.slice(0, DIR_MOVE_MAX).map((key) => ({ key }));
+    totalCount = picked.length;
+    remaining = Math.max(0, picked.length - take.length);
+  } else {
+    const checked = checkObjectKey(strOf(ctx.query.prefix), { asDir: true });
+    if (!checked.ok || !checked.key) return redirectTo(backWith(LIST_URL, { error: '参数错误' }));
+    prefix = checked.key;
+    const under = await listUnder(ctx.env, prefix, { limit: LEVEL_MAX });
+    if (!under.objects.length) {
+      return redirectTo(backWith(back, { error: '这个前缀下已经没有对象了（对象存储里没有"空目录"）' }));
+    }
+    take = under.objects.slice(0, limit);
+    totalBytes = under.objects.reduce((sum, one) => sum + Number(one.size || 0), 0);
+    totalCount = under.objects.length;
+    remaining = totalCount - take.length;
+  }
   const mediaKeys = take.map((one) => one.key).filter((one) => isMediaKey(one));
   const scan = mediaKeys.length ? await scanReferences(ctx.env, mediaKeys) : { ok: true, refs: {} };
   if (!scan.ok) return redirectTo(backWith(back, { error: REF_SCAN_INCOMPLETE }));
   const refs = scan.refs;
   const blocked = mediaKeys.filter((one) => (refs[one] || []).length > 0);
-  const totalBytes = under.objects.reduce((sum, one) => sum + Number(one.size || 0), 0);
-  const remaining = under.objects.length - take.length;
 
   const body = blocked.length
     ? `<div class="alert alert-warning mb-3">这一批里有 <b>${blocked.length}</b> 个仍被引用，<b>整批拒绝</b>（一个都不动）。请先在笔记里改掉引用。</div>
        <ul class="mb-3">${blocked.map((key) => `<li><code>${escapeHtml(key)}</code>：${(refs[key] || []).length} 处引用</li>`).join('')}</ul>
        <div class="d-flex gap-2">${backButton(back, '返回列表')}</div>`
     : `${action === 'delete'
-      ? `<div class="alert alert-danger">即将删除 <b>${take.length}</b> 个对象（不可恢复），这一前缀下共 ${under.objects.length} 个、合计 ${fmtBytes(totalBytes)}。</div>`
-      : `<div class="alert alert-secondary">即将移动 <b>${take.length}</b> 个对象（这一前缀下共 ${under.objects.length} 个、合计 ${fmtBytes(totalBytes)}）。</div>`}
-       <ul class="small mb-3">${take.map((one) => `<li><code>${escapeHtml(one.key)}</code> · ${fmtBytes(one.size)}</li>`).join('')}
+      ? `<div class="alert alert-danger">即将删除 <b>${take.length}</b> 个对象（不可恢复），这一前缀下共 ${totalCount} 个、合计 ${fmtBytes(totalBytes)}。</div>`
+      : `<div class="alert alert-secondary">即将移动 <b>${take.length}</b> 个对象${byPicked
+        ? '（文件名不变，搬到同一个目标前缀）'
+        : `（这一前缀下共 ${totalCount} 个、合计 ${fmtBytes(totalBytes)}）`}。</div>`}
+       <ul class="small mb-3">${take.map((one) => `<li><code>${escapeHtml(one.key)}</code>${one.size ? ` · ${fmtBytes(one.size)}` : ''}</li>`).join('')}
        ${remaining > 0 ? `<li class="text-muted">……还有 ${remaining} 个（一次最多 ${limit} 个，提交后可再来一次）</li>` : ''}</ul>
        <form method="post" action="${DIR_URL}" class="row g-3">
          <input type="hidden" name="action" value="${action}">
-         <input type="hidden" name="prefix" value="${escapeHtml(prefix)}">
+         <input type="hidden" name="${byPicked ? 'paths' : 'prefix'}" value="${escapeHtml(byPicked ? JSON.stringify(take.map((one) => one.key)) : prefix)}">
          <input type="hidden" name="back" value="${escapeHtml(back)}">
          <input type="hidden" name="confirm" value="1">
          ${action === 'move'
         ? `<div class="col-lg-6">${textField({
-          name: 'dir', label: '移动到（目标前缀）', value: prefix,
+          name: 'dir', label: '移动到（目标前缀）', value: byPicked ? parentOf(take[0].key) : prefix,
           placeholder: '如 image/2026-10/ ；留空 = 存储桶根目录',
-          hint: '该前缀下的相对结构会原样保留（原键去掉本前缀后拼到目标前缀后面）。'
+          hint: byPicked
+            ? '选中的对象文件名不变，都搬到这个前缀下；留空 = 存储桶最外层（不会覆盖同名对象）。'
+            : '该前缀下的相对结构会原样保留（原键去掉本前缀后拼到目标前缀后面）。'
         })}</div>`
         : ''}
          <div class="col-12 d-grid gap-2">
@@ -967,12 +885,14 @@ async function dirPage(ctx) {
          </div>
        </form>
        <div class="small text-muted mt-3">
-         · 目录不是实体：R2 里只有对象键，"删除目录"就是删掉这些键，删完前缀自然消失；
-         <br>· 移动 = 每个对象"读 → 写 → 删"（3 次 R2 操作），所以一次只处理 ${DIR_MOVE_MAX} 个；删除是 1 次 R2 调用删掉一批（单次上限 1000，这里按 ${BATCH_MAX} 个一批走引用复查）；
+         ${byPicked
+        ? `· 选中的对象只换目录、文件名不变；移动 = 每个对象"读 → 写 → 删"（3 次 R2 操作），所以一次只处理 ${DIR_MOVE_MAX} 个；`
+        : `· 目录不是实体：R2 里只有对象键，"删除目录"就是删掉这些键，删完前缀自然消失；
+         <br>· 移动 = 每个对象"读 → 写 → 删"（3 次 R2 操作），所以一次只处理 ${DIR_MOVE_MAX} 个；删除是 1 次 R2 调用删掉一批（单次上限 1000，这里按 ${BATCH_MAX} 个一批走引用复查）；`}
          <br>· **绝不覆盖**：目标键已存在时该对象会失败并列出来（不会动原对象）。
        </div>`;
 
-  const title = action === 'delete' ? `删除目录内容：${prefix}` : `移动目录内容：${prefix}`;
+  const title = action === 'delete' ? `删除目录内容：${prefix}` : (byPicked ? '移动所选对象' : `移动目录内容：${prefix}`);
   const content = `${pageHeader({ icon: action === 'delete' ? 'bi-trash3' : 'bi-arrows-move', title, actions: backButton(back) })}
   <div class="card"><div class="card-body">${body}</div></div>`;
   return adminLayout(Object.assign({}, ctx, { title: action === 'delete' ? '删除目录内容' : '移动目录内容', currentPage: 'media_manage', content }));
@@ -983,14 +903,26 @@ async function dirPost(ctx) {
   const body = jsonOrForm(ctx);
   const back = safeBack(body.back);
   const action = strOf(body.action) === 'delete' ? 'delete' : 'move';
-  const checked = checkObjectKey(strOf(body.prefix), { asDir: true });
-  if (!checked.ok || !checked.key) return redirectTo(backWith(back, { error: '参数错误' }));
-  const prefix = checked.key;
-  const under = await listUnder(ctx.env, prefix, { limit: LEVEL_MAX });
-  if (!under.objects.length) return redirectTo(backWith(back, { error: '这个前缀下已经没有对象了' }));
   const limit = action === 'delete' ? BATCH_MAX : DIR_MOVE_MAX;
-  const take = under.objects.slice(0, limit).map((one) => one.key);
-  const remaining = under.objects.length - take.length;
+  // paths = 列表页勾选的若干个对象(只做移动); 没有就走目录形式(prefix 下的对象)
+  const picked = strOf(body.paths) ? keysOf(body.paths) : [];
+  const byPicked = picked.length > 0;
+  let prefix = '';
+  let take = [];
+  let remaining = 0;
+  if (byPicked) {
+    if (action !== 'move') return redirectTo(backWith(back, { error: '批量删除请从列表页的「删除所选」走确认页' }));
+    take = picked.slice(0, DIR_MOVE_MAX);
+    remaining = Math.max(0, picked.length - take.length);
+  } else {
+    const checked = checkObjectKey(strOf(body.prefix), { asDir: true });
+    if (!checked.ok || !checked.key) return redirectTo(backWith(back, { error: '参数错误' }));
+    prefix = checked.key;
+    const under = await listUnder(ctx.env, prefix, { limit: LEVEL_MAX });
+    if (!under.objects.length) return redirectTo(backWith(back, { error: '这个前缀下已经没有对象了' }));
+    take = under.objects.slice(0, limit).map((one) => one.key);
+    remaining = under.objects.length - take.length;
+  }
 
   // 服务端确认: 页面上那条"确认删除/移动"只是给人看的, 真正拦的是这里
   if (strOf(body.confirm) !== '1') {
@@ -1025,25 +957,25 @@ async function dirPost(ctx) {
     }));
   }
 
-  // 移动: 目标前缀 + 原键去掉本前缀后的部分(结构原样保留)
+  // 移动: 目录形式保留相对结构(原键去掉本前缀), 勾选形式只换目录、文件名不变
   const rawDir = strOf(body.dir).trim();
   const dirCheck = (rawDir === '' || isRootDir(rawDir)) ? { ok: true, key: '' } : checkObjectKey(rawDir, { asDir: true });
   if (!dirCheck.ok) return redirectTo(backWith(back, { error: dirCheck.message }));
   const dir = dirCheck.key;
-  if (dir === prefix) return redirectTo(backWith(back, { error: '目标前缀和原前缀相同' }));
+  if (!byPicked && dir === prefix) return redirectTo(backWith(back, { error: '目标前缀和原前缀相同' }));
   let moved = 0;
   const failures = [];
   for (const key of take) {
-    const to = `${dir}${key.slice(prefix.length)}`;
+    const to = `${dir}${byPicked ? key.slice(key.lastIndexOf('/') + 1) : key.slice(prefix.length)}`;
     const result = await moveObject(ctx.env, key, to);   // 每个对象 head + get + put + delete
     if (result.ok) moved += 1;
     else failures.push(`${key}（${result.reason}）`);
   }
   auditLog('admin.media_manage_dir', {
-    username: ctx.session.username, action, prefix, dir, moved, failed: failures.length, ok: true
+    username: ctx.session.username, action, prefix, dir, count: take.length, moved, failed: failures.length, ok: true
   });
-  const parts = [`已移动 ${moved} 个对象到 ${dir || '（存储桶根目录）'}`];
-  if (failures.length) parts.push(`失败 ${failures.length} 个：${failures.slice(0, 3).join('；')}`);
+  const parts = [`移动完成：成功 ${moved} 项、失败 ${failures.length} 项（目标：${dir || '存储桶根目录'}）`];
+  if (failures.length) parts.push(`失败详情：${failures.slice(0, 3).join('；')}`);
   if (remaining > 0) parts.push(`还有 ${remaining} 个，可再次提交`);
   return redirectTo(backWith(back, { message: parts.join('；') }));
 }
@@ -1062,8 +994,7 @@ async function deletePost(ctx) {
     return redirectTo(backWith(back, { error: '请从确认页提交（缺少确认标记）' }));
   }
 
-  // 删除前**复查**引用: 从打开确认页到点提交之间, 可能刚好有人加了一条引用(含回收站)。
-  // 只查素材路径(非素材对象笔记引用不到)。
+  // 删除前复查引用: 从打开确认页到点提交之间可能刚好有人加了引用(含回收站); 只查素材路径, 非素材对象引用不到
   const mediaKeys = keys.filter((key) => isMediaKey(key));
   const scan = mediaKeys.length ? await scanReferences(ctx.env, mediaKeys) : { ok: true, refs: {} };
   if (!scan.ok) {

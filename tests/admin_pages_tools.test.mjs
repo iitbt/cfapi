@@ -7,6 +7,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { handleAdmin } from '../app/admin/index.js';
+import { IMAGE_FALLBACK_SRC } from '../app/admin/lib/partials.js';
 import { API_VERSION } from '../main.js';
 import { HOST, findCall, get, loginCookie, makeAdminEnv, post } from './admin_stub.mjs';
 
@@ -1199,6 +1200,82 @@ test('存储桶(2.4.6)目录级操作: 移动(≤10)/删除(≤20)都先确认, 
   const denied = await post('/admin/media_manage_dir',
     { action: 'delete', prefix: '素材/', back: '/admin/media_manage' }, normal.env, normalCookie);
   assert.equal(denied.status, 403);
+});
+
+test('存储桶(2.7.5)批量移动所选: 走同一确认页(paths), 只换目录不改名, 报告成功/失败项数', async () => {
+  const picked = ['素材/a.png', '素材/子/b.png'];
+  const mediaObjects = picked.map((key, index) => ({ key, size: 100 + index, uploaded: '2026-10-09T00:00:00Z' }));
+  const { env, state } = makeAdminEnv({ role: 'super', mediaObjects, rows: { news: [] } });
+  const cookie = await loginCookie(env);
+  picked.forEach((key) => state.objects.set(key, { size: 100, httpMetadata: {} }));
+  const paths = JSON.stringify(picked);
+
+  // ① 确认页: 列勾选项、只给 paths(不给 prefix), 目标前缀默认为首个对象的所在层
+  const page = await (await get(`/admin/media_manage_dir?action=move&paths=${encodeURIComponent(paths)}`, env, cookie)).text();
+  assert.ok(page.includes('即将移动') && page.includes('文件名不变'), '确认页说明这是勾选项移动');
+  assert.ok(page.includes('name="paths"') && !page.includes('name="prefix"'), '表单用 paths 提交');
+  assert.ok(page.includes('value="素材/"') && page.includes('name="dir"'), '目标前缀默认给首个对象所在层');
+
+  // ② 执行: 只换目录、文件名不变(不同来源层的文件都平铺到目标前缀)
+  const moved = await post('/admin/media_manage_dir',
+    { action: 'move', paths, dir: 'image/归档/', back: '/admin/media_manage', confirm: '1' }, env, cookie);
+  assert.equal(moved.status, 302);
+  const text = decodeURIComponent(String(moved.headers.get('location')).replace(/\+/g, ' '));
+  assert.ok(text.includes('成功 2 项、失败 0 项'), `统一报告成功/失败项数, 实际: ${text}`);
+  assert.equal(state.objects.has('image/归档/a.png'), true, '文件名不变, 只换目录');
+  assert.equal(state.objects.has('image/归档/b.png'), true, '子目录里的文件也平铺到目标前缀');
+  assert.equal(state.objects.has('素材/子/b.png'), false, '原键已删');
+
+  // ③ 被引用的勾选项 → 整批拒绝(与删除同一口径, 一个都不动)
+  const refEnv = makeAdminEnv({
+    role: 'super',
+    mediaObjects: [{ key: '素材/图.png', size: 1, uploaded: '2026-10-09T00:00:00Z' }],
+    rows: { news: [{ id: 3, title: 'x', image: '素材/图.png', video_url: '', content: '', deleted_at: null }] }
+  });
+  const refCookie = await loginCookie(refEnv.env);
+  const refused = await post('/admin/media_manage_dir',
+    { action: 'move', paths: JSON.stringify(['素材/图.png']), dir: 'image/', back: '/admin/media_manage', confirm: '1' },
+    refEnv.env, refCookie);
+  assert.ok(String(refused.headers.get('location')).includes(encodeURIComponent('已整批拒绝')));
+  assert.deepEqual(refEnv.state.deletes, [], '整批拒绝时不动原对象');
+
+  // ④ 超过移动上限(11 个)只动前 10 个, 剩下提示可再次提交
+  const manyKeys = Array.from({ length: 11 }, (item, index) => `素材/批${index}.png`);
+  const many = makeAdminEnv({ role: 'super', mediaObjects: [], rows: { news: [] } });
+  const manyCookie = await loginCookie(many.env);
+  manyKeys.forEach((key) => many.state.objects.set(key, { size: 1, httpMetadata: {} }));
+  const batch = await post('/admin/media_manage_dir',
+    { action: 'move', paths: JSON.stringify(manyKeys), dir: 'image/', back: '/admin/media_manage', confirm: '1' },
+    many.env, manyCookie);
+  const batchText = decodeURIComponent(String(batch.headers.get('location')).replace(/\+/g, ' '));
+  assert.ok(batchText.includes('成功 10 项'), `一次只动 10 个, 实际: ${batchText}`);
+  assert.ok(batchText.includes('还有 1 个'), '剩下的提示可再次提交');
+
+  // ⑤ paths + action=delete → 指回列表页的批量删除(不从这个端点删)
+  const wrong = await get(`/admin/media_manage_dir?action=delete&paths=${encodeURIComponent(paths)}`, env, cookie);
+  assert.equal(wrong.status, 302);
+  assert.ok(String(wrong.headers.get('location')).includes(encodeURIComponent('「删除所选」')), '删除有专用入口');
+});
+
+test('存储桶(2.7.5)空状态: 分清"这层没东西"与"被筛选筛没了"', async () => {
+  const { env } = makeAdminEnv({ role: 'super', mediaObjects: MEDIA_OBJECTS, rows: mediaRows });
+  const cookie = await loginCookie(env);
+  const filtered = await (await get(`/admin/media_manage?prefix=${encodeURIComponent('news_uploads/_thumb/480/')}&q=${encodeURIComponent('绝对没有这个对象')}`, env, cookie)).text();
+  assert.ok(filtered.includes('没有符合筛选条件的对象'), '筛选没命中时说"筛选", 不说"目录为空"');
+  const empty = await (await get(`/admin/media_manage?prefix=${encodeURIComponent('没有这一层/')}`, env, cookie)).text();
+  assert.ok(empty.includes('此目录暂无文件'), '目录真的为空时另给一句');
+});
+
+test('对象详情(2.7.5): 预览图挂共用兜底(不出现裂图)', async () => {
+  const { env, state } = makeAdminEnv({ role: 'super', mediaObjects: MEDIA_OBJECTS, rows: mediaRows });
+  const cookie = await loginCookie(env);
+  state.objects.set('image/new.png', { size: 100, httpMetadata: { contentType: 'image/png' } });
+  const html = await (await get('/admin/media_manage_detail?path=image/new.png', env, cookie)).text();
+  assert.ok(html.includes(IMAGE_FALLBACK_SRC), '兜底地址指向 /lucky.jpg');
+  const total = (html.match(/<img\b/gi) || []).length;
+  const guarded = (html.match(/<img\b[^>]*?onerror="this\.src\.indexOf\('/g) || []).length;
+  assert.ok(total > 0, '详情页应有预览图');
+  assert.equal(guarded, total, `详情页有 ${total - guarded} 张图没挂兜底`);
 });
 
 test('上传接口(2.4.1): 文件夹上传靠入口带类型, 类型对不上会被拒', async () => {
