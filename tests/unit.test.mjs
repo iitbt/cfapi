@@ -8,6 +8,7 @@ import { beijingNow, nowEpoch, toEpoch, windowStart } from '../app/core/timeutil
 import { assetUrl, iconAssetUrl } from '../app/core/media_scheme.js';
 import { checkObjectKey, isRootTreePath, listNewsMedia, listUnder, mediaContentType, normRel, relPathsIn } from '../app/core/storage.js';
 import { safeRelPath, safeTargetDir, saveUpload } from '../app/admin/lib/mediaUpload.js';
+import { parentOf } from '../app/admin/lib/mediaBrowse.js';
 import { absolutizeMedia, sanitizeHtml } from '../app/core/sanitize.js';
 import { hashPassword, needsRehash, verifyDummy, verifyPassword } from '../app/admin/lib/password.js';
 import { IN_CHUNK_SIZE, chunkIds, marksOf } from '../app/core/db.js';
@@ -214,6 +215,17 @@ test('listUnder(2.4.6): 列前缀下的对象(不折叠目录), 目录级移动/
     '整棵前缀下的对象都要列出来(含更深一层)');
   assert.equal(under.truncated, false);
   assert.deepEqual((await listUnder(env, 'image/')).objects.map((one) => one.key), ['image/c.png']);
+});
+
+test('上一级 parentOf(2.7.2): 目录前缀与对象键都要给出真的上一层', () => {
+  // 治理页的「上一级」把**带尾斜杠**的目录前缀交给它: 原先切在最后那个斜杠上、返回自身, 点了停在原地
+  assert.equal(parentOf('image/'), '', '一级目录的上一层是存储桶根目录');
+  assert.equal(parentOf('image/food/'), 'image/', '多级目录退一层');
+  assert.equal(parentOf('素材/子/'), '素材/', '中文目录同样退一层');
+  assert.equal(parentOf(''), '', '根目录没有上一层(还是根目录, 页面因此不渲染按钮)');
+  // 对象键的结果不变(详情页的「所在层」与改名页的「目标目录」都靠它)
+  assert.equal(parentOf('image/a.png'), 'image/');
+  assert.equal(parentOf('logo.png'), '', '根下对象就在存储桶根目录');
 });
 
 test('根目录素材(2.4.5): 按真 R2 的 delimiter 语义也列得出来(对象/目录两条路都覆盖)', async () => {

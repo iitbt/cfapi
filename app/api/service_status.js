@@ -53,17 +53,6 @@ async function collectStats(env) {
   }
 }
 
-/** 进程启动时间: Worker 没有常驻进程, 给的是当前 isolate 的启动时刻(取不到就显示 "-")。 */
-function isolateStartedAt() {
-  try {
-    const origin = Number(globalThis.performance && globalThis.performance.timeOrigin);
-    if (Number.isFinite(origin) && origin > 0) return beijingNow(new Date(origin));
-  } catch (error) {
-    // 忽略: 该运行时没有 performance.timeOrigin
-  }
-  return '';
-}
-
 export function registerStatusRoutes(router, options = {}) {
   // 版本号由入口注入(main.js 的 API_VERSION 是唯一来源, 与旧站 APP_VERSION 同位置); 运行开关仍从 core/config.js 取
   const versionOf = () => String(options.version || '');
@@ -101,7 +90,6 @@ export function registerStatusRoutes(router, options = {}) {
       }
     ];
     const overallOk = state.database.ok && state.media.ok;
-    const startedAt = isolateStartedAt();
     return html(statusPage({
       name: serviceName,
       description: serviceDesc,
@@ -109,8 +97,6 @@ export function registerStatusRoutes(router, options = {}) {
       serverTime,
       wallMs: wallClockMs(),
       version: versionOf(env),
-      startedAt,
-      startedAtNote: startedAt ? '（当前 isolate）' : '',
       stats: [
         [stats.total_users, '总用户数'],
         [stats.today_new, '今日新增'],

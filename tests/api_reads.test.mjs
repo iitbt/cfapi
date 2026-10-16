@@ -21,10 +21,12 @@ test('状态类: HTML 状态页 / format=json / 301 重定向 / apitest', async 
   assert.match(page.headers.get('content-type'), /text\/html/);
   const html = await page.text();
   assert.match(html, /服务状态/);
-  // 信息项与旧站 templates/status.html 对齐: 标题药丸 / 两个时间 / 说明 / 6 项统计 / 依赖监控 / 使用说明
-  for (const text of ['服务器时间', '进程启动时间', '数据统计', '总用户数', '今日新增', '本周新增',
+  // 信息项与状态页现状对齐: 标题药丸 / 时间 / 6 项统计 / 依赖监控 / 常用接口入口
+  // 两条旧断言已随页面改版失效, 一并去掉(留着就是永远红的用例): 「进程启动时间」整块已删,
+  // 最后那张卡片的标题也从「使用说明」改成了「常用接口」。
+  for (const text of ['服务器时间', '数据统计', '总用户数', '今日新增', '本周新增',
     '本月新增', '笔记总数', '评论总数', '依赖状态监控', '序号', '当前使用', '响应时间',
-    '总连接状态', '使用说明', '/apitest', '/test']) {
+    '总连接状态', '常用接口', '/apitest', '/test']) {
     assert.ok(html.includes(text), `状态页缺少「${text}」`);
   }
   assert.ok(html.includes('data-live="clock"'), '服务器时间要交给 live_time.js 走动');

@@ -30,10 +30,15 @@ export function kindOfFile(key) {
   return kindOfExt(extOf(String(key || ''))) || 'other';
 }
 
-/** 对象键的父目录(带尾斜杠; 桶根返回空串)。 */
+/**
+ * 对象键或目录前缀的父目录(带尾斜杠; 桶根返回空串)。
+ * 先剥掉尾斜杠再取父: 否则 `parentOf('image/')` 会切在最后那个斜杠上、返回它**自己**,
+ * 治理页的「上一级」就是条死链(点了停在原地)。对象键(如 `image/a.png`)的结果不变。
+ */
 export function parentOf(key) {
-  const slash = String(key || '').lastIndexOf('/');
-  return slash < 0 ? '' : String(key).slice(0, slash + 1);
+  const body = String(key || '').replace(/\/+$/, '');
+  const slash = body.lastIndexOf('/');
+  return slash < 0 ? '' : body.slice(0, slash + 1);
 }
 
 /** 站内自有目录(2.4.5: 头像与站点图标)不是素材 —— 选择器要把它们挡在外面(治理页照旧能浏览)。 */

@@ -1075,6 +1075,9 @@ test('存储桶(2.4.6): 逐层浏览整个桶(根层目录/深层对象/引用�
   const deep = await (await at('素材/子/')).text();
   assert.ok(deep.includes('素材/子/深图.png') && deep.includes('素材/子/片段.mp4'), '深层对象进目录后可见');
   assert.ok(deep.includes('上一级') && deep.includes('素材'), '面包屑与上一级可用');
+  // 只断言文案是不够的(2.7.2): 原先 parentOf 收到带尾斜杠的前缀会返回自身, 按钮在、点了却停在原地
+  assert.ok(deep.includes(`href="/admin/media_manage?prefix=${encodeURIComponent('素材/')}"`),
+    '多级目录的「上一级」真的退回上一层');
   assert.match(deep, /1 处/, '被引用的那个算出引用数');
   const blocked = await (await get(`/admin/media_manage_delete?path=${encodeURIComponent('素材/子/深图.png')}`, env, cookie)).text();
   assert.match(blocked, /不能删除/, '被引用的根目录树素材拒绝删除');
@@ -1087,6 +1090,8 @@ test('存储桶(2.4.6): 逐层浏览整个桶(根层目录/深层对象/引用�
   const avatarLevel = await (await at('avatar/')).text();
   assert.ok(avatarLevel.includes('value="avatar/u.png"'), '站内自有目录也能浏览(2.4.6)');
   assert.ok(avatarLevel.includes('>—</span>'), '非素材路径不做引用扫描(引用列 —)');
+  // 一级目录的「上一级」回到存储桶根目录(根层则完全不渲染这个按钮, 见 ①)
+  assert.ok(avatarLevel.includes('href="/admin/media_manage?prefix="'), '一级目录的「上一级」回存储桶根目录');
   // 素材选择器: 逐层浏览同一个桶, 只是把站内自有目录(头像/站点图标)整棵子树挡在外面
   const library = await (await get('/admin/media_library?kind=image', env, cookie)).json();
   assert.equal(library.success, true);
