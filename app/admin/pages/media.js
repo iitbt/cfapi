@@ -5,6 +5,8 @@
 // 2.7.1: media_library 从"全桶素材清单"改成**逐层浏览** —— 取数/过滤/排序/分页与预览、类型、大小、
 // 修改时间这些格子全部复用 lib/mediaBrowse.js(素材治理页同一份), 这里只负责拼 JSON 与选择器那两列动作。
 // 参数新增 prefix/q/page(都可选, 只带 kind 的老调用照旧可用), 返回体多了 prefix/folders/base/rows/page 等。
+// 2.7.3: 目录口径与治理页**逐字一致** —— 不再过滤站内自有目录(原先少列 avatar/、avatar_uploads/、images/,
+// 表现为"文件夹显示不全"); 桶里有什么目录就列什么, 点进去也能浏览。
 import { escapeHtml } from '../../core/html.js';
 import { listableExts } from '../../core/storage.js';
 import { PICK_PER_PAGE, browseLevel, kindOfFile, metaCells, previewCell } from '../lib/mediaBrowse.js';
@@ -59,16 +61,14 @@ async function libraryHandler(ctx) {
   const kind = ctx.query.kind === 'video' ? 'video' : 'image';
   let data = null;
   try {
-    // hideInternal: 头像与站点图标不是素材 —— 选择器不给它们, 也不让 URL 绕进去(治理页照旧能浏览)
     data = await browseLevel(ctx.env, {
       prefix: ctx.query.prefix, q: ctx.query.q, kind, page: ctx.query.page,
-      perPage: PICK_PER_PAGE, hideInternal: true
+      perPage: PICK_PER_PAGE
     });
   } catch (error) {
     console.error('读取素材目录失败', error && error.message);
     return json({ success: false, message: '读取素材失败，请稍后重试' });
   }
-  if (data.blocked) return json({ success: false, message: '这个目录是头像/站点图标（站内自有目录），不作为素材' });
   if (!data.prefixOk) return json({ success: false, message: data.prefixMessage || '目录参数不合法' });
   return json({
     success: true,

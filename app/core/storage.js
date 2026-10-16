@@ -88,34 +88,55 @@ export async function listUnder(env, prefix, options = {}) {
   return { objects, truncated: Boolean(listed && listed.truncated) };
 }
 
+//: 单层列举最多翻几页: R2 的 limit(最多 1000) 是"对象 + 目录"共用的配额, 根下对象多时目录排在后面会被整批截掉。
+// 目录必须收全(否则界面表现为"文件夹显示不全"), 所以截断时继续按 cursor 取; 常态只有一页, 不会多花子请求。
+const MAX_LEVEL_ROUNDS = 3;
+
 /**
  * 列一个"目录层"(2.4.6 桶浏览器): 一次 R2 列举拿到该前缀下的**子目录**(delimitedPrefixes, 带尾斜杠)
  * 与**直接对象**(不带 delimiter 的话整个桶都会被回给我们)。`truncated` 为真表示这一层超过 limit(上限 1000)。
  * 只列一层, 不递归 —— 页面按需进入下一层(R2 的前缀/分隔符语义, 见 README 第 45 条)。
+ * 2.7.3: 被截断时按 cursor 继续翻页**只为把子目录收全**(对象仍只取第一页, `truncated` 仍按第一页算)。
  */
 export async function listLevel(env, prefix = '', options = {}) {
   const limit = Math.min(1000, Math.max(1, Number(options.limit) || 1000));
-  const listed = await settings(env).storage.list({ prefix, delimiter: '/', limit });
+  const storage = settings(env).storage;
   const base = String(prefix || '');
+  const folderKeys = new Set();
   const objects = [];
-  for (const object of (listed && listed.objects) || []) {
-    const key = String(object.key || '');
-    if (!key || !key.startsWith(base) || key === base) continue;
-    objects.push({
-      key,
-      name: key.slice(base.length),
-      size: Number(object.size) || 0,
-      etag: String(object.etag || ''),
-      uploaded: object.uploaded || '',
-      // mtime 给页面排序/展示用(list 返回的是 uploaded 时间戳)
-      mtime: object.uploaded ? new Date(object.uploaded).getTime() : 0
-    });
+  let truncated = false;
+  let cursor;
+  for (let round = 0; round < MAX_LEVEL_ROUNDS; round += 1) {
+    const listed = await storage.list({ prefix, delimiter: '/', limit, cursor });
+    // 对象只认第一页: 与改前同口径(本层最多 limit 个), 不因为翻页把整层都读进内存
+    if (round === 0) {
+      for (const object of (listed && listed.objects) || []) {
+        const key = String(object.key || '');
+        if (!key || !key.startsWith(base) || key === base) continue;
+        objects.push({
+          key,
+          name: key.slice(base.length),
+          size: Number(object.size) || 0,
+          etag: String(object.etag || ''),
+          uploaded: object.uploaded || '',
+          // mtime 给页面排序/展示用(list 返回的是 uploaded 时间戳)
+          mtime: object.uploaded ? new Date(object.uploaded).getTime() : 0
+        });
+      }
+    }
+    for (const one of (listed && listed.delimitedPrefixes) || []) { folderKeys.add(String(one)); }
+    // 对外的 truncated 只看**第一页**(=本层文件有没有被截掉, 提示"只列了前一批"就靠它);
+    // 翻页只为收全目录, 不能因为"取到最后一页了"就把这个警告吞掉。
+    if (round === 0) { truncated = Boolean(listed && listed.truncated); }
+    const more = Boolean(listed && listed.truncated);
+    cursor = listed && listed.cursor;
+    if (!more || !cursor) break;
   }
-  const folders = ((listed && listed.delimitedPrefixes) || []).map((one) => ({
-    key: String(one),
-    name: String(one).slice(base.length).replace(/\/$/, '')
+  const folders = Array.from(folderKeys).map((one) => ({
+    key: one,
+    name: one.slice(base.length).replace(/\/$/, '')
   })).filter((one) => one.name);
-  return { folders, objects, truncated: Boolean(listed && listed.truncated) };
+  return { folders, objects, truncated };
 }
 
 //: 站内自有目录(2.4.5): Worker 直出的站点图标与用户头像, **不是素材** —— 它们既不该进素材库清单,

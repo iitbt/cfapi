@@ -155,6 +155,97 @@ test('素材库弹窗: 目录清单由模板下发(前端不自己写死 news_up
   assert.ok(!/v = 'news_uploads\/' \+ v/.test(picker), '手工填路径不该再强行补历史前缀');
 });
 
+test('素材库弹窗(2.7.3): 路径单斜杠拼接, 「上一级」与路径同行并排在末尾', async () => {
+  const src = await readFile(new URL('../app/admin/static/js/media_library.js', import.meta.url), 'utf8');
+
+  // 最小 DOM 桩: 只登记节点与 appendChild(不解析 HTML) —— 够媒体库面板画面包屑与目录按钮。
+  // 用 new Function 真跑脚本(与 infinite_scroll.js 的测法一致), 而不是拿正则扫源码。
+  function buildCrumbs(prefix) {
+    const nodes = new Map();
+    function makeNode(id) {
+      const node = {
+        id: id || '', className: '', textContent: '', _html: '',
+        children: [], attrs: {}, listeners: {}, classSet: new Set()
+      };
+      node.classList = {
+        add: (name) => node.classSet.add(name),
+        remove: (name) => node.classSet.delete(name),
+        contains: (name) => node.classSet.has(name),
+        toggle: (name, on) => {
+          const want = on === undefined ? !node.classSet.has(name) : Boolean(on);
+          if (want) { node.classSet.add(name); } else { node.classSet.delete(name); }
+        }
+      };
+      node.appendChild = (child) => {
+        node.children.push(child);
+        // 桩不解析 HTML: 文本节点得手动累加到 textContent(按钮的图标是 innerHTML, 不参与)
+        if (child && child.textContent) { node.textContent += child.textContent; }
+        return child;
+      };
+      node.setAttribute = (name, value) => { node.attrs[name] = String(value); };
+      node.getAttribute = (name) => (name in node.attrs ? node.attrs[name] : null);
+      node.addEventListener = (type, fn) => { (node.listeners[type] = node.listeners[type] || []).push(fn); };
+      node.insertAdjacentHTML = () => {};
+      node.querySelectorAll = () => [];
+      Object.defineProperty(node, 'innerHTML', {
+        get: () => node._html,
+        set: (value) => {
+          node._html = String(value);
+          if (!value) { node.children = []; node.textContent = ''; }
+        }
+      });
+      return node;
+    }
+    for (const id of ['mediaLibraryModal', 'mediaLibraryList', 'mediaLibraryScroll', 'mediaLibraryLoadMore',
+      'mediaLibraryLoadMoreText', 'mediaLibraryCrumbs', 'mediaLibraryDirs', 'mediaLibraryQuery', 'mediaLibraryHint',
+      'mediaLibraryManual', 'mediaLibraryKindSwitch', 'mediaLibraryModalLabel', 'mediaLibraryReload',
+      'mediaLibraryManualInsert']) {
+      nodes.set(id, makeNode(id));
+    }
+    nodes.get('mediaLibraryModal').setAttribute('data-media-prefixes', 'image/,video/,news_uploads/');
+    const fakeFetch = () => Promise.resolve({
+      json: () => Promise.resolve({
+        success: true, base: 'https://media.example.com', accept: ['png'], folders: [],
+        prefix: prefix, page: 1, totalPages: 1, total: 0, levelCount: 0, rows: ''
+      })
+    });
+    const document = {
+      getElementById: (id) => nodes.get(id) || null,
+      createElement: () => makeNode(''),
+      createTextNode: (text) => ({ textContent: String(text) })
+    };
+    const window = { addEventListener: () => {} };
+    new Function('window', 'document', 'fetch', src)(window, document, fakeFetch);
+    // 打开弹窗(带 data-media-kind 的按钮): 面板随即按分类请求一次, 响应回来才画面包屑
+    const trigger = {
+      getAttribute: (name) => ({
+        'data-media-kind': 'image', 'data-media-mode': 'input', 'data-media-target': '#cover'
+      }[name] || null)
+    };
+    for (const fn of nodes.get('mediaLibraryModal').listeners['show.bs.modal'] || []) {
+      fn({ relatedTarget: trigger });
+    }
+    return nodes.get('mediaLibraryCrumbs');
+  }
+
+  // 根目录只显示「存储桶」、不显示「上一级」; 进了子目录则把「上一级」接在路径末尾(同一行)
+  const cases = [
+    ['', ['存储桶'], null],
+    ['admin/', ['存储桶/', 'admin/', '上一级'], ''],
+    ['admin/vendor/fonts/', ['存储桶/', 'admin/', 'vendor/', 'fonts/', '上一级'], 'admin/vendor/']
+  ];
+  for (const [prefix, expectLabels, expectUp] of cases) {
+    const crumbs = buildCrumbs(prefix);
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    const labels = crumbs.children.map((one) => one.textContent);
+    assert.deepEqual(labels, expectLabels, `${prefix || '(根目录)'} 的路径与「上一级」位置`);
+    assert.ok(!labels.join('').includes('//'), '路径拼接不许出现双斜杠');
+    if (expectUp === null) { continue; }
+    const up = crumbs.children.find((one) => one.textContent === '上一级');
+    assert.equal(up.getAttribute('data-media-dir'), expectUp, '「上一级」的目标前缀');
+  }
+});
+
 test('列宽: .cell-title 是固定宽度(桌面 360 / 手机 200), 且生成物里已带上', async () => {
   const css = await readFile(new URL('../app/admin/static/css/admin.css', import.meta.url), 'utf8');
   // 标题/文件名列必须"不随内容长短变化": 三个宽度一起写死, 长内容交给省略号 + title 提示

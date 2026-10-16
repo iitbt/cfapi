@@ -5,10 +5,12 @@
 // image/ + news_uploads/), 撞到 MAX_SCAN_OBJECTS(1000) 就**静默截断**, 于是"部分图片列不出来";
 // 而且它只扫那几个目录, 把图片传进 video/(上传卡片的「目标路径」允许)就永远列不到。
 // 现在一次只列**当前这一层**(前缀 + delimiter '/'), 类型/关键词/排序/分页都在本层内做, 翻页靠触底加载。
+// 选择器与治理页**口径完全一致**(2.7.3 起): 桶里有什么目录就列什么 —— 站内自有目录(头像/站点图标)也不例外,
+// 两处不再各带一层过滤(差三个目录就是"文件夹显示不全")。
 import { escapeHtml } from '../../core/html.js';
 import { settings } from '../../core/config.js';
 import { fmtBytes } from '../../core/overview.js';
-import { checkObjectKey, extOf, INTERNAL_PREFIXES, kindOfExt, listLevel, publicUrl } from '../../core/storage.js';
+import { checkObjectKey, extOf, kindOfExt, listLevel, publicUrl } from '../../core/storage.js';
 
 //: 单层列举上限(R2 单次 list 就是 1000): 超过只列前 1000, 调用方必须把 truncated 说出来
 export const LEVEL_MAX = 1000;
@@ -39,11 +41,6 @@ export function parentOf(key) {
   const body = String(key || '').replace(/\/+$/, '');
   const slash = body.lastIndexOf('/');
   return slash < 0 ? '' : body.slice(0, slash + 1);
-}
-
-/** 站内自有目录(2.4.5: 头像与站点图标)不是素材 —— 选择器要把它们挡在外面(治理页照旧能浏览)。 */
-export function isInternalKey(key) {
-  return INTERNAL_PREFIXES.some((prefix) => String(key || '').startsWith(prefix));
 }
 
 /** 本层里的对象排序: 同值时按名字。 */
@@ -111,26 +108,22 @@ export function fmtUploadTime(item) {
  *   q               关键词(按对象键在本层内过滤)
  *   sort            SORT_CHOICES 里的值, 默认 name_asc
  *   page / perPage  分页(页码从 1 起)
- *   hideInternal    true = 选择器口径: 排除站内自有目录(头像/站点图标)整棵子树
  *   prepare         (可选)async(排序后的本层文件) => 分页前的最后一道加工 —— 治理页用它做引用扫描与
  *                   "已引用/未引用"筛选(必须赶在切片之前, 否则按引用筛选就没法分页); 选择器不传。
- * 返回: { prefix, prefixOk, blocked, folders, files(本层全部命中), pageItems(本页), page, totalPages,
+ * 返回: { prefix, prefixOk, folders, files(本层全部命中), pageItems(本页), page, totalPages,
  *         total, perPage, levelCount, truncated, base, kind, q, sort }
  */
 export async function browseLevel(env, options = {}) {
   const rawPrefix = options.prefix === undefined || options.prefix === null ? '' : String(options.prefix);
   const prefixCheck = rawPrefix === '' ? { ok: true, key: '' } : checkObjectKey(rawPrefix, { asDir: true });
   const prefix = prefixCheck.ok ? prefixCheck.key : '';
-  const hideInternal = Boolean(options.hideInternal);
-  // 选择器不能被"手填 URL"绕进站内自有目录: 撞上就直接回空层
-  const blocked = hideInternal && isInternalKey(prefix);
   const kind = ['image', 'video', 'other'].includes(options.kind) ? options.kind : 'all';
   const q = String(options.q === undefined || options.q === null ? '' : options.q).trim().toLowerCase();
   const sort = SORT_CHOICES.some(([value]) => value === options.sort) ? options.sort : 'name_asc';
   const perPage = Math.min(200, Math.max(1, Number(options.perPage) || PICK_PER_PAGE));
   const wantsPage = Math.max(1, Number(options.page) || 1);
 
-  const level = blocked ? { folders: [], objects: [], truncated: false } : await listLevel(env, prefix, { limit: LEVEL_MAX });
+  const level = await listLevel(env, prefix, { limit: LEVEL_MAX });
   let files = level.objects;
   if (kind !== 'all') files = files.filter((one) => kindOfFile(one.key) === kind);
   if (q) files = files.filter((one) => one.key.toLowerCase().includes(q));
@@ -139,9 +132,9 @@ export async function browseLevel(env, options = {}) {
   const totalPages = Math.max(1, Math.ceil(prepared.length / perPage));
   const page = Math.min(wantsPage, totalPages);
   const pageItems = prepared.slice((page - 1) * perPage, page * perPage);
-  const folders = hideInternal ? level.folders.filter((one) => !isInternalKey(one.key)) : level.folders;
+  const folders = level.folders;
   return {
-    prefix, prefixOk: prefixCheck.ok, prefixMessage: prefixCheck.message || '', blocked,
+    prefix, prefixOk: prefixCheck.ok, prefixMessage: prefixCheck.message || '',
     folders, files: prepared, pageItems, page, totalPages, total: prepared.length, perPage,
     levelCount: level.objects.length, truncated: level.truncated,
     base: mediaBaseOf(env), kind, q, sort

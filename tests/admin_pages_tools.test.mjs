@@ -1092,18 +1092,21 @@ test('存储桶(2.4.6): 逐层浏览整个桶(根层目录/深层对象/引用�
   assert.ok(avatarLevel.includes('>—</span>'), '非素材路径不做引用扫描(引用列 —)');
   // 一级目录的「上一级」回到存储桶根目录(根层则完全不渲染这个按钮, 见 ①)
   assert.ok(avatarLevel.includes('href="/admin/media_manage?prefix="'), '一级目录的「上一级」回存储桶根目录');
-  // 素材选择器: 逐层浏览同一个桶, 只是把站内自有目录(头像/站点图标)整棵子树挡在外面
+  // 素材选择器: 与治理页**同一份目录清单**(2.7.3 起不再各自过滤) —— 桶里有什么列什么, 站内自有目录也列
   const library = await (await get('/admin/media_library?kind=image', env, cookie)).json();
   assert.equal(library.success, true);
   assert.equal(library.prefix, '', '默认从存储桶根目录开始');
   assert.ok(library.rows.includes('logo.png'), '选择器根层给根下素材');
-  assert.ok(library.folders.some((one) => one.key === '素材/'), '选择器根层给子目录');
-  assert.ok(!library.folders.some((one) => one.key === 'avatar/' || one.key === 'images/'),
-    '站点图标与头像目录不进素材选择器');
+  assert.deepEqual(library.folders.map((one) => one.key).sort(), ['avatar/', 'image/', 'images/', '素材/'],
+    '根层目录与治理页逐字一致(原先少列 avatar/、images/, 表现就是"文件夹显示不全")');
+  for (const folder of library.folders.map((one) => one.key)) {
+    assert.ok(root.includes(`?prefix=${encodeURIComponent(folder)}`), `治理页根层也有 ${folder}`);
+  }
   const libraryDeep = await (await get(`/admin/media_library?kind=image&prefix=${encodeURIComponent('素材/子/')}`, env, cookie)).json();
   assert.ok(libraryDeep.rows.includes('素材/子/深图.png'), '进子目录才看得到深层素材');
   const libraryAvatar = await (await get(`/admin/media_library?kind=image&prefix=${encodeURIComponent('avatar/')}`, env, cookie)).json();
-  assert.equal(libraryAvatar.success, false, '手填 URL 也绕不进站内自有目录');
+  assert.equal(libraryAvatar.success, true, '站内自有目录也能浏览(与治理页一致)');
+  assert.ok(libraryAvatar.rows.includes('avatar/u.png'), '头像目录里的文件照列');
 
   // ④ 真上传一个"根目录 + 选文件夹"的对象, 再走详情 / 改名(桩的 head 只认 put 过的对象)
   const form = new FormData();

@@ -36,18 +36,31 @@ export function makeAdminEnv(options = {}) {
         if (!delimiter) {
           return { objects: all.slice(0, limit), truncated: all.length > limit };
         }
-        const objects = [];
-        const folders = new Set();
-        for (const object of all) {
-          const rest = String(object.key || '').slice(prefix.length);
+        // delimiter 分支按真 R2 的三点语义来: ① 结果按 key 字典序; ② limit 是"对象 + 目录"的合计配额
+        // (根下对象多时目录排在后面会被整批截掉 —— 桩不实现这一条, 就测不出"文件夹显示不全"); ③ 截断时给 cursor 续取。
+        // 按码元序排(与 R2/浏览器一致); 不能用 localeCompare —— 中文会被排到 ASCII 前面, 与线上顺序不符
+        const sorted = all.slice().sort((one, two) => {
+          const left = String(one.key); const right = String(two.key);
+          return left < right ? -1 : (left > right ? 1 : 0);
+        });
+        const entries = [];
+        for (const object of sorted) {
+          const key = String(object.key || '');
+          if (key === prefix) continue;
+          const rest = key.slice(prefix.length);
           const at = rest.indexOf(delimiter);
-          if (at < 0) objects.push(object);
-          else folders.add(prefix + rest.slice(0, at + delimiter.length));
+          if (at < 0) { entries.push({ object: object }); continue; }
+          const folder = prefix + rest.slice(0, at + delimiter.length);
+          if (!entries.some((one) => one.folder === folder)) entries.push({ folder: folder });
         }
+        const start = Number((opts && opts.cursor) || 0);
+        const page = entries.slice(start, start + limit);
+        const truncated = start + limit < entries.length;
         return {
-          objects: objects.slice(0, limit),
-          delimitedPrefixes: Array.from(folders),
-          truncated: objects.length > limit
+          objects: page.filter((one) => one.object).map((one) => one.object),
+          delimitedPrefixes: page.filter((one) => one.folder).map((one) => one.folder),
+          truncated: truncated,
+          cursor: truncated ? String(start + limit) : undefined
         };
       },
       head: async (key) => {

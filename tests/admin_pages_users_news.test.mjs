@@ -521,7 +521,7 @@ test('上传: 视频素材落 video/ 目录, 图片目录不混进视频', async
   assert.deepEqual(state.puts, [body.url]);
 });
 
-test('素材库: 逐层浏览(根层只给目录、进目录才看对象), 头像与异类不混进来', async () => {
+test('素材库: 逐层浏览(根层只给目录、进目录才看对象), 分类只筛文件不筛目录', async () => {
   const { env } = makeAdminEnv({
     mediaObjects: [
       { key: 'image/new.png', size: 30, uploaded: '2026-10-05T00:00:00Z' },
@@ -529,20 +529,32 @@ test('素材库: 逐层浏览(根层只给目录、进目录才看对象), 头�
       { key: 'video/new.mp4', size: 40, uploaded: '2026-10-05T00:00:00Z' },
       { key: 'news_uploads/moto.mp4', size: 20, uploaded: '2026-10-02T00:00:00Z' },
       { key: 'news_uploads/_thumb/480/a.webp', size: 5, uploaded: '2026-10-01T00:00:00Z' },
-      { key: 'avatar/avatar_7_1.png', size: 7, uploaded: '2026-10-03T00:00:00Z' }
+      { key: 'avatar/avatar_7_1.png', size: 7, uploaded: '2026-10-03T00:00:00Z' },
+      { key: 'admin/vendor/wangeditor/editor.css', size: 900, uploaded: '2026-09-01T00:00:00Z' },
+      { key: 'admin/vendor/fonts/ranger.woff2', size: 800, uploaded: '2026-09-02T00:00:00Z' }
     ]
   });
   const cookie = await loginCookie(env);
   const lib = (query) => get(`/admin/media_library?${query}`, env, cookie).then((res) => res.json());
 
   // 根层: 只列"当前这一层"的目录与对象 —— 素材都在目录里, 所以根层没有图片;
-  // 站内自有的 avatar/(头像)整棵子树不给(选择器不是桶浏览器)
+  // 目录清单与治理页一致(2.7.3: 站内自有的 avatar/ 也列出来, 不再单独过滤一层)
   const root = await lib('kind=image');
   assert.equal(root.success, true);
   assert.equal(root.prefix, '');
-  assert.deepEqual(root.folders.map((one) => one.key).sort(), ['image/', 'news_uploads/', 'video/']);
+  assert.deepEqual(root.folders.map((one) => one.key).sort(),
+    ['admin/', 'avatar/', 'image/', 'news_uploads/', 'video/']);
   assert.equal(root.total, 0, '根层没有图片对象');
   assert.ok(root.accept.includes('png'));
+
+  // 多层级目录: 逐层都要列全子目录(用户报"文件夹显示不全"的 admin/vendor/fonts/ 就是这种结构)
+  assert.deepEqual((await lib('kind=image&prefix=' + encodeURIComponent('admin/'))).folders.map((one) => one.key),
+    ['admin/vendor/']);
+  assert.deepEqual((await lib('kind=image&prefix=' + encodeURIComponent('admin/vendor/'))).folders.map((one) => one.key).sort(),
+    ['admin/vendor/fonts/', 'admin/vendor/wangeditor/']);
+  const fontLevel = await lib('kind=image&prefix=' + encodeURIComponent('admin/vendor/fonts/'));
+  assert.deepEqual(fontLevel.folders, [], '最里一层没有子目录');
+  assert.equal(fontLevel.total, 0, '字体文件不算图片素材(分类只筛文件, 不影响目录)');
 
   // 分类在本层内生效: 图片层里只有图片, 视频不混进来
   const imageLevel = await lib('kind=image&prefix=' + encodeURIComponent('image/'));

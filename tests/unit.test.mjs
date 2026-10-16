@@ -6,7 +6,7 @@ import { routeTable } from '../main.js';
 import { md5Hex } from '../app/core/md5.js';
 import { beijingNow, nowEpoch, toEpoch, windowStart } from '../app/core/timeutil.js';
 import { assetUrl, iconAssetUrl } from '../app/core/media_scheme.js';
-import { checkObjectKey, isRootTreePath, listNewsMedia, listUnder, mediaContentType, normRel, relPathsIn } from '../app/core/storage.js';
+import { checkObjectKey, isRootTreePath, listLevel, listNewsMedia, listUnder, mediaContentType, normRel, relPathsIn } from '../app/core/storage.js';
 import { safeRelPath, safeTargetDir, saveUpload } from '../app/admin/lib/mediaUpload.js';
 import { parentOf } from '../app/admin/lib/mediaBrowse.js';
 import { absolutizeMedia, sanitizeHtml } from '../app/core/sanitize.js';
@@ -215,6 +215,30 @@ test('listUnder(2.4.6): 列前缀下的对象(不折叠目录), 目录级移动/
     '整棵前缀下的对象都要列出来(含更深一层)');
   assert.equal(under.truncated, false);
   assert.deepEqual((await listUnder(env, 'image/')).objects.map((one) => one.key), ['image/c.png']);
+});
+
+test('单层列举(2.7.3): 目录与对象共享 limit, 截断时继续翻页把目录收全', async () => {
+  // 摆 1000 个"字典序在目录之前"的根下对象, 目录排在后面 —— 只取第一页的话这三个目录一个都看不见,
+  // 界面表现就是"文件夹显示不全"(真 R2 的 limit 是对象+目录合计配额)
+  const mediaObjects = [];
+  for (let i = 0; i < 1000; i += 1) {
+    mediaObjects.push({ key: `a${String(i).padStart(4, '0')}.png`, size: 1, uploaded: '2026-10-01T00:00:00Z' });
+  }
+  for (const key of ['zadmin/vendor/fonts/a.woff2', 'zimage/a.png', 'zvideo/a.mp4']) {
+    mediaObjects.push({ key: key, size: 1, uploaded: '2026-10-01T00:00:00Z' });
+  }
+  const { env } = makeAdminEnv({ role: 'super', mediaObjects: mediaObjects });
+
+  const level = await listLevel(env, '', { limit: 1000 });
+  assert.equal(level.truncated, true, '这一层确实超过单次上限');
+  assert.deepEqual(level.folders.map((one) => one.key), ['zadmin/', 'zimage/', 'zvideo/'],
+    '目录必须收全(翻页取到最后一页为止)');
+  assert.equal(level.objects.length, 1000, '对象仍按第一页封顶, 口径与改前一致');
+
+  // 小目录不受影响: 一层就那么几项时照常一次列全
+  const small = await listLevel(env, 'zadmin/', { limit: 1000 });
+  assert.deepEqual(small.folders.map((one) => one.key), ['zadmin/vendor/']);
+  assert.equal(small.truncated, false);
 });
 
 test('上一级 parentOf(2.7.2): 目录前缀与对象键都要给出真的上一层', () => {

@@ -279,7 +279,7 @@ export function mediaLibraryModal() {
         </button>
       </div>
       <div class="small text-muted mb-2" id="mediaLibraryHint" role="status" aria-live="polite"></div>
-      <nav class="small mb-2" id="mediaLibraryCrumbs" aria-label="当前素材目录"></nav>
+      <nav class="d-flex flex-wrap align-items-center gap-2 small mb-2" id="mediaLibraryCrumbs" aria-label="当前素材目录与上一级"></nav>
       <div class="d-flex flex-wrap gap-2 mb-2" id="mediaLibraryDirs" role="group" aria-label="素材子目录"></div>
       <div class="table-responsive media-library-scroll" id="mediaLibraryScroll">
         <table class="table table-hover align-middle text-center mb-0" aria-label="素材列表">

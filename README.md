@@ -1,6 +1,6 @@
 # 狼牙极限运动笔记 · 主后端（cfapi / Cloudflare Workers）
 
-> **版本**：`v2.7.2` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
+> **版本**：`v2.7.3` —— 唯一维护点在 `main.js` 顶部的 `API_VERSION`。状态页、`/health`、`/apitest`、后台静态资源 `?v=` 都读它；**改了后台样式/脚本后必须升它再部署**（否则浏览器继续用旧文件）。
 > **主域名**：**https://lyjx.250036.xyz**（对外 API + `/admin` 管理后台同一域名）。
 > **素材域名**：**https://storage.250036.xyz**（R2 公开域，与接口域名分离）。
 > **定位**：微信小程序「狼牙极限运动笔记」的**主要后端**。今后小程序的开发、接口变更、联调、发版均以本工程为准；FastAPI 工程（`../fastapi/`）为**备用后端**。
@@ -199,7 +199,7 @@ cfapi/
 | `comments.js` | 留言管理：列表 / 通过·拒绝·删除 |
 | `dbTools.js` | 数据库管理（表浏览 / 字段总览 / 结构 / 数据编辑 / SQL 执行） |
 | `deleteConfirm.js` | 通用删除确认页（先摊开影响面再提交） |
-| `media.js` | 素材上传 `POST /admin/image_upload` + 素材库 `GET /admin/media_library`（**2.7.1 起逐层浏览**：可选 `prefix`/`q`/`page`，返回 `rows`(渲染好的行 HTML)/`folders`/`prefix`/`page`/`totalPages`/`hasMore`/`total`/`levelCount`/`truncated`/`base`/`accept`；只带 `kind` 的老调用照旧可用。取数/过滤/排序/分页与行结构都在 `lib/mediaBrowse.js`，与素材库治理页同一份） |
+| `media.js` | 素材上传 `POST /admin/image_upload` + 素材库 `GET /admin/media_library`（**2.7.1 起逐层浏览**：可选 `prefix`/`q`/`page`，返回 `rows`(渲染好的行 HTML)/`folders`/`prefix`/`page`/`totalPages`/`hasMore`/`total`/`levelCount`/`truncated`/`base`/`accept`；只带 `kind` 的老调用照旧可用。取数/过滤/排序/分页与行结构都在 `lib/mediaBrowse.js`，与素材库治理页同一份；**2.7.3 起目录口径也逐字一致**：不再过滤站内自有目录，`folders` 与治理页根层完全相同） |
 | `mediaGovern.js` | 素材库治理（R2 桶资源管理器：浏览/改名/复制/删除/引用检查，仅超管）。**目录按钮 2.6.5 起跟着当前位置动态一层**（常态 =「存储桶根目录」+ 根下子目录，进了子目录就换成它的子目录；原固定的 `image/`/`video/`/`news_uploads/` 按钮并入这一层），**上传卡片的「目标路径」下拉 2.6.6 起只列桶根下的一级子目录**（2.6.5 曾扫全桶把各级目录都列出来，选项太长所以收回），**2.6.7 起与「存储桶根目录」后面那排按钮逐字一致**（站在根目录直接复用本页 `browseQuery` 的根层数据，不再另扫一份、不再多一层"站内自有目录不进"的过滤），更深的目录用「其它（手动填写）」写。**2.6.8 起上传卡片改两处**：命名默认值从「自动生成」变成「保留原名」（重名顺延 `_1`/`_2`，「自动生成」仍是可选项），并新增一份可滚动的**待上传清单**（缩略图/图标 + 相对路径 + 大小/类型/状态，可按单个文件或整个文件夹移除） |
 | `news.js` | 笔记管理：列表 / 发布编辑 / 预览 / 软删 / 复制 / 回收站 / 恢复 / 彻底删 |
 | `notices.js` | 通知公告：列表（可按接收人筛选 + **多选批量删除**，2.6.1）/ 编辑 / 删除。**接收人四档**（所有用户 / 内部测试用户 / 普通用户 / 指定用户）仅超管可改；选「指定用户」时用 `name=action value=search_user` 的普通提交按钮重画本页来搜人、用每位后面的「移除」按钮摘掉收件人（都不引入弹窗与接口），**2.6.0 起可一次指定多位**（同名多值 `target_user_id`，由 `app/admin/index.js` 的 `readForm` 拼成逗号串），非超管提交时保留库里的原接收人 |
@@ -216,7 +216,7 @@ cfapi/
 | `db_tools.js` | 数据库管理页：复制、表名本地筛选、单行 JSON/INSERT/UPDATE、SQL 控制台（快捷语句/历史/结果） |
 | `news_batch.js` | 笔记管理页：批量勾选与提交 |
 | `infinite_scroll.js` | 触底加载 `AdminListLoader`（各列表页共用，由 `pagerScript` 引入） |
-| `admin-shell.js` / `status-toggle.js` / `sidebar-groups.js` / `live_time.js` / `image_upload.js` / `media_library.js` | 外壳交互 / 状态就地切换 / 侧栏分组 / 相对时间 / 上传弹窗 / 素材库弹窗（2.7.1 起逐层浏览 + 触底加载：面包屑与子目录按钮 + 表格，滚到底取下一页） |
+| `admin-shell.js` / `status-toggle.js` / `sidebar-groups.js` / `live_time.js` / `image_upload.js` / `media_library.js` | 外壳交互 / 状态就地切换 / 侧栏分组 / 相对时间 / 上传弹窗 / 素材库弹窗（2.7.1 起逐层浏览 + 触底加载：路径与子目录按钮 + 表格，滚到底取下一页；2.7.3 起路径单斜杠拼接、【上一级】与路径同一行且排在末尾、根目录不显示按钮） |
 
 ### 6.5 `app/sql/`（建表脚本，按序执行）
 
@@ -402,7 +402,7 @@ cfapi/
 | --- | --- | --- |
 | 技术栈 | Cloudflare Workers + D1 + R2，零运行时依赖 | Python + FastAPI + SQLite/MySQL（双驱动） |
 | 域名 | `lyjx.250036.xyz` | `api0.250036.xyz`、`api.250036.xyz` |
-| 版本号 | `API_VERSION=2.7.2` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.5.4`） |
+| 版本号 | `API_VERSION=2.7.3` | `APP_VERSION=2.5.9`（后端自身版本，独立于小程序 `APP_VERSION=4.5.4`） |
 | 接口 | 34 条业务接口已全量实现并自测 | 历史「唯一后端」，接口同构可互切（**缺 `/user/apply_test` 与 `test_applied`**） |
 | 后台 | 17 页面（字符串拼 HTML） | 同样 17+ 模块（Jinja2 服务端渲染） |
 | 口令哈希 | PBKDF2-SHA256（Workers CPU 限制，不用 bcrypt） | bcrypt |
@@ -447,9 +447,11 @@ cfapi/
 
 20. **控制面板去掉 7 日趋势、专题两个编辑页合并（2.7.0）**：① 控制面板删掉「近 7 日新增用户趋势」「近 7 日笔记发布趋势」两张折线卡，连同它们的取数与渲染实现（`routes.js` 里的 `trend()`、每次一发的 `substr(...) GROUP BY d`、以及 `sparkline()`）一并删除，面板只剩 5 张数字卡 + 3 个最新列表；一次并发请求从 6 条降到 4 条。② `admin/motorcycle_edit` 与 `admin/outdoor_edit` 合并成一个 **`/admin/topics_edit?topic=motorcycle|outdoor`**（沿用列表页那个 `?topic=` 参数）：共用 标题 / 简介 / 封面图 URL / 视频地址 / 状态，各自独有 摩旅（骑行里程·计划时长·难度）与 户外（活动日期·活动地点），字段集仍由 `CONFIGS[kind].extraFields` 驱动 —— 换项目 = 换一份独有字段 + 换一张表（服务端重新渲染，不做前端隐显）。顶部项目单选沿用列表页那套标签条（`partials.filterButtons`；2.7.0 给它加了可选的 `hrefFor(值)`，因为这一处每一项要带**各自**的记录 id），位置在**标题字段上方**（`editShell` 的 `top`）。编辑态切到另一种项目 = 改为"新增"（两张表的 id 不是一回事），页面上有一行提示；表单 `action` 同时带 `topic` 与 `id`，所以 POST 与 GET 认的是同一个项目，**项目名缺失/非法时直接给报错页、绝不回落到摩旅表**（"默认摩旅"的回落只留给行片段/预览/删除的旧路径）。旧的 `motorcycle_edit`/`outdoor_edit` 路由与 `entities.js` 里那两条写路径登记都已删除（`/admin/motorcycle_edit` 现在落到统一 404 页 —— 编辑页没有做 302，POST 过不了重定向）。③ 编辑页的【封面图 URL】与【视频地址】从左右两栏改成上下两行；封面预览从固定 288×162（16:9 裁剪）改成**居中 + 通栏 + 按原比率缩放**（`app/admin/static/css/admin.css` 的 `.cover-preview`，全后台共用这一份）。无接口、字段与 schema 变更，端上（`xapp/`）无需改动。守卫：`tests/admin_pages_system.test.mjs`（面板仍有 5 卡 + 3 个列表，`sparkline` 与 `substr(...) GROUP BY d` 都不再出现）、`tests/admin_pages_config.test.mjs`（合并页的项目单选 / 字段集 / 上下排版 / 各写各表 / 非法 topic 不写库）、`tests/admin_sidebar_menus.test.mjs`（两个旧编辑路由与写路径登记已删、只剩 `/admin/topics_edit`）、`tests/admin_submit_action.test.mjs`（`.cover-preview` 新样式）。
 
-21. **素材库弹窗"部分图片列不出来"与缩略图裂图（2.7.1）**：① 旧弹窗走 `core/storage.js::listNewsMedia` 一次扫全桶（根目录树 + `image/` + `news_uploads/`），撞到 `MAX_SCAN_OBJECTS`(1000) 就**静默截断**（界面还写着"最多显示 500 个"）—— 桶里素材一多就只列出一部分，且把图片传进 `video/` 这类"素材库不扫的目录"的对象永远列不到（上传卡片的「目标路径」本来就允许，见第 16 条）。② 缩略图拼的是**站点根路径** `/<key>`，而 Worker 只直出 `image/`、`video/`、`news_uploads/` 三个前缀，根目录素材与 `images/` 下的对象一律 404 裂图。现在弹窗改成与素材库治理页**同一套取数**（`lib/mediaBrowse.js::browseLevel`）：一次只列**当前这一层**（前缀 + `delimiter /`），类型/关键词/排序/分页都在本层内做，翻页由弹窗里的触底加载取下一页（每页 30 条，哨兵在弹窗自己的滚动区里，不复用 `AdminListLoader` —— 它按 `location.search` 拼参数，弹窗的目录/关键词在内存里）；面包屑与子目录按钮跟着当前位置换一层，行由服务端渲染（`pages/media.js::pickRows`，预览地址一律按**媒体公开域**拼，`base` 随接口下发）。单层确实超过 1000 个时不再假装列全：状态行直接说明"只列了前一批，用关键词或进子目录缩小范围"（`truncated`）。站内自有目录（`avatar/`、`avatar_uploads/`、`images/`）在选择器里整棵子树都不给，手填 `prefix` 也绕不进去（`hideInternal`）。接口向后兼容：只带 `kind` 的老调用照旧返回第一层。手工填路径、`input`/`editor` 两种插入模式与分类锁定（「图片素材库」/「视频素材库」）都没变。守卫：`tests/admin_pages_users_news.test.mjs`「素材库: 逐层浏览」、`tests/admin_pages_tools.test.mjs`「存储桶(2.4.6)」里的选择器断言（按 `rows`/`folders` 断言，站内自有目录必须被挡）。
+21. **素材库弹窗"部分图片列不出来"与缩略图裂图（2.7.1）**：① 旧弹窗走 `core/storage.js::listNewsMedia` 一次扫全桶（根目录树 + `image/` + `news_uploads/`），撞到 `MAX_SCAN_OBJECTS`(1000) 就**静默截断**（界面还写着"最多显示 500 个"）—— 桶里素材一多就只列出一部分，且把图片传进 `video/` 这类"素材库不扫的目录"的对象永远列不到（上传卡片的「目标路径」本来就允许，见第 16 条）。② 缩略图拼的是**站点根路径** `/<key>`，而 Worker 只直出 `image/`、`video/`、`news_uploads/` 三个前缀，根目录素材与 `images/` 下的对象一律 404 裂图。现在弹窗改成与素材库治理页**同一套取数**（`lib/mediaBrowse.js::browseLevel`）：一次只列**当前这一层**（前缀 + `delimiter /`），类型/关键词/排序/分页都在本层内做，翻页由弹窗里的触底加载取下一页（每页 30 条，哨兵在弹窗自己的滚动区里，不复用 `AdminListLoader` —— 它按 `location.search` 拼参数，弹窗的目录/关键词在内存里）；面包屑与子目录按钮跟着当前位置换一层，行由服务端渲染（`pages/media.js::pickRows`，预览地址一律按**媒体公开域**拼，`base` 随接口下发）。单层确实超过 1000 个时不再假装列全：状态行直接说明"只列了前一批，用关键词或进子目录缩小范围"（`truncated`）。站内自有目录（`avatar/`、`avatar_uploads/`、`images/`）在选择器里整棵子树都不给，手填 `prefix` 也绕不进去（`hideInternal`）。接口向后兼容：只带 `kind` 的老调用照旧返回第一层。手工填路径、`input`/`editor` 两种插入模式与分类锁定（「图片素材库」/「视频素材库」）都没变。守卫：`tests/admin_pages_users_news.test.mjs`「素材库: 逐层浏览」、`tests/admin_pages_tools.test.mjs`「存储桶(2.4.6)」里的选择器断言（按 `rows`/`folders` 断言）。这一条里"站内自有目录整棵子树都不给"的过滤已被**第 23 条推翻** —— 2.7.3 起选择器与治理页的目录口径逐字一致。
 
 22. **治理页「上一级」点了停在原地（2.7.2 修）**：`lib/mediaBrowse.js::parentOf` 原先直接找入参最后一个 `/` 的位置 —— 面包屑与详情页把**带尾斜杠**的目录前缀（`image/`、`素材/子/`）交给它时，切点正好落在最后那个斜杠上，`parentOf('image/')` 返回 `image/` **自身**，于是「上一级」链回当前页，点了没反应。现在先剥掉尾斜杠再取父级：`image/` → 空串（存储桶根）、`素材/子/` → `素材/`；对象键不受影响（`image/a.png` → `image/`，改名页的「目标目录」与详情页的「所在层」照旧）。根目录本来就**不渲染**这个按钮（面包屑只到「存储桶」），所以不存在"根目录点上一级"的入口。这一轮同时把状态页那条长期红的用例收干净：`tests/api_reads.test.mjs` 的状态页断言里，「进程启动时间」整块早已从页面删除、「使用说明」也已改名成「常用接口」—— 两条失效断言都去掉（改成断言现状），`app/api/service_status.js` 里没人消费的 `isolateStartedAt` / `startedAt` / `startedAtNote` 一并删除（`statusPage` 早就没读它们）。守卫：`tests/unit.test.mjs`「上一级 parentOf(2.7.2)」（一级 / 多级 / 中文 / 根目录 + 两种对象键）、`tests/admin_pages_tools.test.mjs`「存储桶(2.4.6)」把「上一级」按钮的 href 断言到具体前缀 —— 只断言文案存在拦不住这个缺陷（原用例就是这么漏的）。
+
+23. **素材库选择器的文件夹显示不全 + 路径双斜杠与「上一级」位置（2.7.3）**：两个根因。① **两处口径不一致**：选择器走 `browseLevel(..., { hideInternal: true })`，比治理页多一层"站内自有目录"过滤 —— 根层少列 `avatar/`、`avatar_uploads/`、`images/` 三个目录（与 2.6.7「一级子目录显示不全」同一类毛病：同一个桶、两处各带一层过滤）。现在 `hideInternal` 连同 `blocked`、`isInternalKey` 一起删掉，选择器的目录清单与治理页**逐字一致**：桶里有什么列什么，站内自有目录也能进去浏览（它们仍然只是"不算素材"，`listNewsMedia` 那套口径没动）。② **列举被截断**：R2 单次 `list` 的 `limit` 是"对象 + 目录"的**合计**配额，根下对象多时目录排在字典序后面会被整批截掉，只看第一页就永远列不全。现在 `listLevel` 遇 `truncated` 时按 `cursor` 继续翻页（最多 3 页）**只为把子目录收全**；对象仍只取第一页、`truncated` 仍按第一页算，所以"本层文件太多、只列了前一批"的提示语义不变。前端顺带修掉弹窗路径的**双斜杠**（原先每段自带尾斜杠、段间又插了一个分隔符 → `存储桶/admin//vendor//fonts/`），并把【上一级】从目录按钮排挪到路径末尾、与路径**同一行**：`存储桶/admin/vendor/fonts/`+【上一级】；根目录只显示「存储桶」、不显示按钮。守卫：`tests/unit.test.mjs`「单层列举(2.7.3)」（1000 个根下对象把三个目录挤到第二页 → 目录必须收全）、`tests/admin_pages_users_news.test.mjs`「素材库: 逐层浏览」（`admin/vendor/fonts/` 逐层列全 + 根层含 avatar/）、`tests/admin_pages_tools.test.mjs`「存储桶(2.4.6)」（选择器根层目录与治理页逐字一致、站内自有目录也能浏览）、`tests/admin_submit_action.test.mjs`「素材库弹窗(2.7.3)」（`new Function` 真跑 `media_library.js`，断言路径单斜杠与【上一级】的位置/目标前缀）。测试桩 `tests/admin_stub.mjs` 的 R2 `list` 同步按真语义实现（码元序 + 合计配额 + `cursor`），否则这类缺陷测不出来。
 
 8. **线上"又慢了"先看状态页的「D1 响应」**：它是一次真实 D1 往返的耗时（基线约 240ms）。接口/页面的耗时 ≈ **串行轮数 × 它**，所以"多了几百毫秒"基本都是多了一轮串行查询，而不是单条 SQL 变慢。
 9. **怎么量"串行轮数"**：本地用 `tests/stub.mjs` / `tests/admin_stub.mjs` 的桩，把每条 D1 语句包一层 `await sleep(240)`，再跑一次该页面/接口 —— `耗时 ÷ 240ms` 就是串行轮数（后台全部 GET 路径可从 `app/admin/pages/index.js` 的 `PAGE_ROUTES` 列出来）。2.5.2 的对照：控制面板 7 轮 → 2 轮、`/config/get_app_config` 6 轮 → 1 轮（命中缓存 0 轮）、`/news/list` 3 轮 → 1~2 轮、`/news/detail` 4 轮 → 2 轮。

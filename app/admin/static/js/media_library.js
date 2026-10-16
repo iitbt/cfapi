@@ -12,9 +12,13 @@
  *   data-media-lock-kind "1" / data-media-target / data-media-preview
  *
  * 列表是**逐层浏览 + 触底加载**: 取数、过滤、排序、分页与行 HTML 全在服务端(lib/mediaBrowse.js,
- * 与素材库治理页同一份), 这里只负责拼 URL、追加行、画面包屑与子目录按钮。
+ * 与素材库治理页同一份), 这里只负责拼 URL、追加行、画路径与子目录按钮。
  * 为什么不再"一次列出全桶": 那样一撞到单次列举上限(1000)就静默截断, 表现就是"部分图片列不出来";
  * 而且旧实现把缩略图拼成站点根路径, 凡不在 Worker 直出前缀里的对象一律裂图 —— 现在地址由服务端按媒体公开域拼。
+ *
+ * 路径与「上一级」同一行显示: `存储桶/admin/vendor/fonts/` 后面跟【上一级】;
+ * 每段自带尾斜杠、段间不再另插分隔符(否则就是 `存储桶/admin//vendor/`), 根目录只显示「存储桶」且不显示「上一级」。
+ * 目录清单与治理页逐字一致: 桶里有什么列什么(站内自有目录也列), 不再各带一层过滤。
  */
 (function () {
   'use strict';
@@ -93,13 +97,6 @@
     return link;
   }
 
-  function mediaSep() {
-    var span = document.createElement('span');
-    span.className = 'text-muted mx-1';
-    span.textContent = '/';
-    return span;
-  }
-
   function mediaDirButton(label, prefix, icon) {
     var button = document.createElement('button');
     button.type = 'button';
@@ -110,25 +107,29 @@
     return button;
   }
 
-  /** 面包屑与子目录按钮: 跟着当前目录换一层, 点任意一段回该层, 「上一级」退一层。 */
+  /**
+   * 面包屑与子目录按钮: 跟着当前目录换一层, 点任意一段回该层。
+   * 每段自带尾斜杠、段间**不再另插分隔符** —— 插了就是 `存储桶/admin//vendor/` 这种双斜杠。
+   * 「上一级」跟在已打开路径后面、与面包屑同一行; 根目录没有上一层, 按钮不显示。
+   */
   function mediaRenderNav() {
     if (mediaCrumbsEl) {
       mediaCrumbsEl.innerHTML = '';
       var pieces = String(mediaPrefix || '').split('/').filter(Boolean);
-      mediaCrumbsEl.appendChild(mediaCrumb('存储桶', '', pieces.length === 0));
+      // 根目录只写「存储桶」; 进了子目录才在它后面接斜杠(`存储桶/admin/vendor/fonts/`)
+      mediaCrumbsEl.appendChild(mediaCrumb(pieces.length ? '存储桶/' : '存储桶', '', pieces.length === 0));
       var walked = '';
       pieces.forEach(function (piece, index) {
         walked += piece + '/';
-        mediaCrumbsEl.appendChild(mediaSep());
         mediaCrumbsEl.appendChild(mediaCrumb(piece + '/', walked, index === pieces.length - 1));
       });
+      // 面包屑也能回上一层, 但目录一多就要找半天 —— 末尾再给一个按钮
+      if (mediaPrefix) {
+        mediaCrumbsEl.appendChild(mediaDirButton('上一级', mediaParentOf(mediaPrefix), 'bi-arrow-up'));
+      }
     }
     if (!mediaDirsEl) { return; }
     mediaDirsEl.innerHTML = '';
-    // 面包屑也能回上一层, 但目录一多就要找半天 —— 单独给一个按钮
-    if (mediaPrefix) {
-      mediaDirsEl.appendChild(mediaDirButton('上一级', mediaParentOf(mediaPrefix), 'bi-arrow-up'));
-    }
     mediaFolders.forEach(function (folder) {
       mediaDirsEl.appendChild(mediaDirButton(folder.name + '/', folder.key, 'bi-folder2-open'));
     });
