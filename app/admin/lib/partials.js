@@ -23,6 +23,17 @@ export function imageTag(env, value, options = {}) {
     + ` alt="${escapeHtml(options.alt || '')}"${attrs ? ` ${attrs}` : ''} ${IMG_FALLBACK_ATTR}>`;
 }
 
+// 视频预览(2.7.7): 编辑页的「视频地址」与两个预览页共用 —— 带播放控件, poster 取调用方给的封面,
+// 没有就用兜底图。为什么 poster 必须有: Workers 抽不了视频首帧、上传也不生成封面, 没封面就是一片纯黑。
+export function videoPreview(env, src, options = {}) {
+  const url = src ? assetUrl(env, src, '') : '';
+  const poster = assetUrl(env, options.poster || '', IMAGE_FALLBACK_SRC);
+  const cls = options.className ? ` class="${escapeHtml(options.className)}"` : '';
+  const id = options.id ? ` id="${escapeHtml(options.id)}"` : '';
+  const attrs = options.attrs === undefined ? 'controls playsinline preload="metadata"' : options.attrs;
+  return `<video${id}${cls} src="${escapeHtml(url)}" poster="${escapeHtml(poster)}"${attrs ? ` ${attrs}` : ''}></video>`;
+}
+
 export function backButton(url, label = '返回') {
   return `<a class="btn btn-outline-secondary btn-sm" href="${escapeHtml(url)}">`
     + '<i class="bi bi-arrow-left" aria-hidden="true"></i> ' + escapeHtml(label) + '</a>';
@@ -194,14 +205,20 @@ export function imageUploadField(options = {}) {
       + ' data-bs-target="#mediaLibraryModal" data-media-mode="input"'
       + ` data-media-kind="${kind}" data-media-lock-kind="1"`
       + ` data-media-target="#${escapeHtml(name)}FieldUrl"`
-      + (kind === 'image' ? ` data-media-preview="#${escapeHtml(name)}FieldPreview"` : '') + '>'
+      // 图片与视频都有预览(2.7.7): 选完素材库由 media_library.js 刷新同一个 #<name>FieldPreview
+      + ` data-media-preview="#${escapeHtml(name)}FieldPreview">`
       + `<i class="bi bi-${kind === 'video' ? 'film' : 'images'}" aria-hidden="true"></i>`
       + (kind === 'video' ? ' 视频素材库' : ' 图片素材库') + '</button>'
     : '';
+  // 预览: 图片用 <img>, 视频用带控件的 <video>(2.7.7) —— 两者同一个 id, 上传/选素材后由前端改 src
   const preview = kind === 'image'
     ? `<img id="${escapeHtml(name)}FieldPreview" src="${escapeHtml(assetUrl(env, options.value || '', '') || '#')}"`
       + ` class="mt-2 cover-preview${options.value ? '' : ' d-none'}" alt="" ${IMG_FALLBACK_ATTR}>`
-    : '';
+    : videoPreview(env, options.value || '', {
+      poster: options.poster,
+      className: `mt-2 cover-preview${options.value ? '' : ' d-none'}`,
+      id: `${name}FieldPreview`
+    });
   const hint = options.hint
     ? `<div class="form-text"${options.hintMobileHidden ? ' data-hint-mobile-hidden' : ''}>${escapeHtml(options.hint)}</div>`
     : '';
@@ -222,7 +239,8 @@ export function imageUploadModal(options = {}) {
   const accept = kind === 'mixed' ? 'image/*,video/*' : (kind === 'video' ? 'video/*' : 'image/*');
   const title = options.title || `上传${kind === 'video' ? '视频' : (kind === 'mixed' ? '图片或视频' : '图片')}到服务器`;
   const target = options.insert ? '' : ` data-target="#${escapeHtml(name)}FieldUrl"`;
-  const preview = kind === 'image' ? ` data-preview="#${escapeHtml(name)}FieldPreview"` : '';
+  // 视频字段也有了预览(2.7.7): 上传成功后 image_upload.js 直接改这个元素的 src
+  const preview = ` data-preview="#${escapeHtml(name)}FieldPreview"`;
   return `<div class="modal fade" id="${escapeHtml(name)}UploadModal" tabindex="-1">
   <div class="modal-dialog"><div class="modal-content">
     <div class="modal-header">

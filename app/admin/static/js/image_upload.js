@@ -369,6 +369,8 @@
         if (preview) {
           preview.src = '/' + String(d.url || '').replace(/^\/+/, '');
           preview.classList.remove('d-none');
+          // 视频字段也有预览(2.7.7): 换 src 后要 load() 才会重新取元数据
+          if (preview.tagName === 'VIDEO' && typeof preview.load === 'function') { preview.load(); }
         }
       }
       if (fileInput) { fileInput.value = ''; }   // 清空: 便于连续上传多个素材

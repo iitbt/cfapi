@@ -552,3 +552,70 @@ test('专题预览: 缺 id 给"缺少记录ID"', async () => {
   const html = await (await get('/admin/motorcycle_preview', env, cookie)).text();
   assert.ok(html.includes('缺少记录ID'));
 });
+
+test('视频预览(2.7.7): 三个编辑页的「视频地址」都带 <video> 预览, 封面取封面图, 没有就落兜底', async () => {
+  const { env } = makeAdminEnv({
+    rows: {
+      news: [{
+        id: 5, title: '笔记', desc: '', image: 'news_uploads/cover.png', category: 'outdoor', type: 'admin_users',
+        status: 1, publish_time: '2026-10-01 10:00:00', video_url: 'video/v1.mp4', content: '<p>正文</p>'
+      }],
+      app_categories: [{ category_key: 'outdoor', name: '户外' }],
+      motorcycle_trips: [{ id: 7, title: '川藏线', description: '骑行', poster: 'image/poster.png', videoUrl: 'video/moto.mp4', status: 1 }],
+      outdoor_activities: [{ id: 3, title: '雨崩', description: '徒步', poster: 'image/out.png', videoUrl: 'video/out.mp4', status: 1 }]
+    }
+  });
+  const cookie = await loginCookie(env);
+
+  // ① 笔记编辑: 路径输入框照旧, 下面多一个同 id 的 <video> 预览, poster 用笔记封面
+  const newsEdit = await (await get('/admin/news_edit?id=5', env, cookie)).text();
+  assert.ok(newsEdit.includes('name="video_url"'), '路径输入框不变');
+  assert.ok(/<video[^>]*id="video_urlFieldPreview"[^>]*poster="[^"]*news_uploads\/cover\.png"/.test(newsEdit),
+    '视频预览的 poster 取笔记封面');
+  assert.ok(newsEdit.includes('data-media-preview="#video_urlFieldPreview"'), '素材库选完能刷新预览');
+  assert.ok(newsEdit.includes('data-preview="#video_urlFieldPreview"'), '本地上传完能刷新预览');
+
+  // ② 摩旅 / 户外两个编辑页(同一个 topics_edit): 各自用自己的封面当 poster
+  for (const [path, poster] of [['/admin/topics_edit?topic=motorcycle&id=7', 'image/poster.png'],
+    ['/admin/topics_edit?topic=outdoor&id=3', 'image/out.png']]) {
+    const html = await (await get(path, env, cookie)).text();
+    const re = new RegExp(`<video[^>]*id="videoUrlFieldPreview"[^>]*poster="[^"]*${poster.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`);
+    assert.ok(re.test(html), `${path} 的视频预览 poster 取专题封面`);
+  }
+
+  // ③ 没有视频时预览先藏着(留 id 给上传后填), 空封面时 poster 落兜底图(不会一片纯黑)
+  const blank = await (await get('/admin/topics_edit?topic=outdoor&id=0', env, cookie)).text();
+  assert.ok(/<video[^>]*id="videoUrlFieldPreview"[^>]*class="[^"]*d-none/.test(blank), '无视频时预览隐藏');
+  assert.ok(blank.includes(`poster="${IMAGE_FALLBACK_SRC}"`), '没有封面时 poster 用兜底图');
+
+  // ④ 笔记预览的主视频也走同一份 videoPreview(poster = 封面), 并标明 rich-text 的真机差异
+  const newsPreview = await (await get('/admin/news_preview?id=5', env, cookie)).text();
+  assert.ok(/<div class="mp-video"><video[^>]*poster="[^"]*news_uploads\/cover\.png"/.test(newsPreview),
+    '笔记预览的视频带封面');
+  assert.ok(newsPreview.includes('rich-text 会过滤'), '预览页说明 rich-text 会过滤 video');
+});
+
+test('预览页统一(2.7.7): 专题预览与笔记预览同一套 .mp-* 结构, 视频内嵌播放并带封面', async () => {
+  const { env } = makeAdminEnv({
+    rows: {
+      motorcycle_trips: [{
+        id: 7, title: '川藏线', description: '第一段\n第二段', poster: 'image/poster.png',
+        videoUrl: 'video/moto.mp4', status: 1, distance: '2000', duration: '20 天', difficulty: '高'
+      }]
+    }
+  });
+  const cookie = await loginCookie(env);
+  const html = await (await get('/admin/motorcycle_preview?id=7', env, cookie)).text();
+  // 与 news_preview 同结构同宽度: 800px 手机框 + 卡片 + 封面 + 元信息 + 居中按钮
+  for (const cls of ['mp-preview mp-frame', 'mp-frame-hint', 'mp-cover', 'mp-card', 'mp-title',
+    'mp-meta', 'mp-chip', 'mp-author', 'mp-video', 'news-content', 'page-actions-center']) {
+    assert.ok(html.includes(cls), `专题预览缺少 .${cls.split(' ')[0]}`);
+  }
+  assert.ok(html.includes('小程序专题详情页预览（800px 宽，与编辑区一致）'));
+  assert.ok(/<div class="mp-video"><video[^>]*src="[^"]*video\/moto\.mp4"[^>]*poster="[^"]*image\/poster\.png"[^>]*controls/
+    .test(html), '视频内嵌 + 播放控件 + 封面');
+  assert.ok(html.includes('<p>第一段</p>') && html.includes('<p>第二段</p>'), '多行简介拆成段落');
+  assert.ok(html.includes('rich-text 会过滤'), '标明与真机的差异(rich-text 过滤 video)');
+  assert.ok(html.includes('骑行里程(km)') && html.includes('2000'), '额外字段仍然展示');
+  assert.ok(!html.includes('查看视频'), '不再用"查看视频"按钮');
+});

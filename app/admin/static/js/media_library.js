@@ -332,6 +332,8 @@
         // 预览走媒体公开域: 站点根路径只对 Worker 直出的那几个前缀有效, 别的对象会 404
         preview.src = mediaBase ? mediaBase + '/' + item.path : '/' + item.path;
         preview.classList.remove('d-none');
+        // 视频字段也有预览(2.7.7): 换 src 后要 load() 才会重新取元数据
+        if (preview.tagName === 'VIDEO' && typeof preview.load === 'function') { preview.load(); }
       }
     } else {
       // editor 模式: 交给**页面**提供的插入函数(编辑页实现为 restoreSelection + insertNode)。

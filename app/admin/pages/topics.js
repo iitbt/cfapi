@@ -7,7 +7,7 @@ import { assetUrl } from '../../core/media_scheme.js';
 import { adminLayout } from '../lib/layout.js';
 import {
   addButton, editShell, emptyRow, filterButtons, imageTag, imageUploadField, imageUploadModal, listShell, mediaLibraryModal,
-  pagerScript, searchBar, searchInput, selectField, textareaField, textField
+  pagerScript, searchBar, searchInput, selectField, textareaField, textField, videoPreview
 } from '../lib/partials.js';
 import { statusButtons, statusCell, statusKind } from '../lib/status.js';
 import { listController } from '../lib/listPage.js';
@@ -322,7 +322,9 @@ function editView(ctx, config, { isNew, row, error, errorField }) {
     })
     + imageUploadField({
       env: ctx.env, name: 'videoUrl', label: config.labels.videoUrl, value: row.videoUrl,
-      mediaKind: 'video', mediaPicker: true, errorField, colClass: 'mb-3', hint: VIDEO_HINT
+      mediaKind: 'video', mediaPicker: true, errorField, colClass: 'mb-3', hint: VIDEO_HINT,
+      // 2.7.7: 视频预览的封面用专题封面(poster), 没有就落兜底图
+      poster: row.poster
     })
     + config.extraFields.map((field) => textField({
       name: field, label: config.labels[field] || field, value: row[field], errorField
@@ -362,22 +364,46 @@ async function previewPage(ctx, routeConfig) {
   }
   const poster = strOf(row.poster);
   const video = strOf(row.videoUrl);
+  // 简介是多行纯文本: 按行拆成段落, 与 .news-content 的排版同一套
+  const descHtml = escapeHtml(strOf(row.description)).split(/\r?\n+/).filter(Boolean)
+    .map((line) => `<p>${line}</p>`).join('');
   const extraRows = config.extraFields
     .filter((field) => strOf(row[field]))
     .map((field) => `<tr><th scope="row">${escapeHtml(config.labels[field] || field)}</th><td>${escapeHtml(strOf(row[field]))}</td></tr>`)
     .join('');
-  const content = `<div class="card"><div class="card-body">
-  ${statusCell(config.kind, row)}
-  <h4 class="mt-2">${escapeHtml(strOf(row.title))}</h4>
-  ${poster ? imageTag(ctx.env, poster, { className: 'img-fluid cover-detail mb-3', attrs: '' }) : ''}
-  <p>${escapeHtml(strOf(row.description))}</p>
-  ${video ? `<a class="btn btn-outline-primary btn-sm mb-3" href="${escapeHtml(assetUrl(ctx.env, video, ''))}" target="_blank" rel="noopener"><i class="bi bi-play-circle" aria-hidden="true"></i> 查看视频</a>` : ''}
-  ${extraRows ? `<div class="table-responsive"><table class="table table-sm align-middle"><tbody>${extraRows}</tbody></table></div>` : ''}
-  <div class="d-flex gap-2">
-    <a class="btn btn-outline-primary btn-sm" href="${editUrl(config, row.id)}">返回编辑</a>
-    <a class="btn btn-outline-secondary btn-sm" href="${TOPIC_MANAGE_URL}?topic=${config.kind}">返回列表</a>
-  </div>
-</div></div>`;
+  // 2.7.7: 结构与类名与 news_preview 对齐(.mp-preview > .mp-frame-hint + .mp-cover + .mp-card),
+  // 宽度/字号/视频与图片的呈现全部来自 admin.css「小程序尺度统一层」, 两页因此逐项一致
+  const content = `<div class="row">
+ <div class="col-12">
+  <div class="card"><div class="card-body">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      ${statusCell(config.kind, row)}
+      <span class="text-muted small">${escapeHtml(config.itemLabel)}</span>
+    </div>
+    <div class="mp-preview mp-frame">
+      <div class="mp-frame-hint">小程序专题详情页预览（800px 宽，与编辑区一致）</div>
+      <div class="mp-frame-hint">真机差异：小程序 rich-text 会过滤 &lt;video&gt;，视频要 mp-html 或原生 &lt;video&gt; 混合渲染才能播放；本页按 video 渲染，只为核对尺寸与封面。</div>
+      ${poster ? `<div class="mp-cover-label">封面图（列表页展示）</div>
+      ${imageTag(ctx.env, poster, { className: 'mp-cover', attrs: '' })}` : ''}
+      <div class="mp-card">
+        <div class="mp-title">${escapeHtml(strOf(row.title))}</div>
+        <div class="mp-meta">
+          <span class="mp-chip">${escapeHtml(config.itemLabel)}</span>
+          <span class="mp-author">管理员</span>
+        </div>
+        ${video ? `<div class="mp-video">${videoPreview(ctx.env, video, { poster })}</div>` : ''}
+        <div class="news-content">${descHtml}</div>
+        ${extraRows ? `<div class="table-responsive mt-3"><table class="table table-sm small align-middle mb-0"><tbody>${extraRows}</tbody></table></div>` : ''}
+      </div>
+    </div>
+    <hr>
+    <div class="page-actions-center">
+      <a class="btn btn-outline-primary btn-sm" href="${editUrl(config, row.id)}">返回编辑</a>
+      <a class="btn btn-outline-secondary btn-sm" href="${TOPIC_MANAGE_URL}?topic=${config.kind}">返回列表</a>
+    </div>
+  </div></div>
+ </div>
+</div>`;
   return adminLayout({
     title: config.title, currentPage: config.manage.replace('/admin/', ''), admin: ctx.session.username,
     isSuper: ctx.session.isSuper, version: ctx.version, content

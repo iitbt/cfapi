@@ -12,7 +12,8 @@ import { imagesForStorage, plainDesc, videoForBrowser, videoForEditor, videoForS
 import {
   IMAGE_FALLBACK_SRC, IMG_FALLBACK_ATTR, addButton, backButton, emptyRow, filterButtons, imageTag, imageUploadField,
   imageUploadModal, listShell, mediaLibraryModal,
-  pagerScript, searchBar, searchInput, searchSelect, selectField, staticScript, switchField, textareaField, textField
+  pagerScript, searchBar, searchInput, searchSelect, selectField, staticScript, switchField, textareaField, textField,
+  videoPreview
 } from '../lib/partials.js';
 import { statusButtons, statusCell, statusKind, statusLabel } from '../lib/status.js';
 import { listController } from '../lib/listPage.js';
@@ -255,6 +256,7 @@ async function previewPage(ctx) {
 
         <div class="mp-preview mp-frame">
           <div class="mp-frame-hint">小程序笔记详情页预览（800px 宽，与编辑区一致）</div>
+          <div class="mp-frame-hint">真机差异：小程序 rich-text 会过滤 &lt;video&gt;，视频要 mp-html 或原生 &lt;video&gt; 混合渲染才能播放；本页按 video 渲染，只为核对尺寸与封面。</div>
           ${cover ? `<div class="mp-cover-label">封面图（列表页展示）</div>
           ${imageTag(ctx.env, cover, { className: 'mp-cover', attrs: '' })}` : ''}
           <div class="mp-card">
@@ -266,10 +268,7 @@ async function previewPage(ctx) {
               <span>${escapeHtml(strOf(row.publish_time))}</span>
               <span class="mp-author">管理员</span>
             </div>
-            ${mainVideo ? `<div class="mp-video">
-              <video src="${escapeHtml(mainVideo)}" controls playsinline preload="metadata"
-                     onerror="this.style.visibility='hidden'"></video>
-            </div>` : ''}
+            ${mainVideo ? `<div class="mp-video">${videoPreview(ctx.env, mainVideo, { poster: row.image })}</div>` : ''}
             <div class="news-content">${body}</div>
           </div>
         </div>
@@ -391,6 +390,8 @@ function editView(ctx, { isNew, row, error, errorField, options }) {
     + imageUploadField({
       env: ctx.env, name: 'video_url', label: '视频地址(可选)显示在正文之前', value: row.video_url,
       mediaKind: 'video', mediaPicker: true, errorField,
+      // 2.7.7: 视频有了预览, 封面用笔记封面(row.image); 没有封面时由 videoPreview 落兜底图, 不会纯黑
+      poster: row.image,
       hint: '填站内相对路径（如 video/video_x.mp4），或点右侧上传/从视频素材库选。'
     })
     + textareaField({

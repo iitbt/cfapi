@@ -26,7 +26,7 @@ import { settings } from './app/core/config.js';
 import { SERVED_PREFIXES, mediaContentType } from './app/core/storage.js';
 
 // 版本号(**唯一来源**):
-export const API_VERSION = '2.7.6';
+export const API_VERSION = '2.7.7';
 
 // ==== 路由装配(对应旧站 main.py 的 include_router 段) ====
 const router = createRouter();
