@@ -919,7 +919,7 @@ test('素材库(2.4.1): 图片与视频两个独立入口(各带文件/文件夹
   assert.ok((html.match(/>选择文件夹</g) || []).length === 2 && !html.includes('>选择文件</label>\n          <label class="btn btn-sm btn-outline-secondary mb-0" for="mediaUploadImageFolder">选择文件<'),
     '两个入口的文案不重复(不再出现两个"选择文件")');
   assert.ok(html.includes('整棵目录树'), '目录保留规则写在页面上(避免用户猜)');
-  assert.ok(html.includes('两种命名模式都保留目录'), '说明自动生成模式下目录仍保留');
+  assert.ok(html.includes('自动生成也保留目录'), '说明自动生成模式下目录仍保留');
   assert.ok(html.includes('空文件夹不会被保留'), '说明空文件夹的处理');
   assert.ok(html.includes('单张 ≤ 8 MB'), '上限文案来自 mediaUpload 的常量');
 

@@ -278,7 +278,7 @@ function uploadCard(dirs = []) {
                multiple accept="${accept}" aria-label="选择${title}文件（可多选）">
         <input class="visually-hidden" type="file" id="mediaUpload${tab}Folder" data-purpose="${purpose}"
                webkitdirectory directory multiple aria-label="选择${title}文件夹（含子目录）">
-        <div class="form-text">上：${title}文件（可多选）；下：整个文件夹。${unit} ≤ ${limit}。</div>
+        <div class="form-text">文件夹上传保留整棵目录树（自动生成也保留目录，空文件夹不会被保留）；${unit} ≤ ${limit}。</div>
         <label class="form-label mt-2 mb-1" for="mediaUpload${tab}Dir">目标路径</label>
         <select class="form-select form-select-sm" id="mediaUpload${tab}Dir"
                 data-root="${escapeHtml(root)}" data-manual="mediaUpload${tab}DirManual"
@@ -288,12 +288,10 @@ function uploadCard(dirs = []) {
         </select>
         <input class="form-control form-control-sm mt-1 d-none" type="text" id="mediaUpload${tab}DirManual"
                placeholder="如 ${escapeHtml(root)}2026-10/" aria-label="手动填写${title}上传的目标路径">
-        <div class="form-text">默认 <code>${root}</code>；下拉里是根目录 + 桶根下的一级子目录，要归档到更深层或新目录就选「其它」手填（
-          相对目录即可，不能有 <code>..</code> 或以 <code>/</code> 开头）。</div>
+        <div class="form-text">手填目录不能有 <code>..</code>、不能以 <code>/</code> 开头。</div>
       </div>`;
   };
   return `<div class="card mb-3"><div class="card-body">
-    <h6 class="mb-2">上传素材</h6>
     <div class="row g-3">
       ${pickers({
     tab: 'Image', title: '图片', icon: 'bi-image', dir: 'image', purpose: 'cover',
@@ -304,21 +302,7 @@ function uploadCard(dirs = []) {
     accept: 'video/*', limit: mbOf(MAX_VIDEO_BYTES), unit: '单个'
   })}
       <div class="col-12">
-        <div class="alert alert-secondary py-2 mb-0 small">
-          选文件夹会把<strong>整棵目录树</strong>一起传上去（含你选中的那层文件夹名）：图片入口拼到
-          <code>image/</code> 后面、视频入口拼到 <code>video/</code> 后面 —— 例如选文件夹「素材」里有
-          <code>相册/图.png</code> 与 <code>根目录图.png</code>，则落成 <code>image/素材/相册/图.png</code> 与
-          <code>image/素材/根目录图.png</code>。<strong>两种命名模式都保留目录</strong>：「保留原名」（<strong>2.6.8 起为默认</strong>）
-          文件名也不变、同目录重名自动加 <code>_1</code>，「自动生成」只把文件名换成 <code>&lt;用途&gt;_时间戳.ext</code>。
-          空文件夹不会被保留（R2 没有目录，浏览器也不会把空目录列出来）。
-          <br><strong>目标路径</strong>默认就是各入口的 <code>image/</code> 与 <code>video/</code>，下拉里可选的还有
-          <strong>根目录</strong>（存储桶最外层，不带任何前缀；选文件夹时目录结构会直接铺在根下，如
-          <code>素材/子/图.png</code> —— 这些内容素材库列表与素材选择器同样能看到，列表里「目录」列显示"根目录"）与桶根下的一级子目录；
-          要归档到更深层或新目录就选「其它」手填（如 <code>image/2026-10/</code>）。
-          <strong>2.6.5 起手填目录不再要求以 <code>image/</code> 或 <code>video/</code> 开头</strong>，只要是干净的相对目录就行
-          （不能有 <code>..</code>、不能以 <code>/</code> 开头）；代价是写进"素材库不扫的目录"（比如把图片写进 <code>video/</code>）时，
-          那些对象在素材库列表与素材选择器里列不出来（公开域直读不受影响）。文件落在该路径下面，文件夹结构也在它下面继续保留。
-        </div>
+        <div class="form-text">目标路径写进素材库不扫的目录时（如把图片写进 <code>video/</code>），那些对象在素材库与选择器里列不出来，公开域直读不受影响。</div>
       </div>
       <div class="col-12 d-flex flex-wrap align-items-center gap-3">
         <span class="form-label mb-0">命名</span>
@@ -334,8 +318,6 @@ function uploadCard(dirs = []) {
         <button class="btn btn-sm btn-outline-secondary" type="button" id="mediaUploadClear">清空</button>
       </div>
       <div class="col-12">
-        <div class="form-text mb-2">默认「保留原名」：同一目录里同名文件自动顺延 <code>_1</code>、<code>_2</code>…（扩展名不变）；
-          不同子目录各自独立计数，互不影响。要按用途+时间戳重命名就切到「自动生成」（两种模式都保留文件夹结构）。</div>
         <div class="progress" role="progressbar" aria-label="整体上传进度" style="height:1rem">
           <div class="progress-bar" id="mediaUploadBar" style="width:0%">0%</div>
         </div>
@@ -488,7 +470,7 @@ async function listPage(ctx) {
   const filtered = Boolean(strOf(ctx.query.q) || data.kind !== 'all' || data.ref);
   const emptyHint = filtered
     ? '这一层没有符合筛选条件的对象（关键词 / 类型 / 引用状态），清空筛选或换一层再看'
-    : '此目录暂无文件（对象存储里没有"空的目录"；换个前缀看看，或用上面的上传卡片传一个）';
+    : '此目录暂无文件。';
 
   const content = `${pageHeader({ icon: 'bi-hdd-stack', title: '存储桶资源管理' })}
 ${uploadCard(dirs)}
@@ -501,15 +483,14 @@ ${uploadCard(dirs)}
     total: data.filtered.length, perPage: PER_PAGE, loadedPage: data.page, totalPages: data.totalPages,
     unit: '个对象', hintId: 'mediaLoadedHint'
   })}
-      · 本层列到 ${data.levelCount} 个对象、${data.folders.length} 个子目录${data.truncated
-    ? '，<span class="text-danger">已到单层 1000 上限（R2 单次列举上限），请用前缀/关键词缩小范围</span>' : ''}
+      ${data.truncated ? '· <span class="text-danger">已到单层 1000 上限，请用前缀或关键词缩小范围</span>' : ''}
     </div>
   </div></div>
   <div class="card"><div class="card-body">
     <form method="get" action="${DELETE_URL}" id="mediaBatchForm" class="d-flex flex-wrap align-items-center gap-2 mb-2">
       <input type="hidden" name="paths" id="mediaBatchPaths">
       <input type="hidden" name="back" value="${escapeHtml(data.currentUrl)}">
-      <span class="small text-muted">删除不可恢复；移动会换掉对象键（笔记里的引用不会自动改写）。两者都做引用检查，有一个被引用就整批拒绝（删除一次最多 ${BATCH_MAX} 个、移动 ${DIR_MOVE_MAX} 个）。</span>
+      <span class="small text-muted">删除不可恢复；移动会换掉对象键，笔记里的引用不会自动改写；被引用就整批拒绝。一次最多删 ${BATCH_MAX} 个、移 ${DIR_MOVE_MAX} 个。</span>
       <button class="btn btn-sm btn-outline-danger" type="submit" id="mediaBatchDelete" disabled>删除所选</button>
       <button class="btn btn-sm btn-outline-secondary" type="button" id="mediaBatchMove"
               title="把选中的对象搬到同一个目标前缀（文件名不变）" disabled>移动所选…</button>
@@ -529,18 +510,6 @@ ${uploadCard(dirs)}
     // 与笔记管理页一致: 滚动加载下不提供「跳至 N 页」(跳过去只会看到那一页的行)
     jump: false
   })}
-    <div class="small text-muted mt-3">
-      · 列表只列<strong>当前这一层</strong>（前缀 + 分隔符 <code>/</code>）：进子目录点上面的目录按钮（跟着当前位置换一层）、行内「进入」或面包屑，
-      返回上一层用面包屑里点任意一段或「上一级」；对象键就是完整路径，
-      公开地址 = <code>${escapeHtml(data.base || '（未配置 MEDIA_BASE）')}</code>/对象键（R2 公开域直读，不经 Worker）。
-      <br>· <strong>目录不是实体</strong>：R2 里只有对象键，<code>/</code> 只是名字的一部分 —— 所以"新建目录"= 上传时把目标路径写成它（上传卡片的「目标路径」就支持），
-      "空目录"也不存在（没有对象的目录自然消失）。
-      <br>· 移动 / 复制 / 删除都<strong>绝不覆盖已有对象</strong>（目标已存在就拒绝）；素材路径（<code>image/</code>、<code>video/</code>、<code>news_uploads/</code> 与根目录树）仍受引用检查保护：
-      有引用就整批拒绝，且<strong>不擅自改写笔记里的引用</strong>（要先在笔记里改地址）。
-      <br>· <strong>「移动所选…」</strong>把勾选的对象搬到同一个目标前缀下（文件名不变）：与删除一样先出确认页，被引用一样整批拒绝。
-      <br>· 缩略图（派生文件）已按 2.4.0 移除，列表/详情/预览一律用原图；新上传对象带
-      <code>Cache-Control: ${escapeHtml(CACHE_CONTROL_MEDIA)}</code>。全桶媒体占用统计在「系统信息」页（这里不再全桶扫描，只列举当前层）。
-    </div>
   </div></div>
 `;
 
@@ -682,7 +651,7 @@ async function detailPage(ctx) {
   </div></div>
   <div class="card mb-3"><div class="card-body">
     <h6 class="mb-2">引用情况</h6>
-    ${media ? refsBlock(refs, scan.ok) : '<div class="alert alert-secondary py-2 mb-0">这个对象不在素材路径下（不是 <code>image/</code>、<code>video/</code>、<code>news_uploads/</code>，也不在根目录树里），笔记引用不到它，所以不做引用检查。</div>'}
+    ${media ? refsBlock(refs, scan.ok) : '<div class="alert alert-secondary py-2 mb-0">不在素材路径下，笔记引用不到它，不做引用检查。</div>'}
   </div></div>
   <div class="card"><div class="card-body d-flex flex-wrap gap-2">
     <a class="btn btn-outline-secondary" href="${RENAME_URL}?path=${urlenc(key)}&amp;back=${urlenc(back)}">改名 / 移动</a>
@@ -714,9 +683,7 @@ async function renameGet(ctx) {
 
   const body = blocked
     ? `${refsBlock(refs)}
-       <div class="alert alert-warning mb-3">改名/移动会让这些引用指向不存在的文件（本站**不会**自动改写笔记内容），所以这里直接拒绝。
-       需要换位置时请先在笔记里换成新地址，或者删掉那些引用后再来。<br>
-       <strong>只想留一份副本</strong>的话用「复制」—— 复制不动原对象，所以不受这条限制。</div>
+       <div class="alert alert-warning mb-3">改名/移动会让这些引用指向不存在的文件（<strong>不会</strong>自动改写笔记），所以直接拒绝。先在笔记里改成新地址，或用「复制」（不动原对象）。</div>
        <div class="d-flex flex-wrap gap-2">${backButton(back, '返回列表')}
        <a class="btn btn-outline-secondary" href="${RENAME_URL}?copy=1&amp;path=${urlenc(key)}&amp;back=${urlenc(back)}">改为复制</a>
        <a class="btn btn-outline-secondary" href="${REFS_URL}?path=${urlenc(key)}" target="_blank" rel="noopener">查看引用明细</a></div>`
@@ -727,17 +694,17 @@ async function renameGet(ctx) {
          <div class="col-lg-6">${textField({
       name: 'dir', label: '目标目录（前缀）', value: dir,
       placeholder: '如 image/2026-10/ ；留空 = 存储桶根目录',
-      hint: '任何前缀都行（不必是素材目录）；留空表示放在存储桶最外层。目录不需要预先存在 —— R2 里目录只是键名的一部分。'
+      hint: '任何前缀都行；留空 = 存储桶最外层。R2 里目录只是键名的一部分，不必预先存在。'
     })}</div>
          <div class="col-lg-6">${textField({
       name: 'name', label: '新文件名', value: name, required: true,
       placeholder: '如 outdoor_cover.png',
-      hint: '只填文件名（不能带斜杠）；要换位置就改上面的「目标目录」。'
+      hint: '只填文件名，不能带斜杠。'
     })}</div>
          <div class="col-12">
            <div class="form-check">
              <input class="form-check-input" type="checkbox" name="copy" value="1" id="renameCopy"${copy ? ' checked' : ''}>
-             <label class="form-check-label" for="renameCopy">复制（保留原对象，另存一份到目标路径）</label>
+             <label class="form-check-label" for="renameCopy">复制（不动原对象）</label>
            </div>
          </div>
          <div class="col-12 d-grid gap-2">
@@ -746,9 +713,8 @@ async function renameGet(ctx) {
          </div>
        </form>
        <div class="small text-muted mt-3">
-         · R2 没有 rename：${copy ? '复制 = 读原对象 → 写新 key（2 次 R2 操作）' : '移动 = 读原对象 → 写新 key → 删旧 key（3 次 R2 操作）'}，流式处理、不整份读进内存；
-         <br>· <strong>绝不覆盖</strong>：目标键已存在就拒绝（本站所有写入口都是这个口径）；
-         <br>· 目标若不在素材路径下（不是 <code>image/</code>、<code>video/</code>、<code>news_uploads/</code>、也不是根目录树），素材库与小程序就看不到它了；公开域上的旧地址缓存最长还会保留 ${escapeHtml(CACHE_CONTROL_MEDIA)} 的时长。
+         · <strong>绝不覆盖</strong>：目标键已存在就拒绝。
+         <br>· 目标若不在素材路径下，素材库与小程序就看不到它；公开域旧地址的缓存最长保留 ${escapeHtml(CACHE_CONTROL_MEDIA)}。
        </div>`;
 
   const title = copy ? '复制对象' : (blocked ? '改名 / 移动被拒' : '改名 / 移动对象');
@@ -873,8 +839,8 @@ async function dirPage(ctx) {
           name: 'dir', label: '移动到（目标前缀）', value: byPicked ? parentOf(take[0].key) : prefix,
           placeholder: '如 image/2026-10/ ；留空 = 存储桶根目录',
           hint: byPicked
-            ? '选中的对象文件名不变，都搬到这个前缀下；留空 = 存储桶最外层（不会覆盖同名对象）。'
-            : '该前缀下的相对结构会原样保留（原键去掉本前缀后拼到目标前缀后面）。'
+            ? '文件名不变；留空 = 存储桶最外层，同名对象不会覆盖。'
+            : '该前缀下的相对结构原样保留（原键去掉本前缀后拼到目标）。'
         })}</div>`
         : ''}
          <div class="col-12 d-grid gap-2">
@@ -884,13 +850,7 @@ async function dirPage(ctx) {
            ${backButton(back, '返回列表')}
          </div>
        </form>
-       <div class="small text-muted mt-3">
-         ${byPicked
-        ? `· 选中的对象只换目录、文件名不变；移动 = 每个对象"读 → 写 → 删"（3 次 R2 操作），所以一次只处理 ${DIR_MOVE_MAX} 个；`
-        : `· 目录不是实体：R2 里只有对象键，"删除目录"就是删掉这些键，删完前缀自然消失；
-         <br>· 移动 = 每个对象"读 → 写 → 删"（3 次 R2 操作），所以一次只处理 ${DIR_MOVE_MAX} 个；删除是 1 次 R2 调用删掉一批（单次上限 1000，这里按 ${BATCH_MAX} 个一批走引用复查）；`}
-         <br>· **绝不覆盖**：目标键已存在时该对象会失败并列出来（不会动原对象）。
-       </div>`;
+       <div class="small text-muted mt-3"><strong>绝不覆盖</strong>：目标键已存在时该对象失败并列出来，原对象不动。</div>`;
 
   const title = action === 'delete' ? `删除目录内容：${prefix}` : (byPicked ? '移动所选对象' : `移动目录内容：${prefix}`);
   const content = `${pageHeader({ icon: action === 'delete' ? 'bi-trash3' : 'bi-arrows-move', title, actions: backButton(back) })}
