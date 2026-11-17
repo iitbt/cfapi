@@ -263,7 +263,7 @@ cfapi/
 
 1. **建 D1** `lyjxxapp-d1`：控制台手动建，**Location 选 Asia Pacific**，回填 `database_id` 到 `wrangler.toml`。
 2. **建 R2** `lyjxxapp-r2`：手动建、选亚太；开公开域 `storage.250036.xyz`。
-3. **建表 + 导数据**：用 `tools/split_sql.py` 拆 `app/sql/*` 与 `out/seed.sql`，在 D1 控制台逐块粘贴；共 21 张表（18 业务 + 限流 + token + admin_users）。
+3. **建表 + 导数据**：用 `tools/split_sql.py` 拆 `app/sql/*` 与 `out/seed.sql`，在 D1 控制台逐块粘贴；共 20 张表（17 业务 + 限流 + token + admin_users）。
 4. **连 Git 部署**：Worker → Connect to Git，Build/Deploy 命令留空或 `npx wrangler deploy`，`[vars]` 与绑定自动生效。
 5. **配 3 个密钥**：`WECHAT_APPID` / `WECHAT_SECRET` / `ADMIN_SESSION_SECRET`（控制台加密变量或 `npm run secrets:put`）。
 6. **自定义域**：`lyjx.250036.xyz` → 此 Worker（小程序接口 + `/admin`）；`storage.250036.xyz` → R2 公开域。

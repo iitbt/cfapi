@@ -7,7 +7,7 @@ compatibility_date = "2026-10-04"
 # ==== 资源绑定: 部署时 Cloudflare 按下面这些名字自动挂上 ====
 # ⚠️ 区域(Location)必须先手动建好, **不要**靠"留空 database_id 让 wrangler 自动建库":
 #    自动创建不带 location hint → 落到默认区域(西欧), 而 D1 primary location / R2 location hint
-#    建完就**不可修改**。本项目踩过一次这个坑, 迁移办法见 DEPLOY.md「区域(Location)与资源重建」。
+#    建完就**不可修改**。本项目踩过一次这个坑, 迁移办法见 DEPLOY.md 附录 C「如果数据库/存储桶建到了西欧」。
 #    建库/建桶时都要选亚太: wrangler d1 create lyjxxapp-d1 --location apac
 #                          wrangler r2 bucket create lyjxxapp-r2 --location apac
 [[d1_databases]]

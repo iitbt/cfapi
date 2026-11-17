@@ -82,6 +82,15 @@
    > 执行前**必须先备份**：`wrangler d1 export lyjxxapp-d1 --remote --output backup-<日期>.sql`（控制台的 Time Travel 也能回滚到 7 天内的任意时间点）。
    > **不执行也不影响功能** —— 只是老库这几列还允许 NULL，写入漏传时可能让筛选悄悄漏行。
 
+5. **老库还要按顺序补跑 4 个迁移**（新建库的 `0001_schema.sql` 已含这些列，**全新部署跳过**；每条都是 `ALTER`，不幂等，只能各跑一次）：
+
+   | 顺序 | 命令 | 作用 | 漏跑会怎样 |
+   | --- | --- | --- | --- |
+   | 1 | `npm run schema:testapply` | 加 `users.test_applied`（测试申请标记） | 后台用户列表缺「已申请」徽章 |
+   | 2 | `npm run schema:noticetarget` | 加 `app_notices.target_user_id` | 指向单人公告写不进去 |
+   | 3 | `npm run schema:noticereceiver` | 加 `receiver_type` 并回填历史定向行 | 定向消息变成全员可见 |
+   | 4 | `npm run schema:noticetargets` | 加 `target_user_ids` 并把单值列折进去 | 公告接口与后台一律报 `no such column` |
+
 ## 第 5 步 把旧数据导进去（全新部署可跳过）
 
 1. 在本机项目目录下导出旧库数据，并拆成小块：
@@ -98,7 +107,7 @@
    - 数据块是"有就覆盖"，反复粘贴也安全；建表块重跑才会报"已存在"。
    - 正文里的换行是真实换行（一条语句可能占好几十行），复制时整块全选，不要只框一行。
    - 想少粘几次：拆块命令后面加 `--max-bytes 30000`，会变成 3 块；粘不动或报错就回到默认块数。
-4. 核对：一共 **21 张表**（业务 18 张 + 限流表 + token 表 + 管理员表）；数据条数与旧库一致（参考：`news` 69 行、`users` 4 行、`banner_images` 18 行）。
+4. 核对：一共 **20 张表**（业务 17 张 + 限流表 + token 表 + 管理员表）；数据条数与旧库一致（参考：`news` 69 行、`users` 4 行、`banner_images` 18 行）。
 5. 正式切换前再跑一次第 1 小步，把旧库这段时间新增的数据补上（按主键覆盖，重复执行安全）。
 
 ## 第 6 步 填三个密钥
@@ -155,6 +164,8 @@ $b = New-Object byte[] 32
 | `ALLOWED_ORIGINS` | `https://lyjx.250036.xyz` | CORS 白名单（逗号分隔）。同源访问不需要 CORS 头，收窄它不影响后台/状态页，只让别的站点读不到接口响应 |
 | `ENABLE_PUBLIC_PROBE` | `"1"` | 开放 `/apitest` 连通性探测（小程序"检测线路"要用） |
 | `OBSERVABILITY_ENABLED` | `"0"` | `"1"` 才开放 `/metrics` 用量页，平时关着 |
+| `UPLOAD_MAX_BYTES` | `"20971520"`（20 MB） | 头像/图片上传大小上限，与旧后端默认值一致 |
+| `WXWORK_WEBHOOK_KEY` | 仓库里已有值；**不想让机器人发通知就清空** | 用户在小程序「我的 → 申请测试」提交时，给管理员群发一条文本通知；留空 = 不发通知，接口照常成功 |
 
 ## 第 7 步 部署
 
@@ -342,6 +353,7 @@ wrangler r2 bucket create lyjxxapp-r2 --location apac   # 建桶（亚太）
 
 npm run schema:remote                            # 一条命令建完 5 个建表脚本（0001~0005）
 npm run schema:notnull                           # 老库才要：执行 0006 收紧 NOT NULL（会重建表，先备份，见第 4 步）
+npm run schema:testapply                         # 老库才要：执行 0007 给 users 加 test_applied 列（ALTER 不幂等，只跑一次）
 npm run schema:noticetarget                      # 老库才要：执行 0008 给 app_notices 加 target_user_id 列（定向公告；ALTER 不幂等，只跑一次）
 npm run schema:noticereceiver                    # 老库才要：执行 0009 加 receiver_type 并回填历史定向行（漏跑 = 定向消息全员可见；ALTER 不幂等，只跑一次）
 npm run schema:noticetargets                     # 老库才要：执行 0010 加 target_user_ids（逗号列表）并把老的单值列折进去（漏跑 = 公告接口与后台一律报 no such column；ALTER 不幂等，只跑一次）
